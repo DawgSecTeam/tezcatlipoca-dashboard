@@ -206,7 +206,12 @@ class RunManager:
         vendor.mkdir(exist_ok=True)
         nakon = config.nakon_path()
         if nakon:
-            (vendor / "nakon").symlink_to(nakon)
+            slot = vendor / "nakon"
+            if slot.is_symlink() or slot.is_file():
+                slot.unlink()
+            elif slot.exists():
+                shutil.rmtree(slot, ignore_errors=True)  # empty submodule slot from the worktree
+            slot.symlink_to(nakon)
         else:
             subprocess.run(["git", "-C", str(worktree), "submodule", "update", "--init",
                             "vendor/nakon"], capture_output=True)
