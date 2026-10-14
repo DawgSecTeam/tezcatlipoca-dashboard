@@ -9,6 +9,7 @@ from typing import Optional
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from mcp.server.streamable_http import TransportSecuritySettings
 from pydantic import BaseModel
 
 from dashboard import auth, comps_api, config
@@ -34,7 +35,11 @@ def create_app():
     bus = EventBus()
     manager = RunManager(store, bus)
     mcp = build_mcp(manager)
-    mcp_app = mcp.streamable_http_app(streamable_http_path="/mcp")
+    # Bearer auth is the access guard; the SDK's DNS-rebinding Host check would
+    # refuse the LAN clients (421 on any Host but localhost).
+    mcp_app = mcp.streamable_http_app(
+        streamable_http_path="/mcp",
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False))
 
     @asynccontextmanager
     async def lifespan(_app):
