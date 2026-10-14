@@ -51,22 +51,30 @@ def test_deploy_carries_the_runs_nodes_file():
     assert "--nodes" not in build_command("verify", "c", "/ws", {}, "/run/nodes.json")
 
 
+def test_scrim_carries_the_runs_nodes_file():
+    # the scrim action drives a deploy stage; without the flag that stage landed on the
+    # env's host while the UI showed the selected nodes
+    cmd = build_command("scrim", "c", "/ws", {"teams": 1}, "/run/nodes.json")
+    assert cmd[cmd.index("--nodes") + 1] == "/run/nodes.json"
+
+
 def test_run_nodes_file_and_driver_env(tmp_path, monkeypatch):
     from dashboard import config, nodes as nodes_mod
     from dashboard.runner import RunManager
 
     monkeypatch.setattr(config, "data_dir", lambda: tmp_path)
-    nodes_mod.save([{"name": "zfs-193", "endpoint": "https://10.0.0.193:8006", "node": "pve",
-                     "datastore": "hdrives-zfs", "engine_base_vmid": 1007, "token": "sec"}], {})
+    nodes_mod.save([{"name": "node-a", "endpoint": "https://node-a.example:8006",
+                     "node": "pve1", "datastore": "store-a", "engine_base_vmid": 901,
+                     "token": "sec"}], {})
     (tmp_path / "run").mkdir()
     mgr = RunManager(store=None, bus=None)
 
-    path = mgr._run_nodes_file({"nodes": ["zfs-193"]}, tmp_path / "run")
+    path = mgr._run_nodes_file({"nodes": ["node-a"]}, tmp_path / "run")
     import json as _json
     written = _json.loads(path.read_text())
-    assert written["nodes"][0]["token_env"] == "TEZ_NODE_TOKEN_ZFS_193"
+    assert written["nodes"][0]["token_env"] == "TEZ_NODE_TOKEN_NODE_A"
     assert "sec" not in path.read_text()
     assert mgr._run_nodes_file({}, tmp_path / "run") is None
 
     # every catalog token rides the child env, so a later verify/destroy can resolve it
-    assert mgr._driver_env()["TEZ_NODE_TOKEN_ZFS_193"] == "sec"
+    assert mgr._driver_env()["TEZ_NODE_TOKEN_NODE_A"] == "sec"

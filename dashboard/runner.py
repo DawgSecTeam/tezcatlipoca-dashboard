@@ -93,6 +93,8 @@ def build_command(action, comp_id, ws, params, nodes_file=None):
         cmd = [py, "run-agent-scrim.py", "--competition", comp_id, "--comp-dir", ws,
                "--teams", str(params.get("teams") or 2),
                "--duration-min", str(params.get("duration_min") or 90)]
+        if nodes_file:
+            cmd += ["--nodes", str(nodes_file)]
         for flag in ("--new", "--from-template", "--red-vmid", "--red-ip", "--red-model",
                      "--blue-model", "--llm-base-url", "--blue-base-url", "--keep-range",
                      "--blue-watchdog", "--skip-deploy", "--resume-event"):

@@ -83,13 +83,13 @@ class CompsRoutesTest(unittest.TestCase):
 
     def test_nodes_catalog_roundtrip_masks_tokens(self):
         self.assertEqual(self.client.get("/api/nodes").json()["nodes"], [])
-        node = {"name": "zfs-193", "endpoint": "https://10.0.0.193:8006", "node": "pve",
-                "datastore": "hdrives-zfs", "engine_base_vmid": 1007, "token": "sec"}
+        node = {"name": "node-a", "endpoint": "https://node-a.example:8006", "node": "pve1",
+                "datastore": "store-a", "engine_base_vmid": 901, "token": "sec"}
         self.assertEqual(self.client.put("/api/nodes", json={"nodes": [node]}).status_code, 200)
         got = self.client.get("/api/nodes").json()["nodes"][0]
         self.assertTrue(got["has_token"])
         self.assertNotIn("token", got)
-        bad = {"name": "x", "endpoint": "", "node": "pve", "datastore": "hdd"}
+        bad = {"name": "x", "endpoint": "", "node": "pve1", "datastore": "store-a"}
         self.assertEqual(self.client.put("/api/nodes", json={"nodes": [bad]}).status_code, 400)
 
 
