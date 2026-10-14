@@ -44,6 +44,7 @@ class CompsRoutesTest(unittest.TestCase):
         cat.write_text(json.dumps([{"name": "mysql", "platform": "linux",
                                     "category": "service", "script": "x"}]))
         env = patch.dict(os.environ, {"TEZ_WEBUI_CATALOG_FILE": str(cat),
+                                      "TEZ_DASHBOARD_DATA": str(root),
                                       "TF_VAR_proxmox_endpoint": "",
                                       "TF_VAR_proxmox_api_token": ""})
         env.start()
@@ -80,11 +81,16 @@ class CompsRoutesTest(unittest.TestCase):
             r = self.client.get("/api/templates").json()
         self.assertTrue([t for t in r if t["name"] == "live-tpl" and t["live"]])
 
-    def test_nodes(self):
-        self.assertFalse(self.client.get("/api/nodes").json()["multi"])
-        (self.server.COMPS / "nodes.json").write_text(json.dumps(
-            {"nodes": [{"name": "a", "node": "pve1", "datastore": "hdd"}]}))
-        self.assertTrue(self.client.get("/api/nodes").json()["multi"])
+    def test_nodes_catalog_roundtrip_masks_tokens(self):
+        self.assertEqual(self.client.get("/api/nodes").json()["nodes"], [])
+        node = {"name": "zfs-193", "endpoint": "https://10.0.0.193:8006", "node": "pve",
+                "datastore": "hdrives-zfs", "engine_base_vmid": 1007, "token": "sec"}
+        self.assertEqual(self.client.put("/api/nodes", json={"nodes": [node]}).status_code, 200)
+        got = self.client.get("/api/nodes").json()["nodes"][0]
+        self.assertTrue(got["has_token"])
+        self.assertNotIn("token", got)
+        bad = {"name": "x", "endpoint": "", "node": "pve", "datastore": "hdd"}
+        self.assertEqual(self.client.put("/api/nodes", json={"nodes": [bad]}).status_code, 400)
 
 
 if __name__ == "__main__":

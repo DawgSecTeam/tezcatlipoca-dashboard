@@ -27,6 +27,7 @@ class RunBody(BaseModel):
     scoring_vmid: Optional[int] = None
     engine_node: str = ""
     team_node: str = ""
+    nodes: list[str] = []
     params: dict = {}
 
 
@@ -58,7 +59,8 @@ def create_app():
     def submit(body: RunBody):
         params = dict(body.params or {})
         params.update({"teams": body.teams, "scoring_vmid": body.scoring_vmid,
-                       "engine_node": body.engine_node, "team_node": body.team_node})
+                       "engine_node": body.engine_node, "team_node": body.team_node,
+                       "nodes": body.nodes})
         try:
             return manager.submit(body.comp_id, body.action, body.engine_ref or "main", params)
         except RunRefused as e:

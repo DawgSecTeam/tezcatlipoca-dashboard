@@ -29,18 +29,43 @@ function Footprint({ comp, teams }) {
 
 export default function DeployPanel({ comp }) {
   const [nodes, setNodes] = useState(null)
-  const [form, setForm] = useState({ engine_ref: 'main', teams: 2, scoring_vmid: '', engine_node: '', team_node: '' })
+  const [form, setForm] = useState({ engine_ref: 'main', teams: 2, scoring_vmid: '', engine_node: '', team_node: '', nodes: [] })
   const [runs, setRuns] = useState([])
   const [viewing, setViewing] = useState(null)
   const [confirm, setConfirm] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState([])
   const [err, setErr] = useState(null)
   const toast = useToast()
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value })
   const viewingLog = useRunLog(viewing?.id)
   const prevRunning = useRef(null)
+  const catalog = nodes?.nodes || []
+  const selected = catalog.filter((n) => form.nodes.includes(n.name))
 
   const refreshRuns = () => api.runs().then((rs) => setRuns(rs.filter((r) => r.comp_id === comp.id))).catch(() => {})
-  useEffect(() => { api.nodes().then(setNodes).catch(() => {}); refreshRuns() }, [comp.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    api.nodes().then((c) => {
+      setNodes(c)
+      setForm((f) => ({ ...f, nodes: (c.nodes || []).map((n) => n.name) }))
+    }).catch(() => {})
+    refreshRuns()
+  }, [comp.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const toggleNode = (name) => setForm((f) => ({
+    ...f, nodes: f.nodes.includes(name) ? f.nodes.filter((x) => x !== name) : [...f.nodes, name],
+    engine_node: f.engine_node === name && f.nodes.includes(name) ? '' : f.engine_node,
+  }))
+  const setRow = (i, key) => (e) => setDraft((rows) => rows.map((r, j) => (j === i ? { ...r, [key]: e.target.value } : r)))
+  const saveCatalog = async () => {
+    setErr(null)
+    try {
+      const saved = await api.putNodes({ nodes: draft, balancing: nodes?.balancing || {} })
+      setNodes(saved)
+      setForm((f) => ({ ...f, nodes: saved.nodes.map((n) => n.name) }))
+      setEditing(false)
+    } catch (e) { setErr(e) }
+  }
 
   // Toast when a run we are watching comes to rest.
   useEffect(() => {
@@ -65,6 +90,7 @@ export default function DeployPanel({ comp }) {
         scoring_vmid: form.scoring_vmid ? Number(form.scoring_vmid) : null,
         engine_node: form.engine_node,
         team_node: form.team_node,
+        nodes: form.nodes,
       })
       setViewing(run)
       refreshRuns()
@@ -84,18 +110,31 @@ export default function DeployPanel({ comp }) {
         </Field>
         <Field label="Teams"><Stepper value={form.teams} onChange={(v) => setForm({ ...form, teams: v })} /></Field>
         <Footprint comp={comp} teams={form.teams} />
-        <Field label="Proxmox nodes" hint={nodes?.multi ? 'Unpinned teams are placed by capacity-fill (nodes.json).' : 'Single node from .env. Add nodes.json to spread teams across hosts.'}>
-          {nodes?.multi ? (
-            <div className="space-y-2">
-              <select className={inputCls} value={form.engine_node} onChange={set('engine_node')}>
-                <option value="">Engine: auto (node with most teams)</option>
-                {nodes.nodes.map((n) => <option key={n.name} value={n.name}>Engine on {n.name}</option>)}
-              </select>
-              <input className={`${inputCls} font-mono`} placeholder="Team pins, e.g. 101=zfs-193,102=hdd-150" value={form.team_node} onChange={set('team_node')} />
-            </div>
-          ) : (
-            <div className="field flex items-center gap-2 font-mono text-xs text-muted"><Icon name="net" className="h-3.5 w-3.5" />{nodes?.nodes?.[0]?.name || '…'}</div>
-          )}
+        <Field label="Proxmox nodes"
+          hint={selected.length ? 'The pinned engine node hosts the engine; teams fill the selected nodes.' : 'Nothing selected — the run falls back to the service .env (single node).'}>
+          <div className="space-y-2">
+            {catalog.length === 0 && <p className="text-xs text-faint">The node catalog is empty — add the hosts this dashboard may deploy to.</p>}
+            {catalog.map((n) => (
+              <label key={n.name} className="flex items-center gap-3 rounded-xl bg-sunken px-3 py-2 shadow-inset">
+                <input type="checkbox" checked={form.nodes.includes(n.name)} onChange={() => toggleNode(n.name)} />
+                <span className="font-mono text-sm">{n.name}</span>
+                {!n.has_token && <span className="chip bg-danger-soft px-2 py-0.5 text-danger">no token</span>}
+                <span className="ml-auto font-mono text-[11px] text-faint">{n.node}/{n.datastore}</span>
+              </label>
+            ))}
+            <Button type="button" onClick={() => { setDraft(catalog.map((n) => ({ ...n, token: '' }))); setEditing(true) }}>
+              <Icon name="net" />Nodes…
+            </Button>
+            {selected.length > 0 && (
+              <div className="space-y-2">
+                <select className={inputCls} value={form.engine_node} onChange={set('engine_node')}>
+                  <option value="">Engine: auto (node with most teams)</option>
+                  {selected.map((n) => <option key={n.name} value={n.name}>Engine on {n.name}</option>)}
+                </select>
+                <input className={`${inputCls} font-mono`} placeholder="Team pins, e.g. 130=zfs-193" value={form.team_node} onChange={set('team_node')} />
+              </div>
+            )}
+          </div>
         </Field>
         <Field label="Engine VM ID" hint="A free Proxmox VMID for the scoring engine. Preflight refuses collisions.">
           <input inputMode="numeric" className={`${inputCls} font-mono`} value={form.scoring_vmid} onChange={(e) => setForm({ ...form, scoring_vmid: e.target.value.replace(/\D/g, '') })} placeholder="auto" />
@@ -152,6 +191,37 @@ export default function DeployPanel({ comp }) {
         <div className="mt-6 flex justify-end gap-3">
           <Button onClick={() => setConfirm(false)}>Cancel</Button>
           <Button variant="primary" autoFocus onClick={() => { setConfirm(false); submit('deploy') }}><Icon name="rocket" />Deploy</Button>
+        </div>
+      </Modal>
+      <Modal open={editing} onClose={() => setEditing(false)} title="Proxmox nodes" wide>
+        <p className="mb-3 text-xs leading-relaxed text-faint">
+          Held by the dashboard (0600), never in the engine env. Tokens are write-only: leave blank
+          to keep the stored one. A run hands its selected nodes to the engine as the node list.
+        </p>
+        <div className="space-y-3">
+          {draft.map((n, i) => (
+            <div key={i} className="space-y-2 rounded-xl bg-sunken p-3 shadow-inset">
+              <div className="grid grid-cols-4 gap-2">
+                <input className={`${inputCls} font-mono`} placeholder="name" value={n.name || ''} onChange={setRow(i, 'name')} />
+                <input className={`${inputCls} font-mono`} placeholder="https://host:8006" value={n.endpoint || ''} onChange={setRow(i, 'endpoint')} />
+                <input className={`${inputCls} font-mono`} placeholder="pve node" value={n.node || ''} onChange={setRow(i, 'node')} />
+                <input className={`${inputCls} font-mono`} placeholder="datastore" value={n.datastore || ''} onChange={setRow(i, 'datastore')} />
+              </div>
+              <div className="grid grid-cols-4 gap-2">
+                <input className={`${inputCls} font-mono`} placeholder="engine base vmid" value={n.engine_base_vmid || ''} onChange={setRow(i, 'engine_base_vmid')} />
+                <input className={`${inputCls} font-mono`} placeholder="engine mgmt IP" value={n.engine_mgmt_ip || ''} onChange={setRow(i, 'engine_mgmt_ip')} />
+                <input type="password" className={`${inputCls} font-mono`} placeholder={n.has_token ? 'token (kept)' : 'API token'} value={n.token || ''} onChange={setRow(i, 'token')} />
+                <Button type="button" onClick={() => setDraft((rows) => rows.filter((_, j) => j !== i))}>Remove</Button>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-4 flex items-center justify-between gap-3">
+          <Button type="button" onClick={() => setDraft((rows) => [...rows, { name: '', endpoint: '', node: '', datastore: '', engine_base_vmid: '', engine_mgmt_ip: '' }])}>Add node</Button>
+          <div className="flex gap-3">
+            <Button type="button" onClick={() => setEditing(false)}>Cancel</Button>
+            <Button type="button" variant="primary" onClick={saveCatalog}>Save</Button>
+          </div>
         </div>
       </Modal>
       <RunLogModal open={!!viewing} onClose={() => setViewing(null)} log={viewingLog}

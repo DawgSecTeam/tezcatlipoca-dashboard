@@ -17,7 +17,7 @@ import uuid
 import importlib.util
 from pathlib import Path
 
-from dashboard import config, workspaces
+from dashboard import config, nodes, workspaces
 
 PHASE_NAMES = {
     1: "cleanup", 2: "engine_template", 3: "prepare_engine", 4: "golden_set",
@@ -60,13 +60,15 @@ def missing_driver_deps(spec=importlib.util.find_spec):
     return missing
 
 
-def build_command(action, comp_id, ws, params):
+def build_command(action, comp_id, ws, params, nodes_file=None):
     # The drivers an operator would type, with the workspace as the comp dir.
     py, ws = sys.executable, str(ws)
     extra = [str(a) for a in (params.get("extra_args") or [])]
     if action in ("deploy", "plan"):
         cmd = [py, "create-competition.py", "--comp-dir", ws, "--competition", comp_id,
                "--teams", str(params.get("teams") or 2), "--yes"]
+        if nodes_file:
+            cmd += ["--nodes", str(nodes_file)]
         for flag, key in (("--scoring-vmid", "scoring_vmid"), ("--engine-node", "engine_node"),
                           ("--team-node", "team_node"), ("--from-phase", "from_phase")):
             if params.get(key) is not None:
@@ -142,6 +144,12 @@ class RunManager:
             raise RunRefused(f"no such competition: {comp_id}")
         if self.store.running_run_for_comp(comp_id):
             raise RunRefused(f"a run is already active for {comp_id} — refusing to overlap")
+        selected = [str(x) for x in (params.get("nodes") or [])]
+        if selected:
+            try:
+                nodes.run_list(nodes.load(), selected)
+            except ValueError as e:
+                raise RunRefused(f"node list refused: {e}") from e
         missing = missing_driver_deps()
         if missing:
             raise RunRefused(
@@ -217,10 +225,25 @@ class RunManager:
         "no file exists at <worktree>/proxmox" (2026-10-14, run-3aaf37f1, four attempts).
         """
         env = {**os.environ, "PYTHONUNBUFFERED": "1", "PATH": config.driver_path()}
+        # Catalog tokens ride the child env: the engine reads them by token_env name, so
+        # no secret is written into the worktree, the run record or the comp workspace.
+        env.update(nodes.token_env(nodes.load()))
         key = config.engine_proxmox_file()
         if key and Path(key).is_file():
             env["TF_VAR_ssh_private_key_path"] = str(Path(key).resolve())
         return env
+
+    def _run_nodes_file(self, params, run_dir):
+        """The run's selected nodes, in the engine's nodes.json schema.
+
+        Only the selection is written (a token_env name per node, never a token) — the
+        values ride the child env from _driver_env()."""
+        selected = [str(x) for x in (params.get("nodes") or [])]
+        if not selected:
+            return None
+        path = run_dir / "nodes.json"
+        path.write_text(json.dumps(nodes.run_list(nodes.load(), selected), indent=2))
+        return path
 
     def _emit(self, run_id, kind, stage="", data=None):
         """Record an event AND push it to the bus — one path, so a subscriber sees exactly
@@ -240,7 +263,9 @@ class RunManager:
                   else workspaces.seed_workspace(comp_src, run_dir / "comp"))
             worktree = run_dir / "engine"
             engine_used = self._provision_worktree(worktree, engine_ref, run_dir)
-            cmd = build_command(record["action"], record["comp_id"], ws, record["params"])
+            nodes_file = self._run_nodes_file(record["params"], run_dir)
+            cmd = build_command(record["action"], record["comp_id"], ws, record["params"],
+                                nodes_file)
             child_env = self._driver_env()
             log = open(record["log_path"], "w")
             log.write(f"$ engine {engine_used['ref']} @ {engine_used['commit'][:12]}\n")

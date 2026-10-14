@@ -106,7 +106,7 @@ def test_the_spawned_driver_gets_the_prepended_path(monkeypatch, tmp_path):
                                                          {"ref": "origin/main",
                                                           "commit": "0" * 40})[1])
     monkeypatch.setattr("dashboard.runner.build_command",
-                        lambda action, comp_id, ws, params: ["python3", "-c", "pass"])
+                        lambda action, comp_id, ws, params, nodes_file=None: ["python3", "-c", "pass"])
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
     # ...and the runner's `git worktree prune` in its finally block talks to subprocess.run,
     # which would otherwise reach into the fake process.

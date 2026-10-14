@@ -67,9 +67,11 @@ def build_mcp(manager):
     @mcp.tool()
     def submit_run(comp_id: str, action: str, engine_ref: str = "main", teams: int = 2,
                    scoring_vmid: int = 0, engine_node: str = "", team_node: str = "",
-                   params: dict = {}) -> dict:
+                   nodes: list[str] = [], params: dict = {}) -> dict:
         """Queue a run: action is deploy|plan|verify|destroy|scrim|redeploy. engine_ref
-        pins the tezcatlipoca revision (branch/SHA/tag). Returns the run record."""
+        pins the tezcatlipoca revision (branch/SHA/tag). `nodes` names the catalog nodes
+        this run may deploy to (the engine gets them as its node list, not the .env);
+        `engine_node`/`team_node` then pin within that list. Returns the run record."""
         p = dict(params or {})
         if teams:
             p["teams"] = teams
@@ -79,6 +81,8 @@ def build_mcp(manager):
             p["engine_node"] = engine_node
         if team_node:
             p["team_node"] = team_node
+        if nodes:
+            p["nodes"] = [str(n) for n in nodes]
         try:
             return manager.submit(comp_id, action, engine_ref or "main", p)
         except RunRefused as e:

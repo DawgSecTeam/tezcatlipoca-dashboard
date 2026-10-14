@@ -18,7 +18,7 @@ from typing import Any, Optional
 from fastapi import Body, FastAPI, HTTPException
 from pydantic import BaseModel
 
-from dashboard import config
+from dashboard import config, nodes
 
 COMPS = config.competitions_checkout()
 NAKON_DIR = config.nakon_dir()
@@ -505,12 +505,13 @@ def get_templates():
 
 @app.get("/api/nodes")
 def get_nodes():
-    cfg = (read_json(COMPS / "nodes.json", None)
-           or read_json(config.engine_checkout() / "nodes.json", None))
-    if cfg:
-        return {"multi": True, "nodes": [
-            {k: n.get(k) for k in ("name", "node", "datastore", "max_teams", "weight")}
-            for n in cfg.get("nodes", [])]}
-    endpoint = os.getenv("TF_VAR_proxmox_endpoint", "")
-    return {"multi": False, "nodes": [{"name": os.getenv("TF_VAR_proxmox_node") or "default",
-                                       "endpoint": endpoint}]}
+    return nodes.view(nodes.load())
+
+
+@app.put("/api/nodes")
+def put_nodes(body: dict = Body(...)):
+    try:
+        nodes.save(body.get("nodes") or [], body.get("balancing") or {})
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return nodes.view(nodes.load())

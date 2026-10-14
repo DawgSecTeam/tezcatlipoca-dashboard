@@ -35,7 +35,8 @@ run fails fast with that refusal.
 | `GET /api/health` | liveness + service identity |
 | `GET /api/comps`, `GET /api/comps/{id}` | competition summaries / detail (from the comps repo) |
 | `PUT /api/comps/{id}/compfile`, `/boxes[...]`, `/injects[...]`, `/packet` | competition editing (same contract as the old webui) |
-| `POST /api/runs` | submit `{comp_id, action, engine_ref?, teams?, scoring_vmid?, engine_node?, team_node?, params?}` |
+| `GET /api/nodes`, `PUT /api/nodes` | the node catalog (masked — tokens are write-only) |
+| `POST /api/runs` | submit `{comp_id, action, engine_ref?, teams?, scoring_vmid?, nodes?, engine_node?, team_node?, params?}` |
 | `GET /api/runs`, `GET /api/runs/{id}` | run records (`state`, `stage`, timings, rc) |
 | `POST /api/runs/{id}/cancel` | kill the run's process group |
 | `GET /api/runs/{id}/log?since=N` | log tail by byte offset |
@@ -47,6 +48,19 @@ run fails fast with that refusal.
 
 Tools: `list_comps`, `get_comp`, `submit_run`, `list_runs`, `get_run`, `watch_run`,
 `unwatch_run`, `cancel_run`, `get_run_log`, `get_run_events`, `get_artifacts`.
+
+## Nodes
+
+Which Proxmox hosts a run may deploy to is a per-run input, not the service env. The
+dashboard holds a node **catalog** in `<data>/nodes.json` (0600, edited in the UI or via
+`PUT /api/nodes`); a run selects from it (`nodes: ["zfs-193"]`) and the runner writes that
+subset to the run dir as the engine's node list, passed with `--nodes`. Tokens live only
+in the catalog and ride the run's process env under a derived `token_env` name, so no
+secret reaches a worktree, a run record, or the API (the catalog view carries
+`has_token` only). A run with no nodes selected keeps the old behavior: single-node from
+whatever `TEZ_ENGINE_ENV_FILE` points at. Every catalog token is injected into every run's
+env, so a later verify/destroy resolves its placement's `token_env` without re-sending the
+list.
 
 `watch_run(run_id)` subscribes the MCP session: stage/lifecycle events are then **pushed**
 as `notifications/message` on the session's stream (structured `data`:

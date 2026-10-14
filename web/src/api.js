@@ -55,6 +55,7 @@ export const api = {
   catalogEntry: (name) => request('GET', `/catalog/${enc(name)}`),
   templates: () => request('GET', '/templates'),
   nodes: () => request('GET', '/nodes'),
+  putNodes: (body) => request('PUT', '/nodes', body),
 
   // runs: POST /api/runs {comp_id, action, engine_ref, teams, scoring_vmid, engine_node,
   // team_node, params}; action ∈ deploy|plan|verify|destroy|scrim|redeploy.
