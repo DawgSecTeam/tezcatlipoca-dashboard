@@ -14,6 +14,19 @@ def test_deploy_command_carries_flags():
     assert "--yes" in cmd and "--plan-only" not in cmd
 
 
+def test_deploy_can_give_a_run_its_own_team_block_and_mgmt_ip():
+    # Two ranges of one competition on one node: the shared engine env pins one
+    # TF_VAR_team_identifiers block and one engine mgmt IP, so without these flags the
+    # second range can only collide (2026-10-14).
+    cmd = build_command("deploy", "comp-a", "/ws", {"teams": 1, "team_identifiers": "130",
+                                                    "engine_mgmt_ip": "10.0.0.251"})
+    assert cmd[cmd.index("--team-identifiers") + 1] == "130"
+    assert cmd[cmd.index("--engine-mgmt-ip") + 1] == "10.0.0.251"
+    # absent -> the engine keeps the env/catalog defaults, exactly as before
+    plain = build_command("deploy", "comp-a", "/ws", {"teams": 1})
+    assert "--team-identifiers" not in plain and "--engine-mgmt-ip" not in plain
+
+
 def test_plan_and_verify_and_destroy_shapes():
     plan = build_command("plan", "c", "/ws", {"teams": 2})
     assert "--plan-only" in plan

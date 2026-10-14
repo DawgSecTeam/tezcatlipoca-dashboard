@@ -72,7 +72,10 @@ def build_command(action, comp_id, ws, params, nodes_file=None):
                "--teams", str(params.get("teams") or 2), "--yes"]
         if nodes_file:
             cmd += ["--nodes", str(nodes_file)]
-        for flag, key in (("--scoring-vmid", "scoring_vmid"), ("--engine-node", "engine_node"),
+        for flag, key in (("--scoring-vmid", "scoring_vmid"),
+                          ("--team-identifiers", "team_identifiers"),
+                          ("--engine-mgmt-ip", "engine_mgmt_ip"),
+                          ("--engine-node", "engine_node"),
                           ("--team-node", "team_node"), ("--from-phase", "from_phase")):
             if params.get(key) is not None:
                 cmd += [flag, str(params[key])]

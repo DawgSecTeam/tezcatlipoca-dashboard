@@ -52,6 +52,14 @@ Only `building`, `live` and `teardown_failed` reach the board. Retirement is enf
 way in too: `submit` refuses verify/destroy/redeploy against a retired range, naming the run
 that retired it, which is what stops a dead range from collecting teardown attempts forever.
 
+Two ranges of one competition on ONE node each need their own team vmid block and their own
+engine management address, because the engine env the runner shares across runs pins both as
+single values (`TF_VAR_team_identifiers`, `TF_VAR_engine_mgmt_ip`) and the node catalog holds
+one `engine_mgmt_ip` per node. `team_identifiers` ("130,131") and `engine_mgmt_ip` are
+therefore per-run submit inputs, passed through to `create-competition.py`'s
+`--team-identifiers`/`--engine-mgmt-ip`; absent, a run keeps the env/catalog defaults exactly
+as before.
+
 ## API (bearer token, `Authorization: Bearer <token>`)
 
 | Route | What |
@@ -60,7 +68,7 @@ that retired it, which is what stops a dead range from collecting teardown attem
 | `GET /api/comps`, `GET /api/comps/{id}` | competition summaries / detail (from the comps repo) |
 | `PUT /api/comps/{id}/compfile`, `/boxes[...]`, `/injects[...]`, `/packet` | competition editing (same contract as the old webui) |
 | `GET /api/nodes`, `PUT /api/nodes` | the node catalog (masked — tokens are write-only) |
-| `POST /api/runs` | submit `{comp_id, action, engine_ref?, teams?, scoring_vmid?, nodes?, engine_node?, team_node?, params?}` |
+| `POST /api/runs` | submit `{comp_id, action, engine_ref?, teams?, scoring_vmid?, team_identifiers?, engine_mgmt_ip?, nodes?, engine_node?, team_node?, params?}` |
 | `GET /api/runs`, `GET /api/runs/{id}` | run records (`state`, `stage`, timings, rc) |
 | `GET /api/ranges` | ranges derived from run workspaces (state, retire, runs) |
 | `POST /api/runs/{id}/cancel` | kill the run's process group |

@@ -27,6 +27,8 @@ class RunBody(BaseModel):
     engine_ref: str = "main"
     teams: int = 2
     scoring_vmid: Optional[int] = None
+    team_identifiers: Optional[str] = None
+    engine_mgmt_ip: Optional[str] = None
     engine_node: str = ""
     team_node: str = ""
     nodes: list[str] = []
@@ -64,6 +66,8 @@ def create_app():
         # own flags (a redeploy's teams selector, boxes, mode), and body.teams' 2 would
         # otherwise clobber an explicit params["teams"].
         for key, val in (("teams", body.teams), ("scoring_vmid", body.scoring_vmid),
+                         ("team_identifiers", body.team_identifiers),
+                         ("engine_mgmt_ip", body.engine_mgmt_ip),
                          ("engine_node", body.engine_node), ("team_node", body.team_node),
                          ("nodes", body.nodes)):
             params.setdefault(key, val)
