@@ -19,6 +19,17 @@ from dashboard.runner import RunManager
 from dashboard.store import Store
 
 
+def _fake_driver(*args, **kwargs):
+    """The fake driver, deliberately SIGNATURE-AGNOSTIC.
+
+    A stub pinned to build_command's arity silently stopped running when the runner started
+    passing the run's node file as a fifth argument (2026-10-14): the fake never executed, so
+    these two tests stopped exercising the push and refusal contracts at all and failed for a
+    reason that had nothing to do with those contracts.
+    """
+    return ["python3", "-c", "import time; time.sleep(1)"]
+
+
 def _manager(tmp_path):
     store = Store(tmp_path / "db.sqlite3")
     manager = RunManager(store, EventBus())
@@ -107,9 +118,7 @@ def server(tmp_path, monkeypatch):
         return {"ref": "origin/main", "commit": "0" * 40}
 
     monkeypatch.setattr(RunManager, "_provision_worktree", _fake_worktree)
-    monkeypatch.setattr("dashboard.runner.build_command",
-                        lambda action, comp_id, ws, params: [
-                            "python3", "-c", "import time; time.sleep(1)"])
+    monkeypatch.setattr("dashboard.runner.build_command", _fake_driver)
     from dashboard.app import create_app
     port = _free_port()
     cfg = uvicorn.Config(create_app(), host="127.0.0.1", port=port, log_level="error")
@@ -166,8 +175,8 @@ def test_second_submit_of_the_same_comp_is_refused_with_a_clear_message(server, 
     """
     url, _data = server
     monkeypatch.setattr("dashboard.runner.build_command",
-                        lambda action, comp_id, ws, params: [
-                            "python3", "-c", "import time; time.sleep(5)"])
+                        lambda *a, _sleep=5, **k: ["python3", "-c",
+                                                   f"import time; time.sleep({_sleep})"])
     asyncio.run(_submit_twice(url))
 
 
