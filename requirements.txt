@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+mcp
+python-dotenv
+# engine driver deps — the drivers run under the service's interpreter
+urllib3
+requests
+pyyaml
+toml
+pillow
+cryptography
+websocket-client

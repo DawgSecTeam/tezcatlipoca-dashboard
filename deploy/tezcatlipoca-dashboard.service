@@ -1,0 +1,13 @@
+[Unit]
+Description=tezcatlipoca dashboard (central run queue + MCP server)
+After=network-online.target
+
+[Service]
+Type=exec
+WorkingDirectory=/home/hna/tezcatlipoca-dashboard
+ExecStart=/home/hna/tezcatlipoca-dashboard/.venv/bin/python service.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

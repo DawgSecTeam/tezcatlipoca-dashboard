@@ -1,0 +1,167 @@
+"""MCP surface: run control tools + push subscriptions (Streamable HTTP, /mcp).
+
+watch_run subscribes the calling MCP session: from then on every stage/lifecycle event
+for that run is pushed to the session as a log notification (structured data:
+{type: "run_event", ...}) — the agent waits for the push instead of polling. The event
+cursor (get_run_events since=N) recovers anything missed across a reconnect."""
+
+import asyncio
+from pathlib import Path
+
+from mcp.server.mcpserver import Context, MCPServer
+
+from dashboard.runner import RunRefused
+
+
+def build_mcp(manager):
+    mcp = MCPServer("tezcatlipoca-dashboard")
+    store, bus = manager.store, manager.bus
+    pumps = {}  # (session_id, run_id) -> task
+
+    def _summary(comp_dir):
+        compfile = (comp_dir / "Compfile").read_text() if (comp_dir / "Compfile").exists() else ""
+        name = comp_dir.name
+        scenario, difficulty = "", 0
+        for line in compfile.splitlines():
+            if line.startswith("name "):
+                name = line[5:].strip()
+            elif line.startswith("scenario "):
+                scenario = line[9:].strip()
+            elif line.startswith("difficulty "):
+                try:
+                    difficulty = int(line.split()[1])
+                except (IndexError, ValueError):
+                    pass
+        return {"id": comp_dir.name, "name": name, "scenario": scenario,
+                "difficulty": difficulty}
+
+    @mcp.tool()
+    def list_comps() -> list:
+        """List the competitions available to run (from the competitions repo)."""
+        manager.ensure_repos()
+        root = manager.comps_repo
+        return [_summary(p) for p in sorted(root.iterdir())
+                if p.is_dir() and (p / "Compfile").exists()]
+
+    @mcp.tool()
+    def get_comp(comp_id: str) -> dict:
+        """One competition's summary plus its box/service/misconfig counts."""
+        manager.ensure_repos()
+        comp_dir = manager.comps_repo / comp_id
+        if not (comp_dir / "Compfile").exists():
+            raise ValueError(f"no such competition: {comp_id}")
+        import json
+        detail = _summary(comp_dir)
+        for key, fname in (("boxes", "boxes.json"), ("services", "box_services.json"),
+                           ("misconfigs", "box_vulns.json")):
+            try:
+                data = json.loads((comp_dir / fname).read_text())
+                detail[key] = len(data) if isinstance(data, list) else sum(
+                    len(v) for v in data.values()) if isinstance(data, dict) else 0
+            except (OSError, ValueError):
+                detail[key] = 0
+        return detail
+
+    @mcp.tool()
+    def submit_run(comp_id: str, action: str, engine_ref: str = "main", teams: int = 2,
+                   scoring_vmid: int = 0, engine_node: str = "", team_node: str = "",
+                   params: dict = {}) -> dict:
+        """Queue a run: action is deploy|plan|verify|destroy|scrim|redeploy. engine_ref
+        pins the tezcatlipoca revision (branch/SHA/tag). Returns the run record."""
+        p = dict(params or {})
+        if teams:
+            p["teams"] = teams
+        if scoring_vmid:
+            p["scoring_vmid"] = scoring_vmid
+        if engine_node:
+            p["engine_node"] = engine_node
+        if team_node:
+            p["team_node"] = team_node
+        try:
+            return manager.submit(comp_id, action, engine_ref or "main", p)
+        except RunRefused as e:
+            raise ValueError(str(e))
+
+    @mcp.tool()
+    def list_runs(state: str = "") -> list:
+        """Run records, newest first; optionally filter by state
+        (queued|running|succeeded|failed|cancelled)."""
+        return store.list_runs(state=state or None)
+
+    @mcp.tool()
+    def get_run(run_id: str) -> dict:
+        """One run's record: state, current stage, timings, result."""
+        run = store.get_run(run_id)
+        if not run:
+            raise ValueError(f"no such run: {run_id}")
+        return run
+
+    @mcp.tool()
+    async def watch_run(run_id: str, ctx: Context) -> str:
+        """Subscribe this MCP session to a run's events. Stage and lifecycle events are
+        pushed as notifications from here on; no polling needed."""
+        if not store.get_run(run_id):
+            raise ValueError(f"no such run: {run_id}")
+        key = (id(ctx.session), run_id)
+        if key not in pumps:
+            queue = bus.subscribe(run_id)
+            pumps[key] = asyncio.create_task(_pump(ctx.session, run_id, queue))
+        return f"subscribed to {run_id}; stage events will arrive as notifications"
+
+    @mcp.tool()
+    def unwatch_run(run_id: str, ctx: Context) -> str:
+        """Stop receiving pushed events for a run."""
+        task = pumps.pop((id(ctx.session), run_id), None)
+        if task:
+            task.cancel()
+        return f"unsubscribed from {run_id}"
+
+    @mcp.tool()
+    def cancel_run(run_id: str) -> dict:
+        """Cancel a running run (kills its process group; recoverable)."""
+        try:
+            return manager.cancel(run_id)
+        except RunRefused as e:
+            raise ValueError(str(e))
+
+    @mcp.tool()
+    def get_run_log(run_id: str, since: int = 0) -> dict:
+        """Run log tail from byte offset `since`: {offset, text}."""
+        run = store.get_run(run_id)
+        if not run:
+            raise ValueError(f"no such run: {run_id}")
+        data = Path(run["log_path"]).read_bytes() if Path(run["log_path"]).exists() else b""
+        return {"offset": len(data), "text": data[since:].decode(errors="replace")}
+
+    @mcp.tool()
+    def get_run_events(run_id: str, since: int = 0) -> dict:
+        """Events after sequence number `since`: {next, events}. Reconnect recovery."""
+        if not store.get_run(run_id):
+            raise ValueError(f"no such run: {run_id}")
+        nxt, events = store.get_events(run_id, since)
+        return {"next": nxt, "events": events}
+
+    @mcp.tool()
+    def get_artifacts(run_id: str) -> list:
+        """Collected evidence/artifact files under the run's test folders."""
+        run = store.get_run(run_id)
+        if not run:
+            raise ValueError(f"no such run: {run_id}")
+        root = Path(run["run_dir"]) / "comp" / ".automated-tests"
+        if not root.exists():
+            return []
+        return [{"path": str(p.relative_to(root)), "bytes": p.stat().st_size}
+                for p in sorted(root.rglob("*")) if p.is_file()]
+
+    async def _pump(session, run_id, queue):
+        try:
+            while True:
+                event = await queue.get()
+                await session.send_log_message(
+                    level="info", data={"type": "run_event", "run_id": run_id, **event})
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass  # a dead session must never kill the run or the service
+
+    return mcp
