@@ -14,7 +14,7 @@ from unittest import mock
 import pytest
 
 from dashboard import config
-from dashboard.runner import RunManager
+from dashboard.runner import RunManager, RunRefused, missing_driver_deps
 from dashboard.store import Store
 
 
@@ -104,3 +104,35 @@ def test_the_spawned_driver_gets_the_prepended_path(monkeypatch, tmp_path):
     assert captured["stdin"] is subprocess.DEVNULL
     assert captured["start_new_session"] is True
     assert captured["cwd"].endswith("engine")
+
+
+def test_missing_driver_deps_reports_what_this_interpreter_lacks():
+    def no_such(name):
+        raise ModuleNotFoundError(name)
+
+    assert missing_driver_deps(spec=no_such) == list(
+        ("toml", "requests", "urllib3", "yaml", "dotenv", "PIL", "cryptography", "websocket"))
+
+
+def test_missing_driver_deps_is_empty_for_a_complete_venv():
+    assert missing_driver_deps() == []
+
+
+def test_submit_refuses_when_a_driver_dep_is_missing(monkeypatch, tmp_path):
+    """A stale service venv must cost a refusal at submit, not a dead deploy minutes later."""
+    monkeypatch.setenv("TEZ_DASHBOARD_DATA", str(tmp_path / "data"))
+    comp = tmp_path / "data" / "competitions" / "mini"
+    comp.mkdir(parents=True)
+    (comp / "Compfile").write_text("name mini\n")
+    store = Store(tmp_path / "db.sqlite3")
+    manager = RunManager(store, None)
+    manager.runs_dir = tmp_path / "runs"
+    manager.runs_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(RunManager, "ensure_repos", lambda self: None)
+    monkeypatch.setattr(RunManager, "refresh_comps", lambda self: None)
+    monkeypatch.setattr("dashboard.runner.missing_driver_deps", lambda: ["toml"])
+    with pytest.raises(RunRefused) as raised:
+        manager.submit("mini", "scrim", "main", {"teams": 1})
+    assert "toml" in str(raised.value)
+    assert "requirements.txt" in str(raised.value)
+    assert store.list_runs() == [], "a refused submit must not leave a run record"

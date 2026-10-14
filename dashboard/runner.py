@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import uuid
+import importlib.util
 from pathlib import Path
 
 from dashboard import config, workspaces
@@ -24,9 +25,28 @@ PHASE_NAMES = {
 }
 FAIL_FAST_ACTIONS = ("deploy", "plan", "scrim")
 
+# Third-party packages the engine drivers import in-process. The service's own interpreter IS
+# the drivers' interpreter, so a venv that predates a dependency fails deep inside a deploy
+# (ModuleNotFoundError: toml, at phase 2, after minutes of work) instead of at submit —
+# checked here so a stale venv costs a refusal, not a run.
+DRIVER_DEPS = ("toml", "requests", "urllib3", "yaml", "dotenv", "PIL", "cryptography",
+               "websocket")
+
 
 class RunRefused(Exception):
     pass
+
+
+def missing_driver_deps(spec=importlib.util.find_spec):
+    """Third-party modules this interpreter cannot import but the drivers need."""
+    missing = []
+    for name in DRIVER_DEPS:
+        try:
+            if spec(name) is None:
+                missing.append(name)
+        except (ImportError, ValueError):
+            missing.append(name)
+    return missing
 
 
 def build_command(action, comp_id, ws, params):
@@ -111,6 +131,13 @@ class RunManager:
             raise RunRefused(f"no such competition: {comp_id}")
         if self.store.running_run_for_comp(comp_id):
             raise RunRefused(f"a run is already active for {comp_id} — refusing to overlap")
+        missing = missing_driver_deps()
+        if missing:
+            raise RunRefused(
+                f"the service interpreter ({sys.executable}) cannot import "
+                f"{', '.join(missing)} — the engine drivers run under it, so a run would die "
+                "inside the deploy. Install the service's requirements in its venv "
+                "(.venv/bin/pip install -r requirements.txt) and submit again.")
         run_id = "run-" + uuid.uuid4().hex[:8]
         run_dir = self.runs_dir / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
