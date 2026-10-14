@@ -1,4 +1,7 @@
-"""Bearer-token auth for /api and /mcp (tokens configured via TEZ_DASHBOARD_TOKENS)."""
+"""Bearer-token auth for the data APIs (tokens configured via TEZ_DASHBOARD_TOKENS).
+
+Only /api and /mcp require a token: the SPA shell and its assets are public so the app can
+load and ask for one — its data calls are the protected surface."""
 
 import secrets
 
@@ -8,12 +11,11 @@ from starlette.responses import JSONResponse
 
 from dashboard import config
 
-_OPEN_PATHS = ("/api/health",)
-
 
 class BearerAuth(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if request.url.path in _OPEN_PATHS:
+        path = request.url.path
+        if path == "/api/health" or not (path.startswith("/api") or path.startswith("/mcp")):
             return await call_next(request)
         tokens = config.tokens()
         supplied = (request.headers.get("authorization") or "").removeprefix("Bearer ").strip()

@@ -27,6 +27,12 @@ def test_api_requires_bearer(client):
     assert ok.status_code == 200 and ok.json() == []
 
 
+def test_spa_shell_needs_no_token(client):
+    # the app must load anonymously so it can ask for the token (live-found 2026-10-14)
+    assert client.get("/").status_code != 401
+    assert client.get("/no-such-asset.js").status_code != 401
+
+
 def test_submit_rejects_unknown_comp(client):
     r = client.post("/api/runs", headers={"Authorization": "Bearer other"},
                     json={"comp_id": "ghost", "action": "deploy"})
