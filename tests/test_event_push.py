@@ -158,3 +158,33 @@ async def _watch(url):
     assert run_events, f"no pushed run events; got {seen}"
     assert all(d["run_id"] == run_id for d in run_events)
     assert any(d.get("kind") == "lifecycle" for d in run_events)
+
+
+def test_second_submit_of_the_same_comp_is_refused_with_a_clear_message(server, monkeypatch):
+    """Fail-fast overlap refusal must carry its reason to the client (SDK forwards only
+    ToolError text; a plain ValueError arrives as a bare "Error executing tool submit_run").
+    """
+    url, _data = server
+    monkeypatch.setattr("dashboard.runner.build_command",
+                        lambda action, comp_id, ws, params: [
+                            "python3", "-c", "import time; time.sleep(5)"])
+    asyncio.run(_submit_twice(url))
+
+
+async def _submit_twice(url):
+    from mcp import ClientSession
+    from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
+
+    async with create_mcp_http_client() as http:
+        async with streamable_http_client(url, http_client=http) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                first = await session.call_tool("submit_run", {
+                    "comp_id": "mini", "action": "scrim", "engine_ref": "main", "teams": 1})
+                assert not first.is_error
+                second = await session.call_tool("submit_run", {
+                    "comp_id": "mini", "action": "scrim", "engine_ref": "main", "teams": 1})
+                assert second.is_error
+                text = "\n".join(getattr(c, "text", "") for c in (second.content or []))
+                assert "already active" in text, text
+                assert "refusing to overlap" in text, text

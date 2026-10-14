@@ -9,6 +9,7 @@ import asyncio
 from pathlib import Path
 
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
 from dashboard.runner import RunRefused
@@ -50,7 +51,7 @@ def build_mcp(manager):
         manager.ensure_repos()
         comp_dir = manager.comps_repo / comp_id
         if not (comp_dir / "Compfile").exists():
-            raise ValueError(f"no such competition: {comp_id}")
+            raise ToolError(f"no such competition: {comp_id}")
         import json
         detail = _summary(comp_dir)
         for key, fname in (("boxes", "boxes.json"), ("services", "box_services.json"),
@@ -81,7 +82,10 @@ def build_mcp(manager):
         try:
             return manager.submit(comp_id, action, engine_ref or "main", p)
         except RunRefused as e:
-            raise ValueError(str(e))
+            # ToolError, not ValueError: the SDK only forwards a ToolError's own text to the
+            # client — anything else arrives as "Error executing tool submit_run" with the
+            # reason swallowed, so a refused overlap looked like a crash (2026-10-14).
+            raise ToolError(f"refused: {e}") from e
 
     @mcp.tool()
     def list_runs(state: str = "") -> list:
@@ -94,7 +98,7 @@ def build_mcp(manager):
         """One run's record: state, current stage, timings, result."""
         run = store.get_run(run_id)
         if not run:
-            raise ValueError(f"no such run: {run_id}")
+            raise ToolError(f"no such run: {run_id}")
         return run
 
     @mcp.tool()
@@ -102,7 +106,7 @@ def build_mcp(manager):
         """Subscribe this MCP session to a run's events. Stage and lifecycle events are
         pushed as notifications from here on; no polling needed."""
         if not store.get_run(run_id):
-            raise ValueError(f"no such run: {run_id}")
+            raise ToolError(f"no such run: {run_id}")
         key = (id(ctx.session), run_id)
         if key not in pumps:
             queue = bus.subscribe(run_id)
@@ -132,14 +136,14 @@ def build_mcp(manager):
         try:
             return manager.cancel(run_id)
         except RunRefused as e:
-            raise ValueError(str(e))
+            raise ToolError(f"refused: {e}") from e
 
     @mcp.tool()
     def get_run_log(run_id: str, since: int = 0) -> dict:
         """Run log tail from byte offset `since`: {offset, text}."""
         run = store.get_run(run_id)
         if not run:
-            raise ValueError(f"no such run: {run_id}")
+            raise ToolError(f"no such run: {run_id}")
         data = Path(run["log_path"]).read_bytes() if Path(run["log_path"]).exists() else b""
         return {"offset": len(data), "text": data[since:].decode(errors="replace")}
 
@@ -147,7 +151,7 @@ def build_mcp(manager):
     def get_run_events(run_id: str, since: int = 0) -> dict:
         """Events after sequence number `since`: {next, events}. Reconnect recovery."""
         if not store.get_run(run_id):
-            raise ValueError(f"no such run: {run_id}")
+            raise ToolError(f"no such run: {run_id}")
         nxt, events = store.get_events(run_id, since)
         return {"next": nxt, "events": events}
 
@@ -156,7 +160,7 @@ def build_mcp(manager):
         """Collected evidence/artifact files under the run's test folders."""
         run = store.get_run(run_id)
         if not run:
-            raise ValueError(f"no such run: {run_id}")
+            raise ToolError(f"no such run: {run_id}")
         root = Path(run["run_dir"]) / "comp" / ".automated-tests"
         if not root.exists():
             return []
