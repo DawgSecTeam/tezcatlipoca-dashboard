@@ -157,7 +157,8 @@ class RunManager:
             self._emit(run_id, "lifecycle", data={"state": "running", "cmd": cmd})
             proc = subprocess.Popen(cmd, cwd=str(worktree), stdout=log, stderr=subprocess.STDOUT,
                                     stdin=subprocess.DEVNULL, start_new_session=True,
-                                    env={**os.environ, "PYTHONUNBUFFERED": "1"})
+                                    env={**os.environ, "PYTHONUNBUFFERED": "1",
+                                         "PATH": config.driver_path()})
             with self._lock:
                 self._procs[run_id] = proc
             self.store.update_run(run_id, pid=proc.pid)

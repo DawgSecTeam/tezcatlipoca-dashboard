@@ -64,3 +64,28 @@ def host():
 
 def port():
     return int(os.environ.get("TEZ_DASHBOARD_PORT") or "8787")
+
+
+def opencode_bin():
+    """The directory holding `opencode`, prepended to the driver child's PATH.
+
+    The drivers run as children of this service, so the harness's blue cycles inherit the
+    SERVICE's PATH — and a systemd unit's PATH is `/usr/local/bin:/usr/bin`, where a
+    user-installed `opencode` (default `~/.opencode/bin`, installed by opencode's own
+    installer, not by a package manager) simply is not. Absent it, every blue cycle execs
+    `opencode`, fails rc=127, and the run silently degrades to watchdog-only defense
+    (measured: all 23 cycles of one run). `TEZ_OPENCODE_BIN` overrides; empty means the
+    lookup is left alone.
+    """
+    raw = os.environ.get("TEZ_OPENCODE_BIN")
+    if raw is not None:
+        return raw
+    default = Path.home() / ".opencode" / "bin"
+    return str(default) if default.is_dir() else ""
+
+
+def driver_path():
+    """PATH for a driver child process (see opencode_bin)."""
+    base = os.environ.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
+    prepend = opencode_bin()
+    return f"{prepend}:{base}" if prepend and prepend not in base.split(":") else base
