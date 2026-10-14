@@ -18,21 +18,32 @@ from dashboard.runner import RunManager, RunRefused, missing_driver_deps
 from dashboard.store import Store
 
 
-def test_driver_path_prepends_the_configured_bin(monkeypatch):
+def test_driver_path_prepends_the_configured_bin(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", "/usr/local/bin:/usr/bin")
     monkeypatch.setenv("TEZ_OPENCODE_BIN", "/opt/oc/bin")
+    monkeypatch.setenv("HOME", str(tmp_path))          # no ~/.local/bin in the picture
     assert config.driver_path() == "/opt/oc/bin:/usr/local/bin:/usr/bin"
 
 
-def test_driver_path_is_idempotent(monkeypatch):
+def test_driver_path_adds_the_users_local_bin(monkeypatch, tmp_path):
+    monkeypatch.setenv("PATH", "/usr/local/bin:/usr/bin")
+    monkeypatch.setenv("TEZ_OPENCODE_BIN", "/opt/oc/bin")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".local" / "bin").mkdir(parents=True)   # terraform/sshpass live here
+    assert config.driver_path() == "/opt/oc/bin:" + str(tmp_path / ".local" / "bin") + ":/usr/local/bin:/usr/bin"
+
+
+def test_driver_path_is_idempotent(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", "/opt/oc/bin:/usr/bin")
     monkeypatch.setenv("TEZ_OPENCODE_BIN", "/opt/oc/bin")
+    monkeypatch.setenv("HOME", str(tmp_path))
     assert config.driver_path() == "/opt/oc/bin:/usr/bin"
 
 
-def test_empty_override_leaves_path_alone(monkeypatch):
+def test_empty_override_leaves_path_alone(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", "/usr/local/bin:/usr/bin")
     monkeypatch.setenv("TEZ_OPENCODE_BIN", "")
+    monkeypatch.setenv("HOME", str(tmp_path))
     assert config.driver_path() == "/usr/local/bin:/usr/bin"
 
 
@@ -112,9 +123,8 @@ def test_missing_driver_deps_reports_what_this_interpreter_lacks():
     def no_such(name):
         raise ModuleNotFoundError(name)
 
-    assert missing_driver_deps(spec=no_such) == list(
-        ("toml", "requests", "urllib3", "yaml", "dotenv", "PIL", "cryptography", "websocket",
-         "paramiko"))
+    from dashboard.runner import DRIVER_DEPS
+    assert missing_driver_deps(spec=no_such) == list(DRIVER_DEPS)
 
 
 def test_missing_driver_deps_is_empty_for_a_complete_venv():

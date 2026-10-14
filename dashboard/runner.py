@@ -30,7 +30,7 @@ FAIL_FAST_ACTIONS = ("deploy", "plan", "scrim")
 # (ModuleNotFoundError: toml, at phase 2, after minutes of work) instead of at submit —
 # checked here so a stale venv costs a refusal, not a run.
 DRIVER_DEPS = ("toml", "requests", "urllib3", "yaml", "dotenv", "PIL", "cryptography",
-               "websocket", "paramiko")
+               "websocket", "paramiko", "mysql.connector")
 
 
 class RunRefused(Exception):

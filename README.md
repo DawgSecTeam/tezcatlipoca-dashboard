@@ -62,6 +62,22 @@ connection-scoped emitter delivers nothing; an `mcp` `ClientSession` negotiates 
 receives pushes, while a session that adopts 2026-07-28 does not (`watch_run` says so instead
 of promising them, and the cursor is the fallback).
 
+## Run-host prerequisites
+
+The service's interpreter runs the engine drivers AND the red agent, and the drivers shell out to
+host tools — so the host needs more than the Python deps:
+
+| Need | Why | Notes |
+|---|---|---|
+| `requirements.txt` in the service venv | the drivers import the engine deps (toml, requests, urllib3, yaml, dotenv, Pillow, cryptography, websocket-client), `paramiko` for bad-auto, `mysql-connector-python` for nakon's catalog | `submit_run` refuses up front when one is missing |
+| `opencode` | every blue cycle is an `opencode run`; absent → all cycles rc=127, run looks undefended | `~/.opencode/bin` is prepended to the driver PATH (`TEZ_OPENCODE_BIN` overrides) |
+| `terraform` | the deploy's phases 1-5 apply real infra | user-space `~/.local/bin` is on the driver PATH (no sudo needed on Fedora) |
+| `sshpass` | Windows boxes are reached over password auth | same `~/.local/bin` path |
+| `ssh`, `scp`, `curl`, `git`, `jq` | driver plumbing | distro packages |
+
+Health check before submitting: `python3 -c "import toml, paramiko, mysql.connector"` in the
+service venv, `command -v opencode terraform sshpass`, and `GET /api/health`.
+
 ## Running locally
 
 ```bash

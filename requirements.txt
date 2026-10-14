@@ -11,4 +11,8 @@ pillow
 cryptography
 websocket-client
 # bad-auto (the red agent the harness spawns as `-m badauto`) imports paramiko
+# nakon's catalog/build path (the deploy shells out to `python3 -m nakon build`)
+mysql-connector-python
 paramiko
+# nakon's catalog/build path (the deploy shells out to `python3 -m nakon build`)
+mysql-connector-python

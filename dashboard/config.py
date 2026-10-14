@@ -84,8 +84,22 @@ def opencode_bin():
     return str(default) if default.is_dir() else ""
 
 
+def user_bin():
+    """The user's ~/.local/bin, when it exists: where user-space tool installs live on a run
+    host with no sudo (terraform and sshpass here — the deploy needs both and neither is a
+    package the service can install for itself)."""
+    default = Path.home() / ".local" / "bin"
+    return str(default) if default.is_dir() else ""
+
+
 def driver_path():
-    """PATH for a driver child process (see opencode_bin)."""
+    """PATH for a driver child process: user-space tool dirs prepended to the service's own."""
     base = os.environ.get("PATH") or "/usr/local/bin:/usr/bin:/bin"
-    prepend = opencode_bin()
-    return f"{prepend}:{base}" if prepend and prepend not in base.split(":") else base
+    parts = [p for p in (opencode_bin(), user_bin()) if p and p not in base.split(":")]
+    # a duplicate between the two prepends would be harmless but noisy in a run's provenance
+    seen, prepend = set(), []
+    for p in parts:
+        if p not in seen:
+            seen.add(p)
+            prepend.append(p)
+    return ":".join(prepend + [base]) if prepend else base
