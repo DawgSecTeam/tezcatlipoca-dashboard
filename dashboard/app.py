@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from dashboard import auth, comps_api, config
 from dashboard.events import EventBus
 from dashboard.mcp_server import build_mcp
-from dashboard.runner import RunManager, RunRefused
+from dashboard.runner import RunManager, RunRefused, artifacts_root
 from dashboard.store import Store
 
 
@@ -124,12 +124,20 @@ def create_app():
     @app.get("/api/runs/{run_id}/artifacts")
     def artifacts(run_id: str):
         run = _run_or_404(run_id)
-        from dashboard.runner import artifacts_root
         root = artifacts_root(run)
         if not root.exists():
             return []
         return [{"path": str(p.relative_to(root)), "bytes": p.stat().st_size}
                 for p in sorted(root.rglob("*")) if p.is_file()]
+
+    @app.get("/api/runs/{run_id}/artifacts/file")
+    def artifact_file(run_id: str, path: str):
+        run = _run_or_404(run_id)
+        root = artifacts_root(run).resolve()
+        f = (root / path).resolve()
+        if root not in f.parents or not f.is_file():
+            raise HTTPException(404, "no such artifact")
+        return FileResponse(f, filename=f.name)
 
     # MCP before the SPA catch-all (routes match in order)
     app.router.routes.extend(mcp_app.routes)

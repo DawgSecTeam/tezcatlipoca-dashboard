@@ -1,14 +1,15 @@
-// The operator's home: one card per competition with a run on the board — identity,
-// stage timeline, usage, live log tail and the action menu.
+// The operator's home: one card per scrim attempt — identity, stage timeline, usage and
+// the action menu; the Open button leads to the run's full management page. Dry runs
+// don't board here (they live on the Runs page).
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import TopNav from '../components/Nav'
 import { Button, Card, ErrorBanner, Modal } from '../components/ui'
-import { EmptyState, Icon, PageHeader, agoMs, fmtSpan, toMs, useConfirm, useTick, useToast } from '../components/kit'
+import { EmptyState, Icon, PageHeader, agoMs, fmtSpan, toMs, useTick } from '../components/kit'
 import {
-  ACTION_LABEL, ArtifactsList, LogTail, NewRunModal, ResetBoxModal, RunLogModal,
-  StageStrip, StatePill, useRunEvents, useRunLog,
+  ACTION_LABEL, ArtifactsList, NewRunModal, ResetBoxModal,
+  StageStrip, StatePill, useRunActions, useRunEvents,
 } from '../components/runui'
 
 const RECENT_MS = 6 * 3600 * 1000 // a finished run stays on the board this long
@@ -38,32 +39,7 @@ function RunMenu({ run, comps, onChanged }) {
   const [artifacts, setArtifacts] = useState(false)
   const [newRun, setNewRun] = useState(false)
   const navigate = useNavigate()
-  const toast = useToast()
-  const ask = useConfirm()
-  const live = run.state === 'running' || run.state === 'queued'
-
-  const submit = async (body) => {
-    try {
-      await api.submitRun({ comp_id: run.comp_id, engine_ref: run.engine_ref, ...body })
-      toast('Run submitted')
-      onChanged()
-    } catch (e) { toast(e.message, 'error') }
-  }
-  const destroy = async () => {
-    const ok = await ask({
-      title: `Teardown ${run.comp_id}?`, danger: true, confirm: 'Destroy',
-      body: <>Runs <span className="font-mono">destroy-competition.py</span> against this run's ownership set — the VMs it created are removed.</>,
-    })
-    if (ok) submit({ action: 'destroy' })
-  }
-  const cancel = async () => {
-    const ok = await ask({
-      title: 'Cancel this run?', danger: true, confirm: 'Cancel run',
-      body: "Kills the run's process group. The range may be left half-built.",
-    })
-    if (!ok) return
-    try { await api.cancelRun(run.id); toast('Cancel requested'); onChanged() } catch (e) { toast(e.message, 'error') }
-  }
+  const { submit, destroy, cancel, live } = useRunActions(run, onChanged)
 
   return (
     <div className="relative">
@@ -91,9 +67,9 @@ function RunMenu({ run, comps, onChanged }) {
           comp_id: run.comp_id, action: 'deploy', engine_ref: run.engine_ref || 'main',
           teams: run.params?.teams ?? 2, scoring_vmid: run.params?.scoring_vmid ?? '',
         }}
-        onSubmitted={() => { toast('Run submitted'); onChanged() }} />
+        onSubmitted={() => { onChanged() }} />
       <ResetBoxModal open={resetBox} onClose={() => setResetBox(false)} run={run}
-        onSubmitted={() => { toast('Redeploy submitted'); onChanged() }} />
+        onSubmitted={() => { onChanged() }} />
       <Modal open={artifacts} onClose={() => setArtifacts(false)} title={`Artifacts · ${run.id}`}>
         <ArtifactsList runId={run.id} />
       </Modal>
@@ -101,15 +77,12 @@ function RunMenu({ run, comps, onChanged }) {
   )
 }
 
-// ── one competition card ───────────────────────────────────────────────────────────────────
+// ── one scrim card: a single run attempt ───────────────────────────────────────────────────
 
-function RunCard({ runs, comp, comps, onChanged }) {
+function RunCard({ run, comp, comps, onChanged }) {
   useTick(1000)
-  const [selId, setSelId] = useState(runs[0].id)
-  const [expanded, setExpanded] = useState(false)
+  const navigate = useNavigate()
   const [stageEvents, setStageEvents] = useState([])
-  const run = runs.find((r) => r.id === selId) || runs[0]
-  const log = useRunLog(run.id)
   const { updated } = useRunEvents(run.id, (ev) => {
     if (ev.kind === 'stage') setStageEvents((s) => (s.some((x) => x.seq === ev.seq) ? s : [...s, ev]))
     onChanged()
@@ -146,17 +119,6 @@ function RunCard({ runs, comp, comps, onChanged }) {
         <RunMenu run={run} comps={comps} onChanged={onChanged} />
       </div>
 
-      {runs.length > 1 && (
-        <div className="mt-3 flex flex-wrap gap-1.5">
-          {runs.slice(0, 5).map((r) => (
-            <button key={r.id} onClick={() => setSelId(r.id)}
-              className={`chip px-2.5 py-1 transition ${r.id === run.id ? 'bg-accent-soft text-accent' : 'bg-sunken text-muted hover:text-fg'}`}>
-              {ACTION_LABEL[r.action] || r.action} · {r.state}
-            </button>
-          ))}
-        </div>
-      )}
-
       <div className="mt-5">
         <StageStrip action={run.action} stage={run.stage} state={run.state} endedAt={run.ended_at}
           stageEvents={stageEvents} />
@@ -174,18 +136,9 @@ function RunCard({ runs, comp, comps, onChanged }) {
         </span>
       </div>
 
-      <div className="mt-4">
-        <div className="mb-2 flex items-center justify-between">
-          <h3 className="label !mb-0">Log</h3>
-          <Button variant="ghost" className="!py-1 text-xs" onClick={() => setExpanded(true)}>
-            <Icon name="terminal" className="h-3.5 w-3.5" />Expand
-          </Button>
-        </div>
-        <LogTail text={log.text} />
-      </div>
-
-      <RunLogModal open={expanded} onClose={() => setExpanded(false)} log={log}
-        title={`${ACTION_LABEL[run.action] || run.action} · ${comp?.name || run.comp_id}`} />
+      <Button variant="primary" className="mt-5 w-full" onClick={() => navigate(`/scrims/${run.id}`)}>
+        <Icon name="overview" />Open scrim page
+      </Button>
     </Card>
   )
 }
@@ -212,29 +165,27 @@ export default function Live() {
   }, [refresh])
 
   const compMap = Object.fromEntries((comps || []).map((c) => [c.id, c]))
-  const groups = {}
-  for (const r of runs || []) if (isOnBoard(r)) (groups[r.comp_id] ||= []).push(r)
-  const cards = Object.entries(groups)
-    .map(([id, rs]) => [id, rs.sort((a, b) => toMs(b.created_at) - toMs(a.created_at))])
-    .sort((a, b) => toMs(b[1][0].created_at) - toMs(a[1][0].created_at))
+  const cards = (runs || [])
+    .filter((r) => r.action !== 'plan' && isOnBoard(r))
+    .sort((a, b) => toMs(b.created_at) - toMs(a.created_at))
 
   return (
     <div className="mx-auto max-w-6xl px-8 py-10">
       <TopNav />
-      <PageHeader title="Active comps"
-        sub="Running and recently finished range runs, one card per competition"
+      <PageHeader title="Active scrims"
+        sub="Running and recently finished scrims, one card per attempt"
         actions={<Button variant="primary" onClick={() => setNewRun(true)}><Icon name="plus" />New run</Button>} />
       <ErrorBanner error={err} />
       {!runs && !err && <div className="grid grid-cols-1 gap-8 xl:grid-cols-2">{[0, 1].map((i) => <div key={i} className="panel h-72 animate-pulse opacity-60" />)}</div>}
       {runs && !cards.length && (
-        <EmptyState icon="rocket" title="No active competitions"
+        <EmptyState icon="rocket" title="No active scrims"
           action={<Button variant="primary" onClick={() => setNewRun(true)}><Icon name="plus" />New run</Button>}>
-          Submit a deploy, plan, verify, scrim or teardown and it shows up here while it runs.
+          Submit a deploy, scrim, verify or teardown and it shows up here while it runs.
         </EmptyState>
       )}
       <div className="grid grid-cols-1 items-start gap-8 xl:grid-cols-2">
-        {cards.map(([id, rs]) => (
-          <RunCard key={id} runs={rs} comp={compMap[id]} comps={comps} onChanged={refresh} />
+        {cards.map((r) => (
+          <RunCard key={r.id} run={r} comp={compMap[r.comp_id]} comps={comps} onChanged={refresh} />
         ))}
       </div>
       <NewRunModal open={newRun} onClose={() => setNewRun(false)} comps={comps}

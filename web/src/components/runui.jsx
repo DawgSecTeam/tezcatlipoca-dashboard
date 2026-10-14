@@ -2,9 +2,10 @@
 // pills, the stage progress strip, offset-polled log views, the event list, the artifacts
 // tree, and the two submit forms (new run / reset a box).
 import { useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { api, streamRunEvents } from '../api'
 import { Button, ErrorBanner, Field, Modal, Spinner, inputCls } from './ui'
-import { Icon, Stepper, fmtDur, toMs, useTick } from './kit'
+import { Icon, Stepper, fmtDur, toMs, useConfirm, useTick, useToast } from './kit'
 
 export const ACTION_LABEL = {
   deploy: 'Deploy', plan: 'Dry run', verify: 'Verify',
@@ -44,6 +45,38 @@ export function StatePill({ state }) {
   )
 }
 
+// ── run actions: submit a follow-up run, teardown, cancel ──────────────────────────────────
+
+// The shared action logic for the Live card menu and the scrim page's action row.
+export function useRunActions(run, onChanged) {
+  const toast = useToast()
+  const ask = useConfirm()
+  const submit = async (body) => {
+    try {
+      await api.submitRun({ comp_id: run.comp_id, engine_ref: run.engine_ref, ...body })
+      toast('Run submitted')
+      onChanged()
+    } catch (e) { toast(e.message, 'error') }
+  }
+  const destroy = async () => {
+    const ok = await ask({
+      title: `Teardown ${run.comp_id}?`, danger: true, confirm: 'Destroy',
+      body: <>Runs <span className="font-mono">destroy-competition.py</span> against this run's ownership set — the VMs it created are removed.</>,
+    })
+    if (ok) submit({ action: 'destroy' })
+  }
+  const cancel = async () => {
+    const ok = await ask({
+      title: 'Cancel this run?', danger: true, confirm: 'Cancel run',
+      body: "Kills the run's process group. The range may be left half-built.",
+    })
+    if (!ok) return
+    try { await api.cancelRun(run.id); toast('Cancel requested'); onChanged() } catch (e) { toast(e.message, 'error') }
+  }
+  const live = !!run && (run.state === 'running' || run.state === 'queued')
+  return { submit, destroy, cancel, live }
+}
+
 // ── stage progress strip ───────────────────────────────────────────────────────────────────
 
 // Seconds spent per stage, keyed by normalized stage name: consecutive stage events bound
@@ -74,14 +107,15 @@ export function StageStrip({ action, stage, state, endedAt, stageEvents = [] }) 
 
   return (
     <div>
-      <div className="flex items-stretch gap-1">
+      {/* Eight stages don't fit one row of a half-width card — wrap to a 2x4 grid. */}
+      <div className={stages.length > 4 ? 'grid grid-cols-4 gap-x-1 gap-y-2' : 'flex items-stretch gap-1'}>
         {stages.map((s, i) => {
           const done = succeeded || (idx >= 0 && i < idx)
           const isCur = i === idx
           const d = durs[norm(s)]
           return (
             <div key={s} className="min-w-0 flex-1" title={`${s}${d != null ? ` · ${fmtDur(d)}` : ''}`}>
-              <div className={`h-1.5 rounded-full transition-colors ${
+              <div className={`h-2.5 rounded-full transition-colors ${
                 isCur && failed ? 'bg-danger'
                   : isCur ? 'animate-pulse bg-accent'
                     : done ? 'bg-accent' : 'bg-line'}`} />
@@ -247,13 +281,28 @@ export function ArtifactsList({ runId }) {
   if (err) return <ErrorBanner error={err} />
   if (!rows) return <Spinner />
   if (!rows.length) return <p className="text-xs text-faint">No artifacts collected yet.</p>
+  // A row's click fetches the file (the API needs the bearer header, so a plain href
+  // cannot do it) and hands the blob to the browser as a download.
+  const grab = async (path) => {
+    try {
+      const blob = await api.runArtifactFile(runId, path)
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = path.split('/').pop()
+      a.click()
+      URL.revokeObjectURL(a.href)
+    } catch (e) { setErr(e) }
+  }
   return (
     <ul className="space-y-1.5">
       {rows.map((r) => (
-        <li key={r.path} className="flex items-center gap-2 text-xs" title={JSON.stringify(r)}>
-          <Icon name="packet" className="h-3.5 w-3.5 shrink-0 text-faint" />
-          <span className="min-w-0 truncate font-mono text-muted">{r.path}</span>
-          {r.size != null && <span className="ml-auto shrink-0 tabular-nums text-faint">{r.size}</span>}
+        <li key={r.path}>
+          <button onClick={() => grab(r.path)} title={`Download ${r.path}`}
+            className="flex w-full items-center gap-2 rounded-xl px-2 py-0.5 text-left text-xs transition hover:bg-sunken">
+            <Icon name="packet" className="h-3.5 w-3.5 shrink-0 text-faint" />
+            <span className="min-w-0 truncate font-mono text-muted">{r.path}</span>
+            {(r.bytes ?? r.size) != null && <span className="ml-auto shrink-0 tabular-nums text-faint">{r.bytes ?? r.size}</span>}
+          </button>
         </li>
       ))}
     </ul>
@@ -324,16 +373,16 @@ export function NewRunModal({ open, onClose, comps, initial = {}, onSubmitted })
 // "Reset a box…" — redeploy action with box/team/mode fields.
 const REDEPLOY_MODES = ['reset', 'rebuild', 'rollback-ready', 'rollback-base', 'reconfigure', 'resync', 'engine-recovery']
 
-export function ResetBoxModal({ open, onClose, run, onSubmitted }) {
+export function ResetBoxModal({ open, onClose, run, initial = {}, onSubmitted }) {
   const [form, setForm] = useState({ box: '', team: '', mode: 'reset' })
   const [boxes, setBoxes] = useState([])
   const [err, setErr] = useState(null)
   useEffect(() => {
     if (!open || !run) return
-    setForm({ box: '', team: '', mode: 'reset' })
+    setForm({ box: '', team: '', mode: 'reset', ...initial })
     setErr(null)
     api.comp(run.comp_id).then((c) => setBoxes(c.boxes || [])).catch(() => setBoxes([]))
-  }, [open, run])
+  }, [open, run]) // eslint-disable-line react-hooks/exhaustive-deps
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value })
   const submit = async (e) => {
     e.preventDefault()

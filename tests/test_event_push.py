@@ -24,8 +24,8 @@ def _fake_driver(*args, **kwargs):
 
     A stub pinned to build_command's arity silently stopped running when the runner started
     passing the run's node file as a fifth argument (2026-10-14): the fake never executed, so
-    these two tests stopped exercising the push and refusal contracts at all and failed for a
-    reason that had nothing to do with those contracts.
+    these two tests stopped exercising the push and concurrency contracts at all and failed
+    for a reason that had nothing to do with those contracts.
     """
     return ["python3", "-c", "import time; time.sleep(1)"]
 
@@ -169,14 +169,11 @@ async def _watch(url):
     assert any(d.get("kind") == "lifecycle" for d in run_events)
 
 
-def test_second_submit_of_the_same_comp_is_refused_with_a_clear_message(server, monkeypatch):
-    """Fail-fast overlap refusal must carry its reason to the client (SDK forwards only
-    ToolError text; a plain ValueError arrives as a bare "Error executing tool submit_run").
-    """
+def test_second_submit_of_the_same_comp_is_allowed(server):
+    """Two concurrent runs of one competition are allowed — the engine's preflight/locks
+    stay the collision authority (user decision 2026-10-14, dropping the submit-time
+    same-comp refusal). Each submit mints its own run."""
     url, _data = server
-    monkeypatch.setattr("dashboard.runner.build_command",
-                        lambda *a, _sleep=5, **k: ["python3", "-c",
-                                                   f"import time; time.sleep({_sleep})"])
     asyncio.run(_submit_twice(url))
 
 
@@ -193,7 +190,8 @@ async def _submit_twice(url):
                 assert not first.is_error
                 second = await session.call_tool("submit_run", {
                     "comp_id": "mini", "action": "scrim", "engine_ref": "main", "teams": 1})
-                assert second.is_error
-                text = "\n".join(getattr(c, "text", "") for c in (second.content or []))
-                assert "already active" in text, text
-                assert "refusing to overlap" in text, text
+                assert not second.is_error
+                import json
+                one = json.loads(first.content[0].text)
+                two = json.loads(second.content[0].text)
+                assert one["id"] != two["id"]

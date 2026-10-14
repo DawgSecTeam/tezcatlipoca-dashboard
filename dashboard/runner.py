@@ -144,8 +144,6 @@ class RunManager:
         comp_src = self.comps_repo / comp_id
         if not (comp_src / "Compfile").exists():
             raise RunRefused(f"no such competition: {comp_id}")
-        if self.store.running_run_for_comp(comp_id):
-            raise RunRefused(f"a run is already active for {comp_id} — refusing to overlap")
         selected = [str(x) for x in (params.get("nodes") or [])]
         if selected:
             try:

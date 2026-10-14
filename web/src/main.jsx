@@ -9,6 +9,7 @@ import Live from './pages/Live'
 import Runs from './pages/Runs'
 import Comps from './pages/Comps'
 import CompLayout from './pages/CompLayout'
+import Scrim from './pages/Scrim'
 import Overview from './pages/Overview'
 import Injects from './pages/Injects'
 import Packet from './pages/Packet'
@@ -27,6 +28,7 @@ createRoot(document.getElementById('root')).render(
       <Routes>
         <Route path="/" element={<Live />} />
         <Route path="/runs" element={<Runs />} />
+        <Route path="/scrims/:id" element={<Scrim />} />
         <Route path="/comps" element={<Comps />} />
         <Route path="/c/:id" element={<CompLayout />}>
           <Route index element={<Overview />} />

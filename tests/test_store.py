@@ -9,9 +9,7 @@ def test_run_record_roundtrip(tmp_path):
     store.update_run("run-1", state="running", pid=42, stage="phase 2/8 engine_template")
     run = store.get_run("run-1")
     assert run["state"] == "running" and run["pid"] == 42
-    assert store.running_run_for_comp("comp-a")["id"] == "run-1"
     store.update_run("run-1", state="succeeded", returncode=0)
-    assert store.running_run_for_comp("comp-a") is None
     assert [r["id"] for r in store.list_runs(state="succeeded")] == ["run-1"]
 
 

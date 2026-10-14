@@ -27,9 +27,10 @@ A run pins a tezcatlipoca git ref (branch/SHA/tag) and a competition. The runner
    scrim `run.json` phases) to subscribers as they complete,
 5. archives evidence and removes the worktree.
 
-Concurrency is parallel and fail-fast: a second run of the same competition is refused
-at submit; the engine's own preflight/locks refuse provable resource collisions and the
-run fails fast with that refusal.
+Concurrency is parallel: several runs — including several of the same competition — may
+execute at once, each in its own worktree and workspace. The engine's preflight/locks stay
+the collision authority: a submit whose parameters provably collide (vmids, engine IPs)
+fails fast at the engine with that refusal.
 
 ## API (bearer token, `Authorization: Bearer <token>`)
 
@@ -46,6 +47,15 @@ run fails fast with that refusal.
 | `GET /api/runs/{id}/events?since=N` | event cursor recovery (no polling loops needed) |
 | `GET /api/runs/{id}/events/stream` | SSE of live run events |
 | `GET /api/runs/{id}/artifacts` | collected evidence tree |
+| `GET /api/runs/{id}/artifacts/file?path=` | one artifact file (paths under the run's evidence tree only) |
+
+## Web UI
+
+The React app has four surfaces: **Active scrims** (`/` — one card per run attempt, dry
+runs excluded; they stay on **Runs**), **Runs** (`/runs` — every run with a detail
+drawer), a per-run management page at **`/scrims/{id}`** (Overview: stages, usage,
+active teams, events, log; Teams: per-team boxes + reset-a-box; Artifacts: the evidence
+tree, click to download), and the per-competition editor under `/c/{id}`.
 
 ## MCP (`/mcp`, Streamable HTTP, same bearer token)
 

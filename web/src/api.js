@@ -66,6 +66,18 @@ export const api = {
   runLog: (id, since = 0) => request('GET', `/runs/${enc(id)}/log?since=${since || 0}`),
   runEvents: (id, since = 0) => request('GET', `/runs/${enc(id)}/events?since=${since || 0}`),
   runArtifacts: (id) => request('GET', `/runs/${enc(id)}/artifacts`),
+  // A single artifact file as a Blob (request() parses JSON, so this fetches raw).
+  runArtifactFile: async (id, path) => {
+    const res = await fetch(`/api/runs/${enc(id)}/artifacts/file?path=${enc(path)}`, {
+      headers: { Authorization: `Bearer ${getToken()}` },
+    })
+    if (!res.ok) {
+      if (res.status === 401) window.dispatchEvent(new CustomEvent('tez-unauthorized'))
+      const d = await res.json().catch(() => null)
+      throw new Error(d?.detail ? String(d.detail) : `${res.status} ${res.statusText}`)
+    }
+    return res.blob()
+  },
 }
 
 // SSE of run events, with the bearer header intact (EventSource cannot send one).

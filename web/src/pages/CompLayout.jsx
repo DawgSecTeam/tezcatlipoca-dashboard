@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react'
 import { Link, NavLink, Outlet, useMatch, useNavigate, useParams } from 'react-router-dom'
 import { api, kindOf } from '../api'
-import { ErrorBanner, Spinner, ThemeToggle } from '../components/ui'
+import { ErrorBanner, Spinner } from '../components/ui'
 import { Icon, Logo } from '../components/kit'
 
 const CompCtx = createContext(null)
@@ -96,9 +96,8 @@ function Sidebar({ comp }) {
           <NavLink to={`${base}/packet`} className={navCls}><Icon name="packet" />Packet</NavLink>
         </nav>
       )}
-      <div className="mt-auto flex items-center justify-between px-1">
+      <div className="mt-auto px-1">
         <span className="truncate font-mono text-[11px] text-faint" title={`competitions/${comp.id}/`}>{comp.id}/</span>
-        <ThemeToggle />
       </div>
     </aside>
   )

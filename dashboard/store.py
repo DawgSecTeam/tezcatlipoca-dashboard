@@ -68,12 +68,6 @@ class Store:
         sql += " ORDER BY created_at DESC"
         return [self._view(r) for r in self._db.execute(sql, vals).fetchall()]
 
-    def running_run_for_comp(self, comp_id):
-        row = self._db.execute(
-            "SELECT * FROM runs WHERE comp_id = ? AND state IN ('queued','running') "
-            "ORDER BY created_at DESC", (comp_id,)).fetchone()
-        return self._view(row) if row else None
-
     def add_event(self, run_id, kind, stage="", data=None):
         """Append one event and return it in the SAME shape `get_events` yields.
 
