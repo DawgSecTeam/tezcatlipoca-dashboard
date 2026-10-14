@@ -10,3 +10,5 @@ toml
 pillow
 cryptography
 websocket-client
+# bad-auto (the red agent the harness spawns as `-m badauto`) imports paramiko
+paramiko

@@ -111,7 +111,8 @@ def test_missing_driver_deps_reports_what_this_interpreter_lacks():
         raise ModuleNotFoundError(name)
 
     assert missing_driver_deps(spec=no_such) == list(
-        ("toml", "requests", "urllib3", "yaml", "dotenv", "PIL", "cryptography", "websocket"))
+        ("toml", "requests", "urllib3", "yaml", "dotenv", "PIL", "cryptography", "websocket",
+         "paramiko"))
 
 
 def test_missing_driver_deps_is_empty_for_a_complete_venv():
