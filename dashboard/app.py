@@ -122,7 +122,8 @@ def create_app():
     @app.get("/api/runs/{run_id}/artifacts")
     def artifacts(run_id: str):
         run = _run_or_404(run_id)
-        root = Path(run["run_dir"]) / "comp" / ".automated-tests"
+        from dashboard.runner import artifacts_root
+        root = artifacts_root(run)
         if not root.exists():
             return []
         return [{"path": str(p.relative_to(root)), "bytes": p.stat().st_size}

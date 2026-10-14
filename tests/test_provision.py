@@ -51,3 +51,60 @@ def test_engine_ref_prefers_the_fetched_remote_branch(tmp_path, monkeypatch):
                  capture_output=True, text=True).stdout.strip()
     assert mgr._resolve_ref(sha) == sha
     assert mgr._resolve_ref("no-such-ref") == "no-such-ref"
+
+
+def test_seed_workspace_carries_the_pfsense_seed(tmp_path):
+    """The firewall bootstrap needs `pfsense/pfsense-config-orig.xml` from the definitions repo.
+
+    The seeder used to skip `pfsense/` and `vyos/` as per-run state, so phase 5 died with
+    "pfsense-config-orig.xml is missing" after phases 1-4 had built the whole range
+    (2026-10-14, run-8482163b).
+    """
+    from dashboard.workspaces import seed_workspace
+    src = tmp_path / "defs"
+    (src / "pfsense").mkdir(parents=True)
+    (src / "pfsense" / "pfsense-config-orig.xml").write_text("<config/>")
+    (src / "vyos").mkdir()
+    (src / "vyos" / "config-team120.cmds").write_text("set system host-name fw\n")
+    (src / "Compfile").write_text("name scrim-one\n")
+    (src / ".automated-tests").mkdir()
+    (src / ".automated-tests" / "old.json").write_text("{}")
+    (src / ".deploy_state.json").write_text('{"run_id": "run-old"}')
+    (src / "terraform").mkdir()
+    (src / "terraform" / "terraform.tfstate").write_text("{}")
+    ws = seed_workspace(src, tmp_path / "ws")
+    assert (ws / "pfsense" / "pfsense-config-orig.xml").exists()
+    assert (ws / "vyos" / "config-team120.cmds").exists()
+    assert (ws / "Compfile").exists()
+    # per-run state still stays behind
+    assert not (ws / ".automated-tests").exists()
+    assert not (ws / ".deploy_state.json").exists()
+    assert not (ws / "terraform").exists()
+
+
+def test_destroy_runs_against_the_workspace_holding_the_state(tmp_path, monkeypatch):
+    """Ownership comes from the workspace's run id, so a destroy must not be handed a fresh one."""
+    import json as _json
+    from dashboard.runner import RunManager
+    from dashboard.store import Store
+    monkeypatch.setenv("TEZ_DASHBOARD_DATA", str(tmp_path / "data"))
+    runs = tmp_path / "data" / "runs"
+    run_dir = runs / "run-failed"
+    ws = run_dir / "comp"
+    ws.mkdir(parents=True)
+    (ws / "Compfile").write_text("name scrim-one\n")
+    (ws / ".deploy_state.json").write_text(_json.dumps({"run_id": "run-engineid"}))
+    store = Store(tmp_path / "db.sqlite3")
+    store.create_run("run-failed", "scrim-one", "scrim", "main", {}, run_dir,
+                     run_dir / "run.log")
+    store.create_run("run-other", "other-comp", "scrim", "main", {}, run_dir,
+                     run_dir / "run.log")
+    mgr = RunManager(store, None)
+    mgr.runs_dir = runs
+    assert mgr._destroy_target("scrim-one", {}) == ws
+    # an explicit comp_dir wins
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    assert mgr._destroy_target("scrim-one", {"comp_dir": str(other)}) == other
+    # and nothing state-bearing means nothing to destroy
+    assert mgr._destroy_target("no-such-comp", {}) is None

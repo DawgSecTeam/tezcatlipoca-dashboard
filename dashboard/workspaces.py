@@ -19,8 +19,13 @@ _STATE_NAMES = {
     "domain_accounts.json", "box_vulns.json.pre-cyberfield-prune1",
 }
 _STATE_DIRS = {
-    "terraform", ".automated-tests", "remote-access", "pfsense", "vyos", "evidence",
+    "terraform", ".automated-tests", "remote-access", "evidence",
 }
+# NOT state (they are DEFINITIONS the deploy reads): `pfsense/` holds the factory
+# `pfsense-config-orig.xml` seed phase 5 clones from and `vyos/` the VyOS equivalent — skipping
+# them left a workspace whose firewall bootstrap died on a missing seed file (2026-10-14,
+# run-8482163b: "pfsense-config-orig.xml is missing"). The per-team config the deploy writes
+# into those dirs is regenerated on every deploy, so copying them is safe.
 _STATE_GLOBS = (".nakon-*", "*.tfstate*", "*.log", "run*-archive-*", "persistence-evidence-*",
                 ".prev-run-*", ".catalog-check-*")
 

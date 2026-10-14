@@ -33,6 +33,17 @@ DRIVER_DEPS = ("toml", "requests", "urllib3", "yaml", "dotenv", "PIL", "cryptogr
                "websocket", "paramiko", "mysql.connector")
 
 
+def artifacts_root(run):
+    """Where a run's test folders live: the workspace it acted on.
+
+    A destroy run acts on a PRIOR run's workspace (see _destroy_target), so its own run dir
+    holds no evidence — resolving through here keeps `get_artifacts` honest for both.
+    """
+    params = run.get("params") if isinstance(run.get("params"), dict) else {}
+    ws = params.get("_destroy_comp_dir") or (Path(run["run_dir"]) / "comp")
+    return Path(ws) / ".automated-tests"
+
+
 class RunRefused(Exception):
     pass
 
@@ -141,12 +152,46 @@ class RunManager:
         run_id = "run-" + uuid.uuid4().hex[:8]
         run_dir = self.runs_dir / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
+        if action == "destroy":
+            # A destroy must act on the workspace that HOLDS the range: ownership (which VMs may
+            # be touched) comes from that workspace's `.deploy_state.json` run id, and a freshly
+            # seeded workspace has none — the teardown refuses correctly ("carries no run id, so
+            # ownership cannot be proven") and the queue could never clean up after a failed
+            # deploy, which is the one case destroy exists for (2026-10-14). Resolve it at submit
+            # so a hopeless destroy is refused before a run record exists.
+            target = self._destroy_target(comp_id, params)
+            if target is None:
+                raise RunRefused(
+                    f"nothing to destroy for {comp_id}: no run workspace with a "
+                    f".deploy_state.json run id exists under {self.runs_dir} (a range deployed "
+                    "by hand is destroyed from its own comp dir with destroy-competition.py)")
+            params["_destroy_comp_dir"] = str(target)
         record = self.store.create_run(run_id, comp_id, action, engine_ref, params,
                                        run_dir, run_dir / "run.log")
         self._emit(run_id, "lifecycle", data={"state": "queued", "action": action})
         threading.Thread(target=self._run, args=(record, comp_src, engine_ref),
                          daemon=True).start()
         return record
+
+    def _destroy_target(self, comp_id, params):
+        """The workspace a destroy run operates on: an explicit `comp_dir`, else the newest run
+        workspace OF THIS COMPETITION that carries a deploy run id (the store is the ledger of
+        which run dirs belong to which competition — matching by workspace name would let one
+        competition's destroy reach another's range)."""
+        explicit = (params or {}).get("comp_dir")
+        if explicit:
+            return Path(explicit)
+        for run in self.store.list_runs(comp_id=comp_id):        # newest first
+            ws = Path(run["run_dir"]) / "comp"
+            state = ws / ".deploy_state.json"
+            if not ((ws / "Compfile").exists() and state.exists()):
+                continue
+            try:
+                if json.loads(state.read_text()).get("run_id"):
+                    return ws
+            except (OSError, ValueError):
+                continue
+        return None
 
     def cancel(self, run_id):
         with self._lock:
@@ -173,7 +218,9 @@ class RunManager:
     def _run(self, record, comp_src, engine_ref):
         run_id, run_dir = record["id"], Path(record["run_dir"])
         try:
-            ws = workspaces.seed_workspace(comp_src, run_dir / "comp")
+            destroy_dir = record["params"].get("_destroy_comp_dir")
+            ws = (Path(destroy_dir) if destroy_dir
+                  else workspaces.seed_workspace(comp_src, run_dir / "comp"))
             worktree = run_dir / "engine"
             engine_used = self._provision_worktree(worktree, engine_ref, run_dir)
             cmd = build_command(record["action"], record["comp_id"], ws, record["params"])

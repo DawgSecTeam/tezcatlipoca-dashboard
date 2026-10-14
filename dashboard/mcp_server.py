@@ -161,7 +161,8 @@ def build_mcp(manager):
         run = store.get_run(run_id)
         if not run:
             raise ToolError(f"no such run: {run_id}")
-        root = Path(run["run_dir"]) / "comp" / ".automated-tests"
+        from dashboard.runner import artifacts_root
+        root = artifacts_root(run)
         if not root.exists():
             return []
         return [{"path": str(p.relative_to(root)), "bytes": p.stat().st_size}
