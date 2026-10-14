@@ -5,7 +5,7 @@ from dashboard.runner import RunRefused, build_command
 
 def test_deploy_command_carries_flags():
     cmd = build_command("deploy", "comp-a", "/ws", {"teams": 3, "scoring_vmid": 1300,
-                                                    "engine_node": "zfs-193"})
+                                                    "engine_node": "node-a"})
     assert cmd[1] == "create-competition.py"
     assert cmd[cmd.index("--comp-dir") + 1] == "/ws"
     assert cmd[cmd.index("--competition") + 1] == "comp-a"

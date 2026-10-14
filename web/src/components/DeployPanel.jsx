@@ -131,7 +131,7 @@ export default function DeployPanel({ comp }) {
                   <option value="">Engine: auto (node with most teams)</option>
                   {selected.map((n) => <option key={n.name} value={n.name}>Engine on {n.name}</option>)}
                 </select>
-                <input className={`${inputCls} font-mono`} placeholder="Team pins, e.g. 130=zfs-193" value={form.team_node} onChange={set('team_node')} />
+                <input className={`${inputCls} font-mono`} placeholder="Team pins, e.g. 130=node-a" value={form.team_node} onChange={set('team_node')} />
               </div>
             )}
           </div>
