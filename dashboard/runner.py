@@ -175,9 +175,10 @@ class RunManager:
         try:
             ws = workspaces.seed_workspace(comp_src, run_dir / "comp")
             worktree = run_dir / "engine"
-            self._provision_worktree(worktree, engine_ref, run_dir)
+            engine_used = self._provision_worktree(worktree, engine_ref, run_dir)
             cmd = build_command(record["action"], record["comp_id"], ws, record["params"])
             log = open(record["log_path"], "w")
+            log.write(f"$ engine {engine_used['ref']} @ {engine_used['commit'][:12]}\n")
             log.write("$ " + " ".join(cmd) + "\n")
             log.flush()
             self.store.update_run(run_id, state="running", started_at=time.time())
@@ -221,15 +222,36 @@ class RunManager:
 
     # ---- worktree provisioning ----
 
+    def _resolve_ref(self, engine_ref):
+        """The ref a run's worktree is actually cut at.
+
+        `engine_ref: main` used to mean the engine clone's LOCAL main, which nothing in this
+        service ever updates (ensure_repos only clones when missing, and only the competitions
+        clone gets pulled) — so every run executed whatever main was at clone time. Measured
+        2026-10-14: the clone sat 9 commits behind origin/main and three runs ran the stale
+        engine while reporting `engine_ref: main`. Prefer the freshly fetched remote-tracking
+        branch; SHAs and tags pass through unchanged (an unknown name still fails at `worktree
+        add` with git's own message).
+        """
+        if not engine_ref:
+            return engine_ref
+        probe = subprocess.run(
+            ["git", "-C", str(self.engine_repo), "rev-parse", "--verify", "--quiet",
+             f"refs/remotes/origin/{engine_ref}"], capture_output=True)
+        return f"origin/{engine_ref}" if probe.returncode == 0 else engine_ref
+
     def _provision_worktree(self, worktree, engine_ref, run_dir):
         subprocess.run(["git", "-C", str(self.engine_repo), "fetch", "origin", "--quiet"],
                        capture_output=True)
+        resolved = self._resolve_ref(engine_ref)
         proc = subprocess.run(["git", "-C", str(self.engine_repo), "worktree", "add",
-                               "--detach", str(worktree), engine_ref],
+                               "--detach", str(worktree), resolved],
                               capture_output=True, text=True)
         if proc.returncode != 0:
             raise RunRefused(f"cannot cut engine worktree at {engine_ref!r}: "
                              f"{proc.stderr.strip()[-200:]}")
+        head = subprocess.run(["git", "-C", str(worktree), "rev-parse", "HEAD"],
+                              capture_output=True, text=True).stdout.strip()
         env_file = config.engine_env_file()
         if env_file:
             shutil.copy2(env_file, worktree / ".env")
@@ -253,6 +275,7 @@ class RunManager:
         else:
             subprocess.run(["git", "-C", str(worktree), "submodule", "update", "--init",
                             "vendor/nakon"], capture_output=True)
+        return {"ref": resolved, "commit": head}
 
     # ---- stage tracking ----
 

@@ -90,8 +90,10 @@ def test_the_spawned_driver_gets_the_prepended_path(monkeypatch, tmp_path):
         return FakeProc()
 
     monkeypatch.setattr(RunManager, "_provision_worktree",
-                        lambda self, worktree, ref, rd: Path(worktree).mkdir(parents=True,
-                                                                            exist_ok=True))
+                        lambda self, worktree, ref, rd: (Path(worktree).mkdir(parents=True,
+                                                                  exist_ok=True),
+                                                         {"ref": "origin/main",
+                                                          "commit": "0" * 40})[1])
     monkeypatch.setattr("dashboard.runner.build_command",
                         lambda action, comp_id, ws, params: ["python3", "-c", "pass"])
     monkeypatch.setattr(subprocess, "Popen", fake_popen)

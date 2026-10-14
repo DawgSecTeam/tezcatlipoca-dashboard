@@ -102,8 +102,9 @@ def server(tmp_path, monkeypatch):
 
     def _fake_worktree(self, worktree, engine_ref, run_dir):
         # The fake driver runs with cwd=worktree, so the dir has to exist (the real
-        # provisioner cuts a git worktree there).
+        # provisioner cuts a git worktree there and returns what it cut).
         Path(worktree).mkdir(parents=True, exist_ok=True)
+        return {"ref": "origin/main", "commit": "0" * 40}
 
     monkeypatch.setattr(RunManager, "_provision_worktree", _fake_worktree)
     monkeypatch.setattr("dashboard.runner.build_command",
