@@ -162,19 +162,20 @@ class RunManager:
         run_id = "run-" + uuid.uuid4().hex[:8]
         run_dir = self.runs_dir / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
-        if action == "destroy":
-            # A destroy must act on the workspace that HOLDS the range: ownership (which VMs may
-            # be touched) comes from that workspace's `.deploy_state.json` run id, and a freshly
-            # seeded workspace has none — the teardown refuses correctly ("carries no run id, so
-            # ownership cannot be proven") and the queue could never clean up after a failed
-            # deploy, which is the one case destroy exists for (2026-10-14). Resolve it at submit
-            # so a hopeless destroy is refused before a run record exists.
-            target = self._destroy_target(comp_id, params)
+        if action in ("destroy", "verify", "redeploy"):
+            # These act on the workspace that HOLDS the range: ownership (which VMs may be
+            # touched), the deploy state and the terraform workdir all live in the workspace a
+            # PRIOR run built, and a freshly seeded one has none — the teardown refused
+            # ("carries no run id, so ownership cannot be proven"), verify died inside
+            # `terraform output` (misreporting a missing workdir as a missing binary), and the
+            # queue could never clean up or verify what it deployed (2026-10-14). Resolve it at
+            # submit so a hopeless run is refused before a run record exists.
+            target = self._range_workspace(comp_id, params)
             if target is None:
                 raise RunRefused(
-                    f"nothing to destroy for {comp_id}: no run workspace with a "
+                    f"nothing to {action} for {comp_id}: no run workspace with a "
                     f".deploy_state.json run id exists under {self.runs_dir} (a range deployed "
-                    "by hand is destroyed from its own comp dir with destroy-competition.py)")
+                    f"by hand is {action}d from its own comp dir)")
             params["_destroy_comp_dir"] = str(target)
         record = self.store.create_run(run_id, comp_id, action, engine_ref, params,
                                        run_dir, run_dir / "run.log")
@@ -183,11 +184,11 @@ class RunManager:
                          daemon=True).start()
         return record
 
-    def _destroy_target(self, comp_id, params):
-        """The workspace a destroy run operates on: an explicit `comp_dir`, else the newest run
-        workspace OF THIS COMPETITION that carries a deploy run id (the store is the ledger of
-        which run dirs belong to which competition — matching by workspace name would let one
-        competition's destroy reach another's range)."""
+    def _range_workspace(self, comp_id, params):
+        """The workspace holding this competition's range: an explicit `comp_dir`, else the
+        newest run workspace OF THIS COMPETITION that carries a deploy run id (the store is the
+        ledger of which run dirs belong to which competition — matching by workspace name would
+        let one competition's run reach another's range)."""
         explicit = (params or {}).get("comp_dir")
         if explicit:
             return Path(explicit)
@@ -232,7 +233,15 @@ class RunManager:
         env.update(nodes.token_env(nodes.load()))
         key = config.engine_proxmox_file()
         if key and Path(key).is_file():
-            env["TF_VAR_ssh_private_key_path"] = str(Path(key).resolve())
+            key = Path(key).resolve()
+            env["TF_VAR_ssh_private_key_path"] = str(key)
+            # bad-auto reads `<deploy.ssh_key>.pub` beside the private key, and a run host may
+            # hold only the private half — the assume-breach red01 deploy then died on
+            # FileNotFoundError AFTER the range itself was built (2026-10-14). The public half
+            # is in the engine env; materialize it so the two halves always travel together.
+            pub = key.with_name(key.name + ".pub")
+            if not pub.exists() and env.get("TF_VAR_ssh_public_key"):
+                pub.write_text(env["TF_VAR_ssh_public_key"].strip() + "\n")
         return env
 
     def _run_nodes_file(self, params, run_dir):

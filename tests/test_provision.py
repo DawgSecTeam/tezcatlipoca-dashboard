@@ -101,10 +101,11 @@ def test_destroy_runs_against_the_workspace_holding_the_state(tmp_path, monkeypa
                      run_dir / "run.log")
     mgr = RunManager(store, None)
     mgr.runs_dir = runs
-    assert mgr._destroy_target("scrim-one", {}) == ws
+    # destroy, verify and redeploy all act on the range's own workspace
+    assert mgr._range_workspace("scrim-one", {}) == ws
     # an explicit comp_dir wins
     other = tmp_path / "elsewhere"
     other.mkdir()
-    assert mgr._destroy_target("scrim-one", {"comp_dir": str(other)}) == other
-    # and nothing state-bearing means nothing to destroy
-    assert mgr._destroy_target("no-such-comp", {}) is None
+    assert mgr._range_workspace("scrim-one", {"comp_dir": str(other)}) == other
+    # and nothing state-bearing means nothing to act on
+    assert mgr._range_workspace("no-such-comp", {}) is None

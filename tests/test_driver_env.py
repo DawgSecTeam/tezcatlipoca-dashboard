@@ -119,6 +119,25 @@ def test_the_spawned_driver_gets_the_prepended_path(monkeypatch, tmp_path):
     assert captured["cwd"].endswith("engine")
 
 
+def test_driver_env_materializes_the_public_key_beside_the_private_one(tmp_path, monkeypatch):
+    """bad-auto reads `<deploy.ssh_key>.pub`; a run host may hold only the private half, and
+    the assume-breach red01 deploy died on that FileNotFoundError after the range was built."""
+    from dashboard import config
+    from dashboard.runner import RunManager
+
+    key = tmp_path / "proxmox"
+    key.write_text("PRIVATE\n")
+    monkeypatch.setattr(config, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(config, "engine_proxmox_file", lambda: key)
+    monkeypatch.setattr(config, "driver_path", lambda: "/usr/bin")
+    monkeypatch.setenv("TF_VAR_ssh_public_key", "ssh-ed25519 AAAA test@host")
+
+    env = RunManager(store=None, bus=None)._driver_env()
+
+    assert env["TF_VAR_ssh_private_key_path"] == str(key)
+    assert (tmp_path / "proxmox.pub").read_text().strip() == "ssh-ed25519 AAAA test@host"
+
+
 def test_missing_driver_deps_reports_what_this_interpreter_lacks():
     def no_such(name):
         raise ModuleNotFoundError(name)
