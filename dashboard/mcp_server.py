@@ -73,16 +73,13 @@ def build_mcp(manager):
         this run may deploy to (the engine gets them as its node list, not the .env);
         `engine_node`/`team_node` then pin within that list. Returns the run record."""
         p = dict(params or {})
-        if teams:
-            p["teams"] = teams
-        if scoring_vmid:
-            p["scoring_vmid"] = scoring_vmid
-        if engine_node:
-            p["engine_node"] = engine_node
-        if team_node:
-            p["team_node"] = team_node
-        if nodes:
-            p["nodes"] = [str(n) for n in nodes]
+        # Defaults, not overrides: an explicit params entry (a redeploy's teams selector, a
+        # pinned scoring vmid) must survive the tool's own argument defaults.
+        for key, val in (("teams", teams), ("scoring_vmid", scoring_vmid),
+                         ("engine_node", engine_node), ("team_node", team_node),
+                         ("nodes", [str(n) for n in nodes] if nodes else None)):
+            if val:
+                p.setdefault(key, val)
         try:
             return manager.submit(comp_id, action, engine_ref or "main", p)
         except RunRefused as e:

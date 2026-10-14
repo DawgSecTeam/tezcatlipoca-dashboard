@@ -13,7 +13,7 @@
   --sunken: #e4e4e4;      /* inputs, wells */
   --fg: #1d1d1f;
   --muted: #5f6368;
-  --faint: #9a9da3;
+  --faint: #63676c;       /* 4.9:1 on --bg: it carries run ids and timestamps someone reads */
   --edge: #ffffff;        /* the bright rim on floating panels */
   --line: #dcdcdc;        /* dividers inside a panel */
   --accent: #0f766e;      /* jade */
@@ -36,7 +36,7 @@
   --sunken: #17181b;
   --fg: #ececec;
   --muted: #a3a6ad;
-  --faint: #6c7078;
+  --faint: #8a8e96;       /* 4.9:1 on the dark --bg — the light value is invisible here */
   --edge: #34363c;
   --line: #2d2f34;
   --accent: #2dd4bf;

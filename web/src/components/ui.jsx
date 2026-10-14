@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 
 export function Button({ variant = 'default', className = '', ...props }) {
   const v = { default: '', primary: 'btn-primary', danger: 'btn-danger', ghost: 'btn-ghost' }[variant]
@@ -85,31 +85,12 @@ export function Spinner() {
 
 // ── theme ────────────────────────────────────────────────────────────────────────────────
 
-const KEY = 'tez-theme'
+// The theme follows the OS. The override outlived the toggle that set it, so a stored
+// preference is gone by design — an ops board has no business spending a header control on
+// a preference.
 function systemTheme() {
   return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
 }
 export function initTheme() {
-  let t = null
-  try { t = localStorage.getItem(KEY) } catch { /* storage blocked */ }
-  document.documentElement.dataset.theme = t || systemTheme()
-}
-
-export function ThemeToggle({ className = '' }) {
-  const [theme, setTheme] = useState(() => document.documentElement.dataset.theme || 'light')
-  const flip = () => {
-    const next = theme === 'dark' ? 'light' : 'dark'
-    document.documentElement.dataset.theme = next
-    try { localStorage.setItem(KEY, next) } catch { /* storage blocked */ }
-    setTheme(next)
-  }
-  return (
-    <button onClick={flip} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`} className={`btn h-9 w-9 !p-0 ${className}`}>
-      {theme === 'dark' ? (
-        <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="10" cy="10" r="3.5" /><path d="M10 2v2M10 16v2M2 10h2M16 10h2M4.3 4.3l1.4 1.4M14.3 14.3l1.4 1.4M4.3 15.7l1.4-1.4M14.3 5.7l1.4-1.4" strokeLinecap="round" /></svg>
-      ) : (
-        <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M16 12.5A6.5 6.5 0 017.5 4a6.5 6.5 0 108.5 8.5z" strokeLinejoin="round" /></svg>
-      )}
-    </button>
-  )
+  document.documentElement.dataset.theme = systemTheme()
 }

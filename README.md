@@ -23,14 +23,34 @@ A run pins a tezcatlipoca git ref (branch/SHA/tag) and a competition. The runner
 3. runs the driver (`create-competition.py` / `verify-competition.py` /
    `destroy-competition.py` / `run-agent-scrim.py` / `redeploy-competition.py`) with
    `--comp-dir <workspace>`,
-4. emits stage events (deploy `[N/8]` phases via `.deploy_state.json` `last_phase`,
-   scrim `run.json` phases) to subscribers as they complete,
+4. emits one stage event per step — a deploy's `[N/8]` phases from `.deploy_state.json`
+   `last_phase`, a scrim's phases from its own `.automated-tests/<run>/run.json`, and a
+   single stage for the actions whose driver reports none (`verify`, `destroy` → `teardown`,
+   `redeploy`); every event carries `index`/`total`,
 5. archives evidence and removes the worktree.
 
 Concurrency is parallel: several runs — including several of the same competition — may
 execute at once, each in its own worktree and workspace. The engine's preflight/locks stay
 the collision authority: a submit whose parameters provably collide (vmids, engine IPs)
 fails fast at the engine with that refusal.
+
+## Ranges
+
+A range is a WORKSPACE, not a competition: two concurrent deploys of one competition are two
+ranges, and grouping them by `comp_id` would let one teardown retire the other. Every
+verify/destroy/redeploy run records the workspace it acted on (`params._destroy_comp_dir`),
+while a deploy/scrim run's own workspace is `<run dir>/comp`, so the service groups any run to
+its range without asking the estate.
+
+`GET /api/ranges` reads each range's state from the workspace itself rather than from the run
+records: `building` (a run is queued or running), `live` (the workspace's terraform state
+still lists VM instances — the run that built it having failed means nothing), `retired`
+(those resources are gone and a destroy ended rc=0), or `teardown_failed` (they are gone, the
+newest destroy ended non-zero — terraform never managed red01, so a VM holding the LLM key can
+outlive its range; `.teardown-journal.json` records which teardown steps actually completed).
+Only `building`, `live` and `teardown_failed` reach the board. Retirement is enforced on the
+way in too: `submit` refuses verify/destroy/redeploy against a retired range, naming the run
+that retired it, which is what stops a dead range from collecting teardown attempts forever.
 
 ## API (bearer token, `Authorization: Bearer <token>`)
 
@@ -42,20 +62,25 @@ fails fast at the engine with that refusal.
 | `GET /api/nodes`, `PUT /api/nodes` | the node catalog (masked — tokens are write-only) |
 | `POST /api/runs` | submit `{comp_id, action, engine_ref?, teams?, scoring_vmid?, nodes?, engine_node?, team_node?, params?}` |
 | `GET /api/runs`, `GET /api/runs/{id}` | run records (`state`, `stage`, timings, rc) |
+| `GET /api/ranges` | ranges derived from run workspaces (state, retire, runs) |
 | `POST /api/runs/{id}/cancel` | kill the run's process group |
 | `GET /api/runs/{id}/log?since=N` | log tail by byte offset |
 | `GET /api/runs/{id}/events?since=N` | event cursor recovery (no polling loops needed) |
 | `GET /api/runs/{id}/events/stream` | SSE of live run events |
 | `GET /api/runs/{id}/artifacts` | collected evidence tree |
 | `GET /api/runs/{id}/artifacts/file?path=` | one artifact file (paths under the run's evidence tree only) |
+| `GET /api/runs/{id}/inventory` | the range's deployed infrastructure, projected from its workspace |
 
 ## Web UI
 
-The React app has four surfaces: **Active scrims** (`/` — one card per run attempt, dry
-runs excluded; they stay on **Runs**), **Runs** (`/runs` — every run with a detail
-drawer), a per-run management page at **`/scrims/{id}`** (Overview: stages, usage,
-active teams, events, log; Teams: per-team boxes + reset-a-box; Artifacts: the evidence
-tree, click to download), and the per-competition editor under `/c/{id}`.
+The React app has four surfaces: **Active ranges** (`/` — one card per range that is building
+or up, plus a one-line tombstone per recently retired range; dead attempts never board and stay
+on **Runs**, `/runs` — every run with a detail drawer), a per-run management page at
+**`/c/{id}/runs/{run}`** (Overview: sourced facts, the stage display, timeline and this run's
+own output; Teams: the range's teams, boxes and redeploy actions; Infrastructure: the deployed
+networks, boxes and machines from the inventory; Evidence: collected files grouped by the run
+that produced them; `/scrims/{id}` redirects here), and the per-competition editor under
+`/c/{id}`.
 
 ## MCP (`/mcp`, Streamable HTTP, same bearer token)
 

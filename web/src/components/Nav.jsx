@@ -1,13 +1,12 @@
 import { NavLink } from 'react-router-dom'
-import { Logo, Icon } from './kit'
-import { ThemeToggle } from './ui'
-import { useAuth } from './TokenGate'
+import { Logo } from './kit'
 
 const tab = ({ isActive }) =>
   `rounded-full px-3.5 py-1.5 text-sm font-semibold transition ${isActive ? 'bg-accent-soft text-accent' : 'text-muted hover:bg-sunken hover:text-fg'}`
 
+// Page header for the standalone pages. The token dialog lives with the 401 handler that
+// opens it (TokenGate) and the theme follows the OS — neither belongs in a page header.
 export default function TopNav({ actions }) {
-  const { openTokenDialog } = useAuth()
   return (
     <div className="rise mb-12 flex flex-wrap items-center justify-between gap-4">
       <div className="flex items-center gap-5">
@@ -21,11 +20,7 @@ export default function TopNav({ actions }) {
           <NavLink to="/comps" className={tab}>Comps</NavLink>
         </nav>
       </div>
-      <div className="flex items-center gap-3">
-        {actions}
-        <button onClick={openTokenDialog} title="API token" aria-label="API token" className="btn h-9 w-9 !p-0"><Icon name="gear" /></button>
-        <ThemeToggle />
-      </div>
+      {actions && <div className="flex items-center gap-3">{actions}</div>}
     </div>
   )
 }

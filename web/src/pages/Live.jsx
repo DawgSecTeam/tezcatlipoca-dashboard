@@ -1,144 +1,90 @@
-// The operator's home: one card per scrim attempt — identity, stage timeline, usage and
-// the action menu; the Open button leads to the run's full management page. Dry runs
-// don't board here (they live on the Runs page).
+// The operator's home: one card per RANGE — the unit is the infrastructure, not the run
+// attempt. A range boards while it builds or is up and leaves the moment a destroy of it
+// succeeds; the destroy is its tombstone line in the retired strip. Dead attempts (a build
+// that never came up, an old failed scrim) are history and live on /runs.
 import { useCallback, useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { api } from '../api'
 import TopNav from '../components/Nav'
-import { Button, Card, ErrorBanner, Modal } from '../components/ui'
+import { Button, Card, ErrorBanner } from '../components/ui'
 import { EmptyState, Icon, PageHeader, agoMs, fmtSpan, toMs, useTick } from '../components/kit'
-import {
-  ACTION_LABEL, ArtifactsList, NewRunModal, ResetBoxModal,
-  StageStrip, StatePill, useRunActions, useRunEvents,
-} from '../components/runui'
+import { ACTION_LABEL, NewRunModal, StageStrip, useRunEvents } from '../components/runui'
 
-const RECENT_MS = 6 * 3600 * 1000 // a finished run stays on the board this long
+// ── one range card ─────────────────────────────────────────────────────────────────────────
 
-const isOnBoard = (r) => {
-  if (r.state === 'running' || r.state === 'queued') return true
-  const end = toMs(r.ended_at) || toMs(r.started_at) || toMs(r.created_at)
-  return end && Date.now() - end < RECENT_MS
-}
-
-// ── kebab menu ─────────────────────────────────────────────────────────────────────────────
-
-function MenuItem({ icon, label, onClick, danger, disabled, title }) {
-  return (
-    <button onClick={disabled ? undefined : onClick} disabled={disabled} title={title}
-      className={`flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-sm transition ${
-        disabled ? 'cursor-not-allowed text-faint opacity-60'
-          : danger ? 'text-danger hover:bg-danger-soft' : 'text-muted hover:bg-sunken hover:text-fg'}`}>
-      <Icon name={icon} className="h-4 w-4 shrink-0" />{label}
-    </button>
-  )
-}
-
-function RunMenu({ run, comps, onChanged }) {
-  const [open, setOpen] = useState(false)
-  const [resetBox, setResetBox] = useState(false)
-  const [artifacts, setArtifacts] = useState(false)
-  const [newRun, setNewRun] = useState(false)
-  const navigate = useNavigate()
-  const { submit, destroy, cancel, live } = useRunActions(run, onChanged)
-
-  return (
-    <div className="relative">
-      <button onClick={() => setOpen(!open)} aria-label="Run actions" title="Run actions"
-        className="btn h-9 w-9 !p-0 text-faint"><Icon name="dots" /></button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-20" onMouseDown={() => setOpen(false)} />
-          <div className="tile absolute right-0 top-full z-30 mt-2 w-64 p-2">
-            <MenuItem icon="rocket" label="New run (re-deploy)" onClick={() => { setOpen(false); setNewRun(true) }} />
-            <MenuItem icon="check" label="Verify" onClick={() => { setOpen(false); submit({ action: 'verify' }) }} />
-            <MenuItem icon="trash" label="Destroy / teardown" danger onClick={() => { setOpen(false); destroy() }} />
-            <MenuItem icon="warn" label="Cancel run" danger disabled={!live} title={live ? undefined : 'The run is not running'} onClick={() => { setOpen(false); cancel() }} />
-            <MenuItem icon="box" label="Reset a box…" onClick={() => { setOpen(false); setResetBox(true) }} />
-            <MenuItem icon="terminal" label="View artifacts" onClick={() => { setOpen(false); setArtifacts(true) }} />
-            <MenuItem icon="edit" label="Open comp editor" onClick={() => { setOpen(false); navigate(`/c/${run.comp_id}`) }} />
-            <div className="my-1 border-t-2 border-line" />
-            <MenuItem icon="plus" label="Add/remove live team" disabled
-              title="Not yet — the engine has no capability for this" />
-          </div>
-        </>
-      )}
-      <NewRunModal open={newRun} onClose={() => setNewRun(false)} comps={comps}
-        initial={{
-          comp_id: run.comp_id, action: 'deploy', engine_ref: run.engine_ref || 'main',
-          teams: run.params?.teams ?? 2, scoring_vmid: run.params?.scoring_vmid ?? '',
-        }}
-        onSubmitted={() => { onChanged() }} />
-      <ResetBoxModal open={resetBox} onClose={() => setResetBox(false)} run={run}
-        onSubmitted={() => { onChanged() }} />
-      <Modal open={artifacts} onClose={() => setArtifacts(false)} title={`Artifacts · ${run.id}`}>
-        <ArtifactsList runId={run.id} />
-      </Modal>
-    </div>
-  )
-}
-
-// ── one scrim card: a single run attempt ───────────────────────────────────────────────────
-
-function RunCard({ run, comp, comps, onChanged }) {
-  useTick(1000)
-  const navigate = useNavigate()
+function RangeCard({ range, comp }) {
+  const run = range.runs?.[0] // the store returns newest first
+  const running = !!run && (run.state === 'running' || run.state === 'queued')
+  // Only a live run's clock moves; a finished card needs a nudge just for its relative times.
+  useTick(running ? 1000 : 60000)
   const [stageEvents, setStageEvents] = useState([])
-  const { updated } = useRunEvents(run.id, (ev) => {
+  // No stream for a terminal run: its history is already in the store, so SSE would cost a
+  // connection and a render per second per long-dead card.
+  useRunEvents(run?.id, (ev) => {
     if (ev.kind === 'stage') setStageEvents((s) => (s.some((x) => x.seq === ev.seq) ? s : [...s, ev]))
-    onChanged()
-  })
-  const teams = run.params?.teams
+  }, running)
 
-  // Past stage events (for per-stage elapsed) come from the cursor endpoint; the live
-  // ones arrive over SSE.
+  // Past stage events (for per-stage elapsed) come from the cursor endpoint; the live ones
+  // arrive over SSE.
   useEffect(() => {
+    if (!run) return
     setStageEvents([])
     api.runEvents(run.id, 0)
       .then((r) => setStageEvents((r.events || []).filter((e) => e.kind === 'stage')))
       .catch(() => {})
-  }, [run.id])
+  }, [run?.id])
+
+  const started = run && (run.started_at || run.created_at)
+  const meta = run && [run.id, run.engine_ref || 'main', `started ${agoMs(started) || '—'}`, `elapsed ${fmtSpan(started, run.ended_at)}`]
+  const why = run?.state === 'failed' && (run.error ? String(run.error) : `rc ${run.returncode ?? '—'}`)
+  // teardown_failed is the board's one card that needs a human: the range's terraform is gone
+  // but something survived the destroy, so it must not wear a healthy range's chip.
+  const chip = range.state === 'live' ? 'bg-accent-soft text-accent'
+    : range.state === 'teardown_failed' ? 'bg-danger-soft text-danger' : 'bg-sunken text-muted'
 
   return (
-    <Card className="rise flex flex-col p-7">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2.5">
-            <Link to={`/c/${run.comp_id}`} className="display truncate text-2xl transition hover:text-accent">
-              {comp?.name || run.comp_id}
-            </Link>
-            <span className="chip bg-sunken px-2.5 py-1 font-mono text-muted">{ACTION_LABEL[run.action] || run.action}</span>
-            <StatePill state={run.state} />
-          </div>
-          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-faint">
-            <span title={run.id}>{run.id.length > 12 ? `${run.id.slice(0, 12)}…` : run.id}</span>
-            <span title="Engine ref">{run.engine_ref || 'main'}</span>
-            <span>started {agoMs(run.started_at || run.created_at) || '—'}</span>
-            <span>elapsed {fmtSpan(run.started_at || run.created_at, run.ended_at)}</span>
-          </div>
+    <Card className="rise flex h-full flex-col p-7">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <Link to={`/c/${range.comp_id}`} className="min-w-0 truncate text-lg font-semibold transition hover:text-accent">
+            {comp?.name || range.comp_id}
+          </Link>
+          <span className={`chip px-2.5 py-1 ${chip}`}>{range.state.replace('_', ' ')}</span>
+          <span className="chip bg-sunken px-2.5 py-1 font-mono text-muted">
+            {ACTION_LABEL[run?.action] || run?.action || '—'}
+          </span>
         </div>
-        <RunMenu run={run} comps={comps} onChanged={onChanged} />
+        {meta && <div className="mt-1 truncate font-mono text-xs text-faint" title={meta.join(' · ')}>{meta.join(' · ')}</div>}
       </div>
 
-      <div className="mt-5">
-        <StageStrip action={run.action} stage={run.stage} state={run.state} endedAt={run.ended_at}
-          stageEvents={stageEvents} />
+      {/* A fixed floor makes a live run's expanded strip and a finished run's collapsed bar
+          the same height, so every card in the grid matches. */}
+      <div className="mt-5 min-h-[5.5rem]">
+        {run
+          ? <StageStrip action={run.action} stage={run.stage} state={run.state} endedAt={run.ended_at}
+              stageEvents={stageEvents} />
+          : <div className="text-xs text-faint">No runs recorded for this range</div>}
+        {why && <div className="mt-1 truncate text-xs text-danger" title={why}>{why}</div>}
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
-        <span className="flex items-center gap-1.5"><Icon name="boxes" className="h-3.5 w-3.5 text-faint" />
-          <b className="font-semibold tabular-nums">{teams ?? '—'}</b> team{Number(teams) === 1 ? '' : 's'}
+      {/* teams comes from the range's own deploy params, not the latest run's form defaults —
+          a destroy's params carry no teams and would read as "—". */}
+      <div className="mb-5 mt-4 flex items-center gap-4 text-xs text-muted">
+        <span className="flex items-center gap-1.5">
+          <Icon name="boxes" className="h-3.5 w-3.5 text-faint" />
+          <b className="font-semibold tabular-nums">{range.teams ?? '—'}</b> team{Number(range.teams) === 1 ? '' : 's'}
           {' · '}<b className="font-semibold tabular-nums">{comp?.boxes ?? '—'}</b> boxes
           {' · '}<b className="font-semibold tabular-nums">{comp?.services ?? '—'}</b> services
         </span>
-        <span className="ml-auto flex items-center gap-1.5 text-faint" title="Last SSE event or poll">
-          <span className={`h-1.5 w-1.5 rounded-full ${Date.now() - (updated || 0) < 15000 ? 'bg-accent' : 'bg-line'}`} />
-          updated {updated ? agoMs(updated) : '—'}
-        </span>
+        {running && <span className="ml-auto h-2 w-2 shrink-0 animate-pulse rounded-full bg-accent" title="The latest run is running" />}
       </div>
 
-      <Button variant="primary" className="mt-5 w-full" onClick={() => navigate(`/scrims/${run.id}`)}>
-        <Icon name="overview" />Open scrim page
-      </Button>
+      {run && (
+        <Link to={`/c/${range.comp_id}/runs/${run.id}`}
+          className={`btn mt-auto w-full ${range.state === 'teardown_failed' ? 'btn-danger' : 'btn-primary'}`}>
+          <Icon name="overview" />Open run
+        </Link>
+      )}
     </Card>
   )
 }
@@ -146,48 +92,70 @@ function RunCard({ run, comp, comps, onChanged }) {
 // ── page ───────────────────────────────────────────────────────────────────────────────────
 
 export default function Live() {
-  const [runs, setRuns] = useState(null)
+  const [ranges, setRanges] = useState(null)
   const [comps, setComps] = useState(null)
   const [err, setErr] = useState(null)
   const [newRun, setNewRun] = useState(false)
   const refresh = useCallback(async () => {
-    try {
-      const [rs, cs] = await Promise.all([api.runs(), api.comps()])
-      setRuns(rs)
-      setComps(cs)
-      setErr(null)
-    } catch (e) { setErr(e) }
+    try { setRanges(await api.ranges()); setErr(null) } catch (e) { setErr(e) }
   }, [])
   useEffect(() => {
     refresh()
     const t = setInterval(refresh, 10000)
     return () => clearInterval(t)
   }, [refresh])
+  // Names and specs don't change while the board is open — one fetch, not one per poll.
+  useEffect(() => { api.comps().then(setComps).catch(() => {}) }, [])
 
   const compMap = Object.fromEntries((comps || []).map((c) => [c.id, c]))
-  const cards = (runs || [])
-    .filter((r) => r.action !== 'plan' && isOnBoard(r))
-    .sort((a, b) => toMs(b.created_at) - toMs(a.created_at))
+  // An incomplete teardown is the one card that needs a human, so it floats above the healthy
+  // ones; the API's newest-activity order holds within each group (Array.sort is stable).
+  const cards = (ranges || []).filter((r) => r.live)
+    .sort((a, b) => (b.state === 'teardown_failed') - (a.state === 'teardown_failed'))
+  const retired = (ranges || []).filter((r) => r.state === 'retired')
+    .sort((a, b) => (toMs(b.retired_at) || 0) - (toMs(a.retired_at) || 0))
+  const up = cards.filter((r) => r.state === 'live').length
+  const building = cards.filter((r) => r.state === 'building').length
+  const dirty = cards.filter((r) => r.state === 'teardown_failed').length
+  // A failed teardown is not "up" — it is counted on its own so the header never reads as health.
+  const sub = `${up} range${up === 1 ? '' : 's'} up · ${building} building`
+    + (dirty ? ` · ${dirty} teardown${dirty === 1 ? '' : 's'} failed` : '')
 
   return (
     <div className="mx-auto max-w-6xl px-8 py-10">
       <TopNav />
-      <PageHeader title="Active scrims"
-        sub="Running and recently finished scrims, one card per attempt"
+      <PageHeader title="Active ranges"
+        sub={ranges ? sub : undefined}
         actions={<Button variant="primary" onClick={() => setNewRun(true)}><Icon name="plus" />New run</Button>} />
       <ErrorBanner error={err} />
-      {!runs && !err && <div className="grid grid-cols-1 gap-8 xl:grid-cols-2">{[0, 1].map((i) => <div key={i} className="panel h-72 animate-pulse opacity-60" />)}</div>}
-      {runs && !cards.length && (
-        <EmptyState icon="rocket" title="No active scrims"
+      {!ranges && !err && <div className="grid auto-rows-fr grid-cols-1 gap-6 xl:grid-cols-2">{[0, 1].map((i) => <div key={i} className="panel h-72 animate-pulse opacity-60" />)}</div>}
+      {ranges && !cards.length && (
+        <EmptyState icon="rocket" title="No active ranges"
           action={<Button variant="primary" onClick={() => setNewRun(true)}><Icon name="plus" />New run</Button>}>
-          Submit a deploy, scrim, verify or teardown and it shows up here while it runs.
+          A range boards here while it builds and while it is up, and leaves when a destroy of it succeeds.
         </EmptyState>
       )}
-      <div className="grid grid-cols-1 items-start gap-8 xl:grid-cols-2">
-        {cards.map((r) => (
-          <RunCard key={r.id} run={r} comp={compMap[r.comp_id]} comps={comps} onChanged={refresh} />
-        ))}
+      <div className="grid auto-rows-fr grid-cols-1 gap-6 xl:grid-cols-2">
+        {cards.map((r) => <RangeCard key={r.key} range={r} comp={compMap[r.comp_id]} />)}
       </div>
+      {!!retired.length && (
+        <div className="mt-10">
+          <h2 className="label">Recently retired</h2>
+          <ul className="space-y-1.5">
+            {retired.slice(0, 5).map((r) => (
+              <li key={r.key}>
+                <Link to={r.retired_by ? `/c/${r.comp_id}/runs/${r.retired_by}` : `/c/${r.comp_id}`}
+                  className="flex items-baseline gap-3 text-xs text-faint transition hover:text-accent">
+                  <span className="w-64 min-w-0 shrink truncate">{compMap[r.comp_id]?.name || r.comp_id}</span>
+                  <span className="shrink-0 font-mono">{r.retired_by || '—'}</span>
+                  <span className="shrink-0">{agoMs(r.retired_at) || '—'}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+          {retired.length > 5 && <div className="mt-1.5 text-xs text-faint">+{retired.length - 5} more</div>}
+        </div>
+      )}
       <NewRunModal open={newRun} onClose={() => setNewRun(false)} comps={comps}
         onSubmitted={() => { setErr(null); refresh() }} />
     </div>

@@ -22,16 +22,19 @@ export const stagesFor = (action) =>
   action === 'scrim' ? SCRIM_STAGES
     : action === 'destroy' ? ['Teardown']
       : action === 'verify' ? ['Verify']
-        : DEPLOY_STAGES
+        : action === 'redeploy' ? ['Redeploy']
+          : DEPLOY_STAGES
 
 const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
 
 // ── state pill ─────────────────────────────────────────────────────────────────────────────
 
+// In-flight is the accent (with a pulse); a finished run is neutral, so a board of finished
+// cards does not read as a wall of "go" colour next to the one thing still moving.
 const STATE_CLS = {
   queued: 'bg-sunken text-muted',
   running: 'bg-accent-soft text-accent',
-  succeeded: 'bg-accent-soft text-accent',
+  succeeded: 'bg-sunken text-muted',
   failed: 'bg-danger-soft text-danger',
   cancelled: 'bg-sunken text-faint',
 }
@@ -40,6 +43,7 @@ export function StatePill({ state }) {
   return (
     <span className={`chip px-2.5 py-1 ${STATE_CLS[state] || 'bg-sunken text-muted'}`}>
       {state === 'running' && <span className="mr-1.5 h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />}
+      {state === 'succeeded' && <Icon name="check" className="mr-1 h-3 w-3" />}
       {state}
     </span>
   )
@@ -79,60 +83,119 @@ export function useRunActions(run, onChanged) {
 
 // ── stage progress strip ───────────────────────────────────────────────────────────────────
 
-// Seconds spent per stage, keyed by normalized stage name: consecutive stage events bound
-// each stage; the last one runs to the run's end (or now).
+// Seconds spent per step: consecutive stage events bound each step, and the last runs to the
+// run's end (or now). Keyed by index when the event carries one, else by normalized name —
+// records written before the runner stamped index/total only have the name.
 function stageDurations(stageEvents, endedAt) {
   const out = {}
   stageEvents.forEach((ev, i) => {
     const start = toMs(ev.ts)
-    if (!start || !ev.stage) return
+    if (!start) return
     const next = stageEvents[i + 1]
     const end = next ? toMs(next.ts) : (endedAt ? toMs(endedAt) : Date.now())
-    out[norm(ev.stage)] = (end - start) / 1000
+    const d = (end - start) / 1000
+    if (Number.isFinite(ev.index)) out[ev.index - 1] = d
+    if (ev.stage) out[norm(ev.stage)] = d
   })
   return out
 }
 
-export function StageStrip({ action, stage, state, endedAt, stageEvents = [] }) {
-  useTick(1000) // the current stage's elapsed keeps moving
+// Which step the run is on. The index the runner stamps on the stage event is authoritative;
+// matching stage names is the fallback for older records. A started single-step action is in
+// its one step by definition — without that a failed teardown drew an all-grey "no progress"
+// bar, because a destroy's stage string never matched "Teardown" (2026-10-14).
+function currentStep(action, stage, state, stageEvents) {
+  const stages = stagesFor(action)
   const current = stage || stageEvents.at(-1)?.stage || ''
-  let stages = stagesFor(action)
-  if (!stages.length && current) stages = [current]
+  const indexed = [...stageEvents].reverse().find((e) => Number.isFinite(e.index))
+  const total = stages.length || indexed?.total || 0
+  let idx = -1
+  if (indexed) idx = Math.min(indexed.index, total) - 1
+  else if (current) {
+    idx = stages.findIndex((s) => norm(s) === norm(current))
+    if (idx < 0) idx = stages.findIndex((s) => norm(current).includes(norm(s)) || norm(s).includes(norm(current)))
+  }
+  if (idx < 0 && total === 1 && state !== 'queued' && (indexed || current)) idx = 0
+  return { stages, current, total, idx }
+}
+
+export function StageStrip({ action, stage, state, endedAt, stageEvents = [] }) {
+  // Only a live run's elapsed moves; a finished strip is static, so a board of finished cards
+  // must not re-render every second.
+  useTick(state === 'running' || state === 'queued' ? 1000 : 60000)
+  const [open, setOpen] = useState(false)
+  const { stages, current, total, idx } = currentStep(action, stage, state, stageEvents)
   const durs = stageDurations(stageEvents, endedAt)
   const succeeded = state === 'succeeded'
   const failed = state === 'failed' || state === 'cancelled'
-  let idx = stages.findIndex((s) => norm(s) === norm(current))
-  if (idx < 0 && current) idx = stages.findIndex((s) => norm(current).includes(norm(s)) || norm(s).includes(norm(current)))
-  const curDur = current ? durs[norm(stages[idx] || current)] : null
+  // The runner records the last COMPLETED step, so a failure is the one after it (or the
+  // first step when nothing completed).
+  const failIdx = failed && total ? Math.min(idx + 1, total - 1) : -1
+  const startMs = toMs(stageEvents[0]?.ts)
+  const elapsed = startMs ? ((endedAt ? toMs(endedAt) : Date.now()) - startMs) / 1000 : null
+  const dur = (i, s) => durs[i] ?? durs[norm(s)]
+  const stepState = (i) => {
+    if (failed) return i === failIdx ? 'fail' : i <= idx ? 'done' : 'todo'
+    if (succeeded) return 'done'
+    return i === idx ? 'cur' : idx >= 0 && i < idx ? 'done' : 'todo'
+  }
+
+  // A finished run collapses to its summary bar: the steps are history, and every finished
+  // card on a board then has the same height.
+  if ((succeeded || failed) && !open) {
+    const label = failed
+      ? `failed at ${stages[failIdx] || current || 'the last step'}`
+      : 'complete'
+    return (
+      <button onClick={() => setOpen(true)} className="group w-full text-left" title="Show the steps">
+        <div className={`h-2.5 rounded-full ${failed ? 'bg-danger' : 'bg-accent'}`} />
+        <div className="mt-1.5 flex items-center gap-2 text-[11px]">
+          <span className={`font-semibold tabular-nums ${failed ? 'text-danger' : 'text-muted'}`}>
+            {succeeded ? total : Math.max(idx + 1, 0)}/{total}
+          </span>
+          <span className={`min-w-0 truncate ${failed ? 'text-danger' : 'text-muted'}`}>{label}</span>
+          {elapsed != null && <span className="shrink-0 tabular-nums text-faint">{fmtDur(elapsed)}</span>}
+          <Icon name="chevron" className="ml-auto h-3.5 w-3.5 shrink-0 rotate-90 text-faint transition group-hover:text-fg" />
+        </div>
+      </button>
+    )
+  }
 
   return (
     <div>
       {/* Eight stages don't fit one row of a half-width card — wrap to a 2x4 grid. */}
       <div className={stages.length > 4 ? 'grid grid-cols-4 gap-x-1 gap-y-2' : 'flex items-stretch gap-1'}>
         {stages.map((s, i) => {
-          const done = succeeded || (idx >= 0 && i < idx)
-          const isCur = i === idx
-          const d = durs[norm(s)]
+          const st = stepState(i)
+          const d = dur(i, s)
           return (
             <div key={s} className="min-w-0 flex-1" title={`${s}${d != null ? ` · ${fmtDur(d)}` : ''}`}>
               <div className={`h-2.5 rounded-full transition-colors ${
-                isCur && failed ? 'bg-danger'
-                  : isCur ? 'animate-pulse bg-accent'
-                    : done ? 'bg-accent' : 'bg-line'}`} />
+                st === 'fail' ? 'bg-danger'
+                  : st === 'cur' ? 'animate-pulse bg-accent'
+                    : st === 'done' ? 'bg-accent' : 'bg-line'}`} />
               <div className={`mt-1 truncate text-[9px] font-semibold uppercase tracking-wider ${
-                isCur && failed ? 'text-danger' : isCur ? 'text-accent' : done ? 'text-muted' : 'text-faint'}`}>{s}</div>
+                st === 'fail' ? 'text-danger' : st === 'cur' ? 'text-accent' : st === 'done' ? 'text-muted' : 'text-faint'}`}>{s}</div>
               <div className="truncate text-[9px] tabular-nums text-faint">{d != null ? fmtDur(d) : ''}</div>
             </div>
           )
         })}
       </div>
-      {(current || !stages.length) && (
-        <div className="mt-2 flex items-center gap-2 text-xs text-muted">
-          <span className={`h-2 w-2 shrink-0 rounded-full ${failed ? 'bg-danger' : 'animate-pulse bg-accent'}`} />
-          <span className="min-w-0 truncate">{current || 'waiting for the first stage'}</span>
-          {curDur != null && <span className="ml-auto shrink-0 tabular-nums text-faint">{fmtDur(curDur)}</span>}
-        </div>
-      )}
+      <div className="mt-2 flex items-center gap-2 text-xs text-muted">
+        <span className={`h-2 w-2 shrink-0 rounded-full ${failed ? 'bg-danger' : succeeded ? 'bg-accent' : 'animate-pulse bg-accent'}`} />
+        <span className="min-w-0 truncate">
+          {failed ? `failed at ${stages[failIdx] || current || 'the last step'}`
+            : succeeded ? `${total} step${total === 1 ? '' : 's'} complete`
+              : current || 'waiting for the first stage'}
+        </span>
+        {elapsed != null && <span className="ml-auto shrink-0 tabular-nums text-faint">{fmtDur(elapsed)}</span>}
+        {(succeeded || failed) && (
+          <button onClick={() => setOpen(false)} className="shrink-0 rounded-full p-0.5 text-faint hover:text-fg"
+            title="Collapse the steps" aria-label="Collapse the steps">
+            <Icon name="chevron" className="h-3.5 w-3.5 -rotate-90" />
+          </button>
+        )}
+      </div>
     </div>
   )
 }
@@ -371,7 +434,7 @@ export function NewRunModal({ open, onClose, comps, initial = {}, onSubmitted })
 }
 
 // "Reset a box…" — redeploy action with box/team/mode fields.
-const REDEPLOY_MODES = ['reset', 'rebuild', 'rollback-ready', 'rollback-base', 'reconfigure', 'resync', 'engine-recovery']
+export const REDEPLOY_MODES = ['reset', 'rebuild', 'rollback-ready', 'rollback-base', 'reconfigure', 'resync', 'engine-recovery']
 
 export function ResetBoxModal({ open, onClose, run, initial = {}, onSubmitted }) {
   const [form, setForm] = useState({ box: '', team: '', mode: 'reset' })
@@ -391,7 +454,10 @@ export function ResetBoxModal({ open, onClose, run, initial = {}, onSubmitted })
         comp_id: run.comp_id,
         action: 'redeploy',
         engine_ref: run.engine_ref,
-        params: { box: form.box, team: form.team, mode: form.mode },
+        // The runner maps these straight onto the driver's flags (boxes -> --boxes,
+        // teams -> --teams); `box`/`team` are silently dropped, which turns a per-box
+        // reset into a range-wide one.
+        params: { boxes: form.box, teams: form.team, mode: form.mode },
       })
       onSubmitted?.(r)
       onClose()
@@ -401,8 +467,8 @@ export function ResetBoxModal({ open, onClose, run, initial = {}, onSubmitted })
     <Modal open={open} onClose={onClose} title="Reset a box">
       <form onSubmit={submit} className="space-y-4">
         <ErrorBanner error={err} />
-        <Field label="Box" hint="From boxes.json">
-          <input className={`${inputCls} font-mono`} list="reset-box-names" value={form.box} onChange={set('box')} required autoFocus placeholder="web01" />
+        <Field label="Box" hint="Comma-separated, from boxes.json — empty means every box of the selected teams">
+          <input className={`${inputCls} font-mono`} list="reset-box-names" value={form.box} onChange={set('box')} autoFocus placeholder="web01" />
           <datalist id="reset-box-names">{boxes.map((b) => <option key={b.name} value={b.name} />)}</datalist>
         </Field>
         <div className="grid grid-cols-2 gap-4">
@@ -417,7 +483,7 @@ export function ResetBoxModal({ open, onClose, run, initial = {}, onSubmitted })
         </div>
         <div className="flex justify-end gap-3 pt-2">
           <Button type="button" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" disabled={!form.box}><Icon name="play" />Submit redeploy</Button>
+          <Button variant="primary" disabled={!form.box && !form.team}><Icon name="play" />Submit redeploy</Button>
         </div>
       </form>
     </Modal>

@@ -14,7 +14,9 @@ from pydantic import BaseModel
 
 from dashboard import auth, comps_api, config
 from dashboard.events import EventBus
+from dashboard.inventory import build_inventory
 from dashboard.mcp_server import build_mcp
+from dashboard.ranges import build_ranges
 from dashboard.runner import RunManager, RunRefused, artifacts_root
 from dashboard.store import Store
 
@@ -58,13 +60,21 @@ def create_app():
     @app.post("/api/runs")
     def submit(body: RunBody):
         params = dict(body.params or {})
-        params.update({"teams": body.teams, "scoring_vmid": body.scoring_vmid,
-                       "engine_node": body.engine_node, "team_node": body.team_node,
-                       "nodes": body.nodes})
+        # The body's convenience fields are DEFAULTS: `params` already carries the driver's
+        # own flags (a redeploy's teams selector, boxes, mode), and body.teams' 2 would
+        # otherwise clobber an explicit params["teams"].
+        for key, val in (("teams", body.teams), ("scoring_vmid", body.scoring_vmid),
+                         ("engine_node", body.engine_node), ("team_node", body.team_node),
+                         ("nodes", body.nodes)):
+            params.setdefault(key, val)
         try:
             return manager.submit(body.comp_id, body.action, body.engine_ref or "main", params)
         except RunRefused as e:
             raise HTTPException(409, str(e))
+
+    @app.get("/api/ranges")
+    def ranges_list():
+        return build_ranges(store)
 
     @app.get("/api/runs")
     def runs(state: str = "", comp_id: str = ""):
@@ -129,6 +139,10 @@ def create_app():
             return []
         return [{"path": str(p.relative_to(root)), "bytes": p.stat().st_size}
                 for p in sorted(root.rglob("*")) if p.is_file()]
+
+    @app.get("/api/runs/{run_id}/inventory")
+    def inventory(run_id: str):
+        return build_inventory(store, _run_or_404(run_id))
 
     @app.get("/api/runs/{run_id}/artifacts/file")
     def artifact_file(run_id: str, path: str):

@@ -39,6 +39,8 @@ const dot = (b) => DOT[kindOf(b)]
 function Sidebar({ comp }) {
   const inBox = useMatch('/c/:id/boxes/:box/*')
   const boxName = inBox?.params.box
+  const inRun = useMatch('/c/:id/runs/:run/*')
+  const runId = inRun?.params.run
   const [boxesOpen, setBoxesOpen] = useState(true)
   const base = `/c/${comp.id}`
   const box = comp.boxes.find((b) => b.name === boxName)
@@ -68,6 +70,17 @@ function Sidebar({ comp }) {
           <NavLink end to={`${base}/boxes/${boxName}`} className={navCls}><Icon name="box" />Summary</NavLink>
           <NavLink to={`${base}/boxes/${boxName}/services`} className={navCls}><Icon name="service" />Services<Count n={(comp.box_services[boxName] || []).length} /></NavLink>
           <NavLink to={`${base}/boxes/${boxName}/misconfigs`} className={navCls}><Icon name="shield" />Misconfigs<Count n={(comp.box_vulns[boxName] || []).length} /></NavLink>
+        </nav>
+      ) : runId ? (
+        <nav className="space-y-1" aria-label="Run">
+          <Link to={base} className="mb-2 flex items-center gap-2 px-4 py-1.5 text-sm text-muted transition hover:text-accent">
+            <Icon name="back" className="h-3.5 w-3.5" /> {comp.name}
+          </Link>
+          <div className="truncate px-4 pb-1 pt-1 font-mono text-sm font-semibold" title={runId}>{runId}</div>
+          <NavLink end to={`${base}/runs/${runId}`} className={navCls}><Icon name="overview" />Overview</NavLink>
+          <NavLink to={`${base}/runs/${runId}/teams`} className={navCls}><Icon name="boxes" />Teams</NavLink>
+          <NavLink to={`${base}/runs/${runId}/infrastructure`} className={navCls}><Icon name="cpu" />Infrastructure</NavLink>
+          <NavLink to={`${base}/runs/${runId}/evidence`} className={navCls}><Icon name="packet" />Evidence</NavLink>
         </nav>
       ) : (
         <nav className="min-h-0 flex-1 space-y-1 overflow-auto" aria-label="Competition">

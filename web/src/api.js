@@ -57,6 +57,9 @@ export const api = {
   nodes: () => request('GET', '/nodes'),
   putNodes: (body) => request('PUT', '/nodes', body),
 
+  // Ranges: one entry per range workspace, live while its infrastructure is up.
+  ranges: () => request('GET', '/ranges'),
+
   // runs: POST /api/runs {comp_id, action, engine_ref, teams, scoring_vmid, engine_node,
   // team_node, params}; action ∈ deploy|plan|verify|destroy|scrim|redeploy.
   submitRun: (body) => request('POST', '/runs', body),
@@ -66,6 +69,8 @@ export const api = {
   runLog: (id, since = 0) => request('GET', `/runs/${enc(id)}/log?since=${since || 0}`),
   runEvents: (id, since = 0) => request('GET', `/runs/${enc(id)}/events?since=${since || 0}`),
   runArtifacts: (id) => request('GET', `/runs/${enc(id)}/artifacts`),
+  // The range's deployed infrastructure, projected server-side from its workspace.
+  runInventory: (id) => request('GET', `/runs/${enc(id)}/inventory`),
   // A single artifact file as a Blob (request() parses JSON, so this fetches raw).
   runArtifactFile: async (id, path) => {
     const res = await fetch(`/api/runs/${enc(id)}/artifacts/file?path=${enc(path)}`, {

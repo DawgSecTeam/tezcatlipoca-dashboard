@@ -17,13 +17,16 @@ import uuid
 import importlib.util
 from pathlib import Path
 
-from dashboard import config, nodes, workspaces
+from dashboard import config, nodes, ranges, workspaces
 
 PHASE_NAMES = {
     1: "cleanup", 2: "engine_template", 3: "prepare_engine", 4: "golden_set",
     5: "firewall_bootstrap", 6: "repair_sweep", 7: "domains_and_final", 8: "seed",
 }
 FAIL_FAST_ACTIONS = ("deploy", "plan", "scrim")
+# Actions whose driver reports no engine phase: they get ONE stage event, not the range's
+# stale deploy phases (a 6-second teardown used to re-emit phase 1/8..8/8 in one second).
+SINGLE_STEP_STAGES = {"verify": "verify", "destroy": "teardown", "redeploy": "redeploy"}
 
 # Third-party packages the engine drivers import in-process. The service's own interpreter IS
 # the drivers' interpreter, so a venv that predates a dependency fails deep inside a deploy
@@ -137,7 +140,9 @@ class RunManager:
 
     def submit(self, comp_id, action, engine_ref="main", params=None):
         params = dict(params or {})
-        if params.get("teams"):
+        # Only deploy/plan/scrim take a team COUNT; a redeploy's `teams` is a selector
+        # ("team2", "2" or the subnet identifier "102"), so int() there would 500.
+        if params.get("teams") and action in ("deploy", "plan", "scrim"):
             params["teams"] = int(params["teams"])
         self.ensure_repos()
         self.refresh_comps()
@@ -168,7 +173,7 @@ class RunManager:
             # `terraform output` (misreporting a missing workdir as a missing binary), and the
             # queue could never clean up or verify what it deployed (2026-10-14). Resolve it at
             # submit so a hopeless run is refused before a run record exists.
-            target = self._range_workspace(comp_id, params)
+            target = self._range_workspace(comp_id, params, action)
             if target is None:
                 raise RunRefused(
                     f"nothing to {action} for {comp_id}: no run workspace with a "
@@ -182,24 +187,40 @@ class RunManager:
                          daemon=True).start()
         return record
 
-    def _range_workspace(self, comp_id, params):
+    def _range_workspace(self, comp_id, params, action):
         """The workspace holding this competition's range: an explicit `comp_dir`, else the
-        newest run workspace OF THIS COMPETITION that carries a deploy run id (the store is the
-        ledger of which run dirs belong to which competition — matching by workspace name would
-        let one competition's run reach another's range)."""
+        newest NON-retired run workspace OF THIS COMPETITION that carries a deploy run id
+        (the store is the ledger of which run dirs belong to which competition — matching by
+        workspace name would let one competition's run reach another's range).
+
+        A retired candidate is skipped so a re-run teardown cannot be queued against a range
+        that is already gone; teardown is idempotent, so a range whose teardown merely FAILED
+        stays resolvable and retryable."""
         explicit = (params or {}).get("comp_dir")
         if explicit:
             return Path(explicit)
+        by_key = {r["key"]: r for r in ranges.build_ranges(self.store)}
+        retired = []
         for run in self.store.list_runs(comp_id=comp_id):        # newest first
             ws = Path(run["run_dir"]) / "comp"
             state = ws / ".deploy_state.json"
             if not ((ws / "Compfile").exists() and state.exists()):
                 continue
             try:
-                if json.loads(state.read_text()).get("run_id"):
-                    return ws
+                if not json.loads(state.read_text()).get("run_id"):
+                    continue
             except (OSError, ValueError):
                 continue
+            rng = by_key.get(str(ws.resolve()))
+            if rng and rng["state"] == "retired":
+                retired.append(rng)
+                continue
+            return ws
+        if retired:
+            rng = retired[0]
+            raise RunRefused(
+                f"the range in {rng['deploy_run_id']} was torn down by {rng['retired_by']} — "
+                f"nothing to {action} (a fresh deploy builds a new range)")
         return None
 
     def cancel(self, run_id):
@@ -288,7 +309,7 @@ class RunManager:
             with self._lock:
                 self._procs[run_id] = proc
             self.store.update_run(run_id, pid=proc.pid)
-            self._track_stages(run_id, ws, proc)
+            self._track_stages(run_id, ws, proc, record["action"])
             rc = proc.wait()
             log.close()
             self._finish(run_id, rc, cancelling=rc < 0)
@@ -377,26 +398,37 @@ class RunManager:
 
     # ---- stage tracking ----
 
-    def _track_stages(self, run_id, ws, proc):
-        last_phase, seen_phases = 0, set()
+    def _track_stages(self, run_id, ws, proc, action):
+        if action in SINGLE_STEP_STAGES:
+            # No engine phase signal for these: one stage at start, then just wait. Polling
+            # .deploy_state.json here replayed the range's stale deploy phases under the
+            # teardown's own run id.
+            self._stage(run_id, SINGLE_STEP_STAGES[action], 1, 1)
+            proc.wait()
+            return
+        last_phase, seen, since = 0, set(), time.time()
         while proc.poll() is None:
-            phase = self._deploy_phase(ws)
-            if phase and phase > last_phase:
-                for n in range(last_phase + 1, phase + 1):
-                    self._stage(run_id, f"phase {n}/8 {PHASE_NAMES.get(n, '')}".strip())
-                last_phase = phase
-            for p in self._scrim_phases(ws) - seen_phases:
-                self._stage(run_id, str(p))
-                seen_phases.add(p)
+            if action in ("deploy", "plan"):
+                last_phase = self._emit_deploy_phases(run_id, ws, last_phase)
+            else:  # scrim: the harness's phases only, and only this run's manifests
+                for phase in self._scrim_phases(ws, since):
+                    if phase not in seen:
+                        seen.add(phase)
+                        self._stage(run_id, str(phase))
             time.sleep(2)
-        phase = self._deploy_phase(ws)
-        if phase and phase > last_phase:
-            for n in range(last_phase + 1, phase + 1):
-                self._stage(run_id, f"phase {n}/8 {PHASE_NAMES.get(n, '')}".strip())
+        if action in ("deploy", "plan"):
+            self._emit_deploy_phases(run_id, ws, last_phase)
 
-    def _stage(self, run_id, stage):
+    def _emit_deploy_phases(self, run_id, ws, last_phase):
+        phase = self._deploy_phase(ws)
+        for n in range(last_phase + 1, phase + 1):
+            self._stage(run_id, f"phase {n}/8 {PHASE_NAMES.get(n, '')}".strip(), n, 8)
+        return max(last_phase, phase)
+
+    def _stage(self, run_id, stage, index=None, total=None):
         self.store.update_run(run_id, stage=stage)
-        self._emit(run_id, "stage", stage=stage, data={"stage": stage})
+        self._emit(run_id, "stage", stage=stage,
+                   data={"stage": stage, "index": index, "total": total})
 
     @staticmethod
     def _deploy_phase(ws):
@@ -406,13 +438,22 @@ class RunManager:
             return 0
 
     @staticmethod
-    def _scrim_phases(ws):
-        found = set()
-        for manifest in Path(ws).glob(".automated-tests/*/run.json"):
+    def _scrim_phases(ws, since):
+        """The harness's phases in the order each manifest lists them, from the manifests
+        written since `since`.
+
+        The workspace is shared across runs, so a `--skip-deploy` scrim that read every
+        manifest replayed a previous run's phases (and a set delivered them unordered)."""
+        found = []
+        for manifest in sorted(Path(ws).glob(".automated-tests/*/run.json")):
             try:
-                for entry in json.loads(manifest.read_text()).get("phases") or []:
-                    found.add(entry.get("phase"))
+                if manifest.stat().st_mtime < since:
+                    continue
+                entries = json.loads(manifest.read_text()).get("phases") or []
             except (OSError, ValueError):
-                pass
-        found.discard(None)
+                continue
+            for entry in entries:
+                phase = entry.get("phase")
+                if phase is not None and phase not in found:
+                    found.append(phase)
         return found
