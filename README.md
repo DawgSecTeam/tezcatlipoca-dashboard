@@ -53,7 +53,7 @@ Tools: `list_comps`, `get_comp`, `submit_run`, `list_runs`, `get_run`, `watch_ru
 
 Which Proxmox hosts a run may deploy to is a per-run input, not the service env. The
 dashboard holds a node **catalog** in `<data>/nodes.json` (0600, edited in the UI or via
-`PUT /api/nodes`); a run selects from it (`nodes: ["zfs-193"]`) and the runner writes that
+`PUT /api/nodes`); a run selects from it (`nodes: ["<node-name>"]`) and the runner writes that
 subset to the run dir as the engine's node list, passed with `--nodes`. Tokens live only
 in the catalog and ride the run's process env under a derived `token_env` name, so no
 secret reaches a worktree, a run record, or the API (the catalog view carries
