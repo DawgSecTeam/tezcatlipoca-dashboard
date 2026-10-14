@@ -116,7 +116,7 @@ class RunManager:
         run_dir.mkdir(parents=True, exist_ok=True)
         record = self.store.create_run(run_id, comp_id, action, engine_ref, params,
                                        run_dir, run_dir / "run.log")
-        self.store.add_event(run_id, "lifecycle", data={"state": "queued", "action": action})
+        self._emit(run_id, "lifecycle", data={"state": "queued", "action": action})
         threading.Thread(target=self._run, args=(record, comp_src, engine_ref),
                          daemon=True).start()
         return record
@@ -130,8 +130,18 @@ class RunManager:
             os.killpg(proc.pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
-        self.store.add_event(run_id, "lifecycle", data={"state": "cancelling"})
+        self._emit(run_id, "lifecycle", data={"state": "cancelling"})
         return self.store.get_run(run_id)
+
+    def _emit(self, run_id, kind, stage="", data=None):
+        """Record an event AND push it to the bus — one path, so a subscriber sees exactly
+        what the cursor replays.
+
+        Recording without publishing is why `watch_run` subscribers and the SSE stream sat
+        silent on a live run while the store filled up: `EventBus.publish` had no caller."""
+        event = self.store.add_event(run_id, kind, stage=stage, data=data)
+        self.bus.publish(run_id, event)
+        return event
 
     def _run(self, record, comp_src, engine_ref):
         run_id, run_dir = record["id"], Path(record["run_dir"])
@@ -144,7 +154,7 @@ class RunManager:
             log.write("$ " + " ".join(cmd) + "\n")
             log.flush()
             self.store.update_run(run_id, state="running", started_at=time.time())
-            self.store.add_event(run_id, "lifecycle", data={"state": "running", "cmd": cmd})
+            self._emit(run_id, "lifecycle", data={"state": "running", "cmd": cmd})
             proc = subprocess.Popen(cmd, cwd=str(worktree), stdout=log, stderr=subprocess.STDOUT,
                                     stdin=subprocess.DEVNULL, start_new_session=True,
                                     env={**os.environ, "PYTHONUNBUFFERED": "1"})
@@ -174,8 +184,8 @@ class RunManager:
             state = "failed"
         self.store.update_run(run_id, state=state, returncode=rc, error=error,
                               ended_at=time.time())
-        self.store.add_event(run_id, "lifecycle",
-                             data={"state": state, "returncode": rc, "error": error})
+        self._emit(run_id, "lifecycle",
+                   data={"state": state, "returncode": rc, "error": error})
 
     def _cancel_requested(self, run_id):
         _, events = self.store.get_events(run_id, 0)
@@ -237,7 +247,7 @@ class RunManager:
 
     def _stage(self, run_id, stage):
         self.store.update_run(run_id, stage=stage)
-        self.store.add_event(run_id, "stage", stage=stage, data={"stage": stage})
+        self._emit(run_id, "stage", stage=stage, data={"stage": stage})
 
     @staticmethod
     def _deploy_phase(ws):

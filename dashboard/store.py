@@ -75,15 +75,20 @@ class Store:
         return self._view(row) if row else None
 
     def add_event(self, run_id, kind, stage="", data=None):
+        """Append one event and return it in the SAME shape `get_events` yields.
+
+        The returned dict is what the bus pushes (runner._emit), so a pushed event and a
+        cursor replay can never drift into two shapes."""
+        ts = time.time()
         with self._lock:
             seq = self._db.execute(
                 "SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE run_id = ?",
                 (run_id,)).fetchone()[0]
             self._db.execute(
                 "INSERT INTO events (run_id, seq, ts, kind, stage, data) VALUES (?,?,?,?,?,?)",
-                (run_id, seq, time.time(), kind, stage, json.dumps(data or {})))
+                (run_id, seq, ts, kind, stage, json.dumps(data or {})))
             self._db.commit()
-        return seq
+        return {"seq": seq, "ts": ts, "kind": kind, "stage": stage, **(data or {})}
 
     def get_events(self, run_id, since=0):
         rows = self._db.execute(

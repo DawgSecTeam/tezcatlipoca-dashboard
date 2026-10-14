@@ -54,6 +54,14 @@ as `notifications/message` on the session's stream (structured `data`:
 `get_run_events(run_id, since)` recovers missed events after a reconnect — the cursor is
 the event sequence number.
 
+Two facts a pusher must respect: every event a run records is published to the event bus by
+`RunManager._emit` (recording without publishing left `watch_run` and the SSE stream silent),
+and the push only lands on a **handshake-era** session. Protocol revision 2026-07-28 makes
+`notifications/message` a per-request opt-in that rides that request's own stream, so a
+connection-scoped emitter delivers nothing; an `mcp` `ClientSession` negotiates 2025-11-25 and
+receives pushes, while a session that adopts 2026-07-28 does not (`watch_run` says so instead
+of promising them, and the cursor is the fallback).
+
 ## Running locally
 
 ```bash

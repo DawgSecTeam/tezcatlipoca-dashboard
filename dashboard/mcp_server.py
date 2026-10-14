@@ -9,6 +9,7 @@ import asyncio
 from pathlib import Path
 
 from mcp.server.mcpserver import Context, MCPServer
+from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
 from dashboard.runner import RunRefused
 
@@ -106,6 +107,15 @@ def build_mcp(manager):
         if key not in pumps:
             queue = bus.subscribe(run_id)
             pumps[key] = asyncio.create_task(_pump(ctx.session, run_id, queue))
+        era = getattr(ctx.session, "protocol_version", "")
+        if era in MODERN_PROTOCOL_VERSIONS:
+            # 2026-07-28 makes notifications/message a per-request opt-in riding the
+            # request's own stream, and connection-scoped emitters deliver nothing —
+            # the SDK drops the pump's sends silently. Say so instead of promising pushes.
+            return (f"subscribed to {run_id}, but this session speaks {era}: the spec "
+                    "forbids connection-scoped notifications, so stage pushes will NOT "
+                    "arrive. Reconnect with a handshake-era session (an mcp ClientSession) "
+                    "or read the events through the cursor: get_run_events(run_id, since=N).")
         return f"subscribed to {run_id}; stage events will arrive as notifications"
 
     @mcp.tool()
