@@ -103,7 +103,8 @@ def build_command(action, comp_id, ws, params, nodes_file=None):
             cmd += ["--nodes", str(nodes_file)]
         for flag in ("--new", "--from-template", "--red-vmid", "--red-ip", "--red-model",
                      "--blue-model", "--llm-base-url", "--blue-base-url", "--keep-range",
-                     "--blue-watchdog", "--skip-deploy", "--resume-event"):
+                     "--blue-watchdog", "--skip-deploy", "--resume-event",
+                     "--scoring-vmid", "--team-identifiers", "--engine-mgmt-ip"):
             val = params.get(flag.lstrip("-").replace("-", "_"))
             if val is True:
                 cmd.append(flag)

@@ -36,6 +36,20 @@ def test_plan_and_verify_and_destroy_shapes():
     assert destroy[1] == "destroy-competition.py" and "--teams-only" in destroy
 
 
+def test_scrim_can_place_its_own_deploy_stage():
+    # A scrim stages a full deploy; while another range holds the shared env's engine vmid,
+    # team block or management IP, that deploy has to be told where to go.
+    scrim = build_command("scrim", "c", "/ws", {"teams": 1, "scoring_vmid": 1300,
+                                                "team_identifiers": "130",
+                                                "engine_mgmt_ip": "10.0.0.248"})
+    assert scrim[scrim.index("--scoring-vmid") + 1] == "1300"
+    assert scrim[scrim.index("--team-identifiers") + 1] == "130"
+    assert scrim[scrim.index("--engine-mgmt-ip") + 1] == "10.0.0.248"
+    plain = build_command("scrim", "c", "/ws", {"teams": 1})
+    for flag in ("--scoring-vmid", "--team-identifiers", "--engine-mgmt-ip"):
+        assert flag not in plain
+
+
 def test_scrim_and_redeploy_shapes():
     scrim = build_command("scrim", "c", "/ws", {"teams": 2, "duration_min": 45,
                                                 "from_template": "agent-scrim", "new": "c"})
