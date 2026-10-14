@@ -13,7 +13,8 @@ queue).
 
 ## Setup facts
 
-- Dashboard: `http://10.0.0.143:8787` (web UI; token dialog) — MCP: `http://10.0.0.143:8787/mcp`
+- Dashboard address and bearer tokens: `../tezcatlipoca/infrastructure-status.md` (gitignored;
+  the dashboard's own `.env` holds the client tokens). Web UI for humans; MCP at `/mcp`
   (Streamable HTTP, `Authorization: Bearer $TEZ_DASHBOARD_TOKEN`).
 - Repos: engine `DawgSecTeam/tezcatlipoca` (pinned per run), definitions
   `DawgSecTeam/tezcatlipoca-competitions` (scrim-one lives there), dashboard
@@ -21,8 +22,8 @@ queue).
 - Comp `scrim-one`: 7 boxes (dc01 AD DC, win02 FTP, web01, mail01, db01, splunk01, fw01
   in-path pfSense), 13 scored services, 68 misconfigs, 12 injects.
 - Skim first: engine `docs/scrim-harness.md`, `docs/usage-agents.md` § central runs,
-  `docs/environment-facts.md` (free vmids/IPs, node quirks), `AGENTS.md` (root-cause
-  discipline, report rules).
+  `../tezcatlipoca/infrastructure-status.md` (hosts, free vmids/IPs, node quirks),
+  `AGENTS.md` (root-cause discipline, report rules).
 
 ## How to run it
 

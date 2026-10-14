@@ -9,6 +9,9 @@ run's state and evidence in its own data dir.
   per-run workspace copy via `--comp-dir`.
 - **Competition definitions**: github.com/DawgSecTeam/tezcatlipoca-competitions —
   read-only here; every run seeds a workspace snapshot.
+- **Estate ground truth** (hosts, endpoints, node names, datastores, token sources, live
+  ownership): the engine repo's gitignored `../tezcatlipoca/infrastructure-status.md` —
+  read it before a deploy; do not copy its values into this repo.
 
 ## Run model
 
