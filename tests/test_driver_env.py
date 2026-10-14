@@ -149,3 +149,24 @@ def test_submit_refuses_when_a_driver_dep_is_missing(monkeypatch, tmp_path):
     assert "toml" in str(raised.value)
     assert "requirements.txt" in str(raised.value)
     assert store.list_runs() == [], "a refused submit must not leave a run record"
+
+
+def test_driver_env_forces_an_absolute_ssh_key_path(monkeypatch, tmp_path):
+    """A relative key path is resolved against the worktree by the engine and recorded in state,
+    so it must never reach a driver relative (it made the range un-destroyable once the worktree
+    was gone: `terraform destroy` -> "no file exists at <worktree>/proxmox")."""
+    key = tmp_path / "tez-proxmox"
+    key.write_text("KEY")
+    monkeypatch.setattr(config, "engine_proxmox_file", lambda: key)
+    monkeypatch.setenv("TF_VAR_ssh_private_key_path", "../proxmox")
+    mgr = RunManager(store=None, bus=None)
+    env = mgr._driver_env()
+    assert env["TF_VAR_ssh_private_key_path"] == str(key.resolve())
+    assert env["PYTHONUNBUFFERED"] == "1"
+
+
+def test_driver_env_leaves_the_path_alone_without_a_key_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "engine_proxmox_file", lambda: tmp_path / "missing")
+    monkeypatch.setenv("TF_VAR_ssh_private_key_path", "/already/absolute")
+    mgr = RunManager(store=None, bus=None)
+    assert mgr._driver_env()["TF_VAR_ssh_private_key_path"] == "/already/absolute"

@@ -205,6 +205,23 @@ class RunManager:
         self._emit(run_id, "lifecycle", data={"state": "cancelling"})
         return self.store.get_run(run_id)
 
+    def _driver_env(self):
+        """The environment a driver child gets.
+
+        PATH carries the user-space tool dirs (opencode, terraform, sshpass). The ssh key path is
+        forced ABSOLUTE to this service's own key file: the engine resolves a relative
+        `TF_VAR_ssh_private_key_path` against the CURRENT DIRECTORY — which for a run is the
+        throwaway worktree — and writes that resolved path into terraform.tfvars.json, i.e. into
+        the state. The worktree is deleted when the run ends, so a relative value left the range
+        un-destroyable: `terraform destroy` died parsing the config with
+        "no file exists at <worktree>/proxmox" (2026-10-14, run-3aaf37f1, four attempts).
+        """
+        env = {**os.environ, "PYTHONUNBUFFERED": "1", "PATH": config.driver_path()}
+        key = config.engine_proxmox_file()
+        if key and Path(key).is_file():
+            env["TF_VAR_ssh_private_key_path"] = str(Path(key).resolve())
+        return env
+
     def _emit(self, run_id, kind, stage="", data=None):
         """Record an event AND push it to the bus — one path, so a subscriber sees exactly
         what the cursor replays.
@@ -224,6 +241,7 @@ class RunManager:
             worktree = run_dir / "engine"
             engine_used = self._provision_worktree(worktree, engine_ref, run_dir)
             cmd = build_command(record["action"], record["comp_id"], ws, record["params"])
+            child_env = self._driver_env()
             log = open(record["log_path"], "w")
             log.write(f"$ engine {engine_used['ref']} @ {engine_used['commit'][:12]}\n")
             log.write("$ " + " ".join(cmd) + "\n")
@@ -232,8 +250,7 @@ class RunManager:
             self._emit(run_id, "lifecycle", data={"state": "running", "cmd": cmd})
             proc = subprocess.Popen(cmd, cwd=str(worktree), stdout=log, stderr=subprocess.STDOUT,
                                     stdin=subprocess.DEVNULL, start_new_session=True,
-                                    env={**os.environ, "PYTHONUNBUFFERED": "1",
-                                         "PATH": config.driver_path()})
+                                    env=child_env)
             with self._lock:
                 self._procs[run_id] = proc
             self.store.update_run(run_id, pid=proc.pid)
