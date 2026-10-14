@@ -23,6 +23,7 @@ from dashboard import config
 COMPS = config.competitions_checkout()
 NAKON_DIR = config.nakon_dir()
 
+sys.path.insert(0, str(config.engine_checkout()))  # engine modules the routes call into
 sys.path.insert(0, str(NAKON_DIR))
 
 try:  # nakon's catalog reads its own .env; never overrides an exported value
