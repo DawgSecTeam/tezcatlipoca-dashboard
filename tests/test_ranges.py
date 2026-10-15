@@ -24,27 +24,7 @@ def _rec(rid, action, comp="c", state="succeeded", rc=0, created=0.0, run_dir=No
 
 
 def _workspace(tmp_path, rid, vms=False):
-    ws = tmp_path / rid / "comp"
-    ws.mkdir(parents=True)
-    (ws / "Compfile").write_text("name c\n")
-    (ws / ".deploy_state.json").write_text(json.dumps({"run_id": rid}))
-    if vms:
-        (ws / "terraform").mkdir()
-        (ws / "terraform" / "terraform.tfstate").write_text(json.dumps({"resources": [
-            {"type": "proxmox_virtual_environment_vm", "name": "team_box",
-             "instances": [{"index_key": "team1-web01", "attributes": {"vm_id": 1332}}]},
-        ]}))
-    return ws
-
-
-def _range_of(*runs):
-    built = ranges.build_ranges(FakeStore(list(runs)))
-    assert len(built) == 1, [r["state"] for r in built]
-    return built[0]
-
-
-def _doc_workspace(tmp_path, rid, vms=True):
-    """A v0.3.0 workspace: the estate document, no terraform state at all."""
+    """A run workspace: the estate document is the range's whole state."""
     ws = tmp_path / rid / "comp"
     ws.mkdir(parents=True)
     (ws / "Compfile").write_text("name c\n")
@@ -52,8 +32,15 @@ def _doc_workspace(tmp_path, rid, vms=True):
                    "bridge": None, "tags": ["tezcatlipoca"], "at": "t"}]
                  if vms else [])
     (ws / "estate-state.json").write_text(json.dumps(
-        {"identity": {"comp_name": "c", "run_id": rid}, "resources": resources}))
+        {"identity": {"comp_name": "c", "run_id": rid, "engine_mgmt_ip": "10.0.0.9"},
+         "resources": resources}))
     return ws
+
+
+def _range_of(*runs):
+    built = ranges.build_ranges(FakeStore(list(runs)))
+    assert len(built) == 1, [r["state"] for r in built]
+    return built[0]
 
 
 def test_state_building(tmp_path):
@@ -89,7 +76,7 @@ def test_state_retired(tmp_path):
 
 
 def test_state_teardown_failed_is_on_the_board(tmp_path):
-    """Every destroy failed, so terraform's resources are gone but red01 may not be."""
+    """Every destroy failed, so the estate's resources are gone but red01 may not be."""
     _workspace(tmp_path, "run-t")
     rng = _range_of(
         _rec("run-t", "deploy", state="failed", rc=1, created=1, run_dir=tmp_path / "run-t"),
@@ -193,18 +180,18 @@ def test_ranges_route(tmp_path, monkeypatch):
     assert TestClient(create_app()).get("/api/ranges").json() == []
 
 
-# ── v0.3.0: the estate document is the liveness authority ───────────────────────────────
+# ── the estate document is the liveness authority ───────────────────────────────────────
 
 def test_state_live_from_the_estate_documents_vms(tmp_path):
-    ws = _doc_workspace(tmp_path, "run-doc", vms=True)
+    ws = _workspace(tmp_path, "run-doc", vms=True)
     rng = _range_of(_rec("run-doc", "deploy", created=1, run_dir=tmp_path / "run-doc"))
     assert (rng["state"], rng["live"]) == ("live", True)
     assert ranges.has_vms(str(ws)) is True
 
 
 def test_a_document_without_vms_is_not_live(tmp_path):
-    """v0.3.0's destroy forgets each resource as the VM goes, so an empty list IS 'gone'."""
-    ws = _doc_workspace(tmp_path, "run-doc", vms=False)
+    """The destroy forgets each resource as the VM goes, so an empty list IS 'gone'."""
+    ws = _workspace(tmp_path, "run-doc", vms=False)
     rng = _range_of(_rec("run-doc", "deploy", created=1, run_dir=tmp_path / "run-doc"))
     assert (rng["state"], rng["live"]) == ("failed", False)
     assert ranges.has_vms(str(ws)) is False
@@ -222,7 +209,7 @@ def test_a_document_with_only_bridges_is_not_live(tmp_path):
 
 
 def test_a_retired_document_retires(tmp_path):
-    _doc_workspace(tmp_path, "run-doc", vms=False)
+    _workspace(tmp_path, "run-doc", vms=False)
     rng = _range_of(
         _rec("run-doc", "deploy", created=1, run_dir=tmp_path / "run-doc"),
         _rec("run-down", "destroy", created=2, run_dir=tmp_path / "run-down",
@@ -232,7 +219,7 @@ def test_a_retired_document_retires(tmp_path):
 
 def test_a_failed_teardown_that_still_records_a_vm_stays_live(tmp_path):
     """A refusal leaves its resource recorded, so the board must keep showing the range."""
-    _doc_workspace(tmp_path, "run-doc", vms=True)
+    _workspace(tmp_path, "run-doc", vms=True)
     rng = _range_of(
         _rec("run-doc", "deploy", state="failed", rc=1, created=1, run_dir=tmp_path / "run-doc"),
         _rec("run-down", "destroy", state="failed", rc=1, created=2,
@@ -241,29 +228,9 @@ def test_a_failed_teardown_that_still_records_a_vm_stays_live(tmp_path):
     assert (rng["state"], rng["live"]) == ("live", True)
 
 
-def test_a_migrated_workspace_reads_liveness_from_its_terraform_state(tmp_path):
-    """A document with an empty resources list (estate.state.migrate builds none) must not
-    hide a live pre-v0.3 range: terraform's state is still its VM inventory."""
-    ws = tmp_path / "run-m" / "comp"
-    ws.mkdir(parents=True)
-    (ws / "Compfile").write_text("name c\n")
-    (ws / "estate-state.json").write_text(json.dumps(
-        {"identity": {"comp_name": "c", "run_id": "run-m"}, "resources": []}))
-    (ws / "terraform").mkdir()
-    (ws / "terraform" / "terraform.tfstate").write_text(json.dumps({"resources": [
-        {"type": "proxmox_virtual_environment_vm", "name": "team_box",
-         "instances": [{"index_key": "team1-web01", "attributes": {"vm_id": 1332}}]}]}))
-    assert ranges.has_vms(str(ws)) is True
-    rng = _range_of(_rec("run-m", "deploy", created=1, run_dir=tmp_path / "run-m"))
-    assert (rng["state"], rng["live"]) == ("live", True)
-    # and once the v0.3.0 estate's teardown has emptied it, nothing stands in for the VMs
-    (ws / "terraform" / "terraform.tfstate").write_text(json.dumps({"resources": []}))
-    assert ranges.has_vms(str(ws)) is False
-
-
 def test_a_teardown_that_empties_the_document_and_fails_is_teardown_failed(tmp_path):
     """The resources are gone but the destroy ended non-zero: red01 may still be out there."""
-    _doc_workspace(tmp_path, "run-doc", vms=False)
+    _workspace(tmp_path, "run-doc", vms=False)
     rng = _range_of(
         _rec("run-doc", "deploy", created=1, run_dir=tmp_path / "run-doc"),
         _rec("run-down", "destroy", state="failed", rc=1, created=2,
@@ -329,7 +296,7 @@ def test_board_and_detail_are_local_non_secret_and_workspace_scoped(tmp_path, mo
     data = tmp_path / "data"
     monkeypatch.setenv("TEZ_DASHBOARD_DATA", str(data))
     store = Store(data / "dashboard.sqlite3")
-    ws = _doc_workspace(tmp_path, "run-origin")
+    ws = _workspace(tmp_path, "run-origin")
     (ws / "Compfile").write_text("name Original range\nadmin_password RANGE-SECRET\n")
     (ws / "estate-state.json").write_text(json.dumps({
         "identity": {"run_id": "run-origin", "engine_mgmt_ip": "10.0.0.42"},
@@ -342,7 +309,7 @@ def test_board_and_detail_are_local_non_secret_and_workspace_scoped(tmp_path, mo
             {"kind": "bridge", "name": "vmbr113", "node": "pve"},
             {"kind": "team_box", "name": "team1-web01", "node": "sat", "vmid": 1001},
             {"kind": "golden", "name": "golden-web01", "node": "templates", "vmid": 1002}]}))
-    other = _doc_workspace(tmp_path, "run-other", vms=False)
+    other = _workspace(tmp_path, "run-other", vms=False)
     for rid, action, workspace, params, state, rc, created, ref in [
         ("run-origin", "deploy", ws, {"teams": 1, "password": "RANGE-SECRET",
          "extra_args": ["--password", "RANGE-SECRET"]}, "failed", 1, 1, "origin-ref"),
@@ -453,7 +420,7 @@ def test_kept_templates_without_a_destroy_are_not_live(tmp_path):
 def test_a_scrim_that_tore_its_own_range_down_retires_it(tmp_path):
     """run-952b279e: a 30-minute scrim ran destroy-competition in its teardown stage and
     the range read `failed`, because only an action literally named destroy retired."""
-    _doc_workspace(tmp_path, "run-s", vms=False)
+    _workspace(tmp_path, "run-s", vms=False)
     rng = _range_of(_rec("run-s", "scrim", created=2, run_dir=tmp_path / "run-s"),
                     _rec("run-d", "deploy", created=1, run_dir=tmp_path / "run-s"))
     assert (rng["state"], rng["live"]) == ("retired", False)
@@ -461,7 +428,7 @@ def test_a_scrim_that_tore_its_own_range_down_retires_it(tmp_path):
 
 
 def test_a_scrim_that_kept_its_range_stays_live(tmp_path):
-    _doc_workspace(tmp_path, "run-sk", vms=True)
+    _workspace(tmp_path, "run-sk", vms=True)
     rng = _range_of(_rec("run-sk", "scrim", created=1, run_dir=tmp_path / "run-sk"))
     assert (rng["state"], rng["live"]) == ("live", True)
 

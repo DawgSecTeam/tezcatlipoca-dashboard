@@ -10,7 +10,6 @@ Skipped when there is no sibling `../tezcatlipoca` checkout (the same guard the 
 tests use).
 """
 
-import json
 import sys
 import tempfile
 import unittest
@@ -66,12 +65,6 @@ class EstateParityTest(unittest.TestCase):
     def test_load_flat_matches_the_engines(self):
         dash_estate = self._engine_document()
         self.assertEqual(self.engine_state.load_flat(self.ws), dash_estate.load_flat(self.ws))
-
-    def test_read_flat_matches_on_the_legacy_file(self):
-        from dashboard import estate as dash_estate
-        (self.ws / ".deploy_state.json").write_text(
-            json.dumps({"run_id": "run-old", "last_phase": 7, "teams": {}}))
-        self.assertEqual(self.engine_state.read_flat(self.ws), dash_estate.read_flat(self.ws))
 
     def test_read_flat_matches_on_an_empty_workspace(self):
         from dashboard import estate as dash_estate

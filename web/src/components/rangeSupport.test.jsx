@@ -132,9 +132,9 @@ it('submits removal against inventory identity after range confirmation', async 
 })
 
 it('renders workspace identity and teardown completion without live-power claims', () => {
-  open(<RunInfra inventory={{ ...inventory, teardown: { run_id: 'destroy-a', done: ['terraform'], red01_done: false } }} />)
+  open(<RunInfra inventory={{ ...inventory, teardown: { run_id: 'destroy-a', done: ['estate'], red01_done: false } }} />)
   expect(screen.getByText(range.key)).toBeTruthy()
-  expect(screen.getByText('Terraform-managed resources · completed')).toBeTruthy()
+  expect(screen.getByText('Estate resources · completed')).toBeTruthy()
   expect(screen.getByText(/Red box teardown has not been recorded as complete/)).toBeTruthy()
   expect(screen.getByRole('link', { name: 'destroy-a' }).getAttribute('href')).toBe('/ranges/stable-a/activity?operation=destroy-a')
 })

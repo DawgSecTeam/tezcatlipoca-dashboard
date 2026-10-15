@@ -45,8 +45,8 @@ class CompsRoutesTest(unittest.TestCase):
                                     "category": "service", "script": "x"}]))
         env = patch.dict(os.environ, {"TEZ_WEBUI_CATALOG_FILE": str(cat),
                                       "TEZ_DASHBOARD_DATA": str(root),
-                                      "TF_VAR_proxmox_endpoint": "",
-                                      "TF_VAR_proxmox_api_token": ""})
+                                      "TEZ_PROXMOX_ENDPOINT": "",
+                                      "TEZ_PROXMOX_API_TOKEN": ""})
         env.start()
         self.addCleanup(env.stop)
         self.server = _load_server()
@@ -75,8 +75,8 @@ class CompsRoutesTest(unittest.TestCase):
     def test_templates_use_config_ops_when_live(self):
         r = self.client.get("/api/templates").json()
         self.assertIn("base-ubuntu24.04-fix", [t["name"] for t in r])
-        with patch.dict(os.environ, {"TF_VAR_proxmox_endpoint": "https://x",
-                                     "TF_VAR_proxmox_api_token": "t"}), \
+        with patch.dict(os.environ, {"TEZ_PROXMOX_ENDPOINT": "https://x",
+                                     "TEZ_PROXMOX_API_TOKEN": "t"}), \
                 patch("config.config_prompts.list_proxmox_templates", return_value=["live-tpl"]):
             r = self.client.get("/api/templates").json()
         self.assertTrue([t for t in r if t["name"] == "live-tpl" and t["live"]])

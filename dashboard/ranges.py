@@ -7,7 +7,6 @@ on; a deploy/scrim run's own workspace is `<run_dir>/comp` (see runner._range_wo
 """
 
 import hashlib
-import json
 from pathlib import Path
 
 from dashboard import estate
@@ -35,28 +34,15 @@ def has_vms(key):
     state: run-df29374d ended rc=1 while its VMs stayed up, and a board keyed on build
     success hid exactly the range that needed attention (2026-10-15).
 
-    v0.3.0: the estate document's `resources` list IS the inventory the teardown walks, and
-    a destroy forgets each entry only once the VM is gone — so "still a vmid recorded" means
-    "still a VM out there". A workspace with no resource inventory (pre-v0.3, or one folded
-    into a document without a resources list) falls back to its terraform state, read-only,
-    so such a range still boards.
+    The estate document's `resources` list IS the inventory the teardown walks, and a destroy
+    forgets each entry only once the VM is gone — so "still a vmid recorded" means "still a VM
+    out there".
 
     Kept templates are not infrastructure: a teardown that keeps this competition's goldens
     and engine template leaves exactly those rows behind, and counting them made every
     `--teams-only`/`--keep-templates` range read live after a clean destroy (2026-10-15).
     """
-    ws = Path(key)
-    if estate.has_inventory(ws):
-        return any(row.get("kind") not in estate.KEPT_KINDS for row in estate.vms(ws))
-    try:
-        state = json.loads((ws / "terraform" / "terraform.tfstate").read_text())
-    except (OSError, ValueError):
-        return False
-    return any(
-        len(resource.get("instances") or [])
-        for resource in state.get("resources") or []
-        if resource.get("type") == "proxmox_virtual_environment_vm"
-    )
+    return any(row.get("kind") not in estate.KEPT_KINDS for row in estate.vms(Path(key)))
 
 
 def retired_by(runs):

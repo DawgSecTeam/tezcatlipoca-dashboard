@@ -12,23 +12,19 @@ def _defs(root):
 def test_seed_strips_run_state_keeps_definitions(tmp_path):
     src, dst = tmp_path / "defs", tmp_path / "run" / "comp"
     _defs(src)
-    for stale in (".deploy_state.json", "estate-state.json", ".teardown-journal.json",
-                  "teams.json", "nakon-config.json",
-                  ".nakon-golden.json", "passwords.json", "targets.json", "run.log",
-                  "terraform.tfvars.json", ".badauto-config.yaml"):
+    for stale in ("estate-state.json", "teams.json", "nakon-config.json",
+                  ".nakon-golden.json", "passwords.json", "run.log",
+                  ".badauto-config.yaml", ".postclone-swept"):
         (src / stale).write_text("{}")
-    (src / "terraform").mkdir()
-    (src / "terraform" / "terraform.tfstate").write_text("{}")
     (src / ".automated-tests").mkdir()
     (src / "run-x-archive-1").mkdir()
 
     seed_workspace(src, dst)
     assert (dst / "Compfile").exists() and (dst / "boxes.json").exists()
     assert (dst / "injects" / "one" / "inject.json").exists()
-    for stale in (".deploy_state.json", "estate-state.json", ".teardown-journal.json",
-                  "teams.json", "nakon-config.json", "run.log"):
+    for stale in ("estate-state.json", "teams.json", "nakon-config.json", "run.log",
+                  ".badauto-config.yaml", ".postclone-swept"):
         assert not (dst / stale).exists()
-    assert not (dst / "terraform").exists()
     assert not (dst / ".automated-tests").exists()
     assert not (dst / "run-x-archive-1").exists()
 
@@ -52,8 +48,6 @@ def test_seed_leaves_existing_workspace_alone(tmp_path):
     dst.mkdir(parents=True)
     (dst / "Compfile").write_text("name old\n")
     (dst / "estate-state.json").write_text('{"identity": {"run_id": "resume-me"}}')
-    (dst / ".deploy_state.json").write_text("resume me too")
     seed_workspace(src, dst)
     assert (dst / "estate-state.json").read_text() == '{"identity": {"run_id": "resume-me"}}'
-    assert (dst / ".deploy_state.json").read_text() == "resume me too"
     assert (dst / "Compfile").read_text() == "name old\n"

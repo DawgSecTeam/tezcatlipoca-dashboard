@@ -51,7 +51,7 @@ class WebUIServerTest(unittest.TestCase):
              "category": "misconfiguration", "script": "net accounts"},
         ]))
         env = patch.dict(os.environ, {"TEZ_WEBUI_CATALOG_FILE": str(catalog),
-                                      "TF_VAR_proxmox_endpoint": ""})
+                                      "TEZ_PROXMOX_ENDPOINT": ""})
         env.start()
         self.addCleanup(env.stop)
         self.server = _load_server()

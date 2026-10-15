@@ -59,7 +59,8 @@ def _manager(tmp_path, monkeypatch):
     ws = run_dir / "comp"
     ws.mkdir(parents=True)
     (ws / "Compfile").write_text("name comp-a\n")
-    (ws / ".deploy_state.json").write_text(json.dumps({"run_id": "run-deploy"}))
+    (ws / "estate-state.json").write_text(json.dumps(
+        {"identity": {"comp_name": "comp-a", "run_id": "run-deploy"}}))
     store.create_run("run-deploy", "comp-a", "deploy", "main", {"teams": 1}, run_dir,
                      run_dir / "run.log")
     return mgr, store
@@ -74,10 +75,9 @@ def test_lifecycle_actions_resolve_the_range_workspace(tmp_path, monkeypatch):
 
 
 def test_lifecycle_actions_resolve_a_document_workspace(tmp_path, monkeypatch):
-    """A v0.3.0 range has no .deploy_state.json: identity.run_id in the document is the proof."""
+    """identity.run_id in the document is the ownership proof a lifecycle action resolves."""
     mgr, store = _manager(tmp_path, monkeypatch)
     ws = tmp_path / "data" / "runs" / "run-deploy" / "comp"
-    (ws / ".deploy_state.json").unlink()
     (ws / "estate-state.json").write_text(json.dumps(
         {"identity": {"comp_name": "comp-a", "run_id": "run-deploy"}, "resources": []}))
     run = mgr.submit("comp-a", "start", "estate-v0.3.0", {})
@@ -246,11 +246,10 @@ def test_finish_resolves_the_approved_request_once(tmp_path, monkeypatch):
 
 def _ws(tmp_path, state):
     ws = tmp_path / "ws"
-    (ws / "terraform").mkdir(parents=True)
-    (ws / ".deploy_state.json").write_text(json.dumps(state))
-    (ws / "terraform" / "terraform.tfstate").write_text(json.dumps(
-        {"outputs": {"agent_context": {"value": json.dumps(
-            {"scoring_engine_ip": "10.0.0.9"})}}}))
+    ws.mkdir()
+    (ws / "estate-state.json").write_text(json.dumps(
+        {"identity": {"comp_name": "comp-a", "run_id": "run-d", "engine_mgmt_ip": "10.0.0.9"},
+         "run": state}))
     return {"key": str(ws), "comp_id": "comp-a", "deploy_run_id": "run-d",
             "state": "live"}
 
@@ -287,7 +286,7 @@ def test_an_unreachable_engine_reads_the_state_markers(tmp_path, monkeypatch):
 
 
 def test_the_engine_ip_comes_from_the_documents_identity(tmp_path):
-    """estate.engine_setup.engine_ctx's own read — terraform's output is gone in v0.3.0."""
+    """estate.engine_setup.engine_ctx's own read: the document's identity is the only source."""
     ws = tmp_path / "ws"
     ws.mkdir()
     (ws / "estate-state.json").write_text(json.dumps(
@@ -299,20 +298,6 @@ def test_the_engine_ip_comes_from_the_documents_identity(tmp_path):
         {"identity": {"comp_name": "comp-a", "run_id": "run-1", "engine_mgmt_ip": ""},
          "resources": []}))
     assert competition._engine_ip(ws) is None
-
-
-def test_a_migrated_workspace_prefers_terraforms_recorded_engine_ip(tmp_path):
-    """migrate takes the engine IP from the ambient env, which may be a default; the
-    range's own terraform output is the answer until v0.3.0 records resources."""
-    ws = tmp_path / "ws"
-    (ws / "terraform").mkdir(parents=True)
-    (ws / "terraform" / "terraform.tfstate").write_text(json.dumps(
-        {"outputs": {"agent_context": {"value": json.dumps(
-            {"scoring_engine_ip": "10.0.0.9"})}}}))
-    (ws / "estate-state.json").write_text(json.dumps(
-        {"identity": {"comp_name": "comp-a", "run_id": "run-1",
-                      "engine_mgmt_ip": "10.0.0.250"}, "resources": []}))
-    assert competition._engine_ip(ws) == "10.0.0.9"
 
 
 def test_status_for_range_reads_the_document(tmp_path, monkeypatch):

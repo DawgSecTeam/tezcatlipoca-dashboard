@@ -51,17 +51,14 @@ def _manager(tmp_path, monkeypatch):
     return RunManager(store, FakeBus()), store
 
 
-@pytest.mark.parametrize("state_name", ["estate-state.json", ".deploy_state.json"])
 @pytest.mark.parametrize("action,stage", [("verify", "verify"), ("destroy", "teardown"),
                                           ("redeploy", "redeploy")])
-def test_single_step_actions_emit_one_stage(tmp_path, monkeypatch, action, stage, state_name):
+def test_single_step_actions_emit_one_stage(tmp_path, monkeypatch, action, stage):
     ws = tmp_path / "comp"
     ws.mkdir()
-    # A single-step action must not poll the range's stale deploy phases, in EITHER state
-    # shape: v0.3.0's document, or the legacy file a pre-v0.3 range still carries.
-    (ws / state_name).write_text(json.dumps(
-        {"last_phase": 8} if state_name == ".deploy_state.json"
-        else {"identity": {"run_id": "run-old"}, "run": {"last_phase": 8}}))
+    # A single-step action must not poll the range's stale deploy phases.
+    (ws / "estate-state.json").write_text(json.dumps(
+        {"identity": {"run_id": "run-old"}, "run": {"last_phase": 8}}))
     mgr, store = _manager(tmp_path, monkeypatch)
     proc = FakeProc()
     mgr._track_stages("run-1", ws, proc, action)
@@ -73,40 +70,30 @@ def test_single_step_actions_emit_one_stage(tmp_path, monkeypatch, action, stage
 
 
 class PhaseProc:
-    """Raises the workspace's last_phase to `upto`, then exits.
+    """Raises the workspace's last_phase to `upto`, then exits."""
 
-    Writes the v0.3.0 document (run.last_phase); `legacy=True` writes the pre-v0.3 flat
-    file, which the reader must still follow.
-    """
-
-    def __init__(self, ws, upto, legacy=False):
-        self.ws, self.upto, self.n, self.legacy = ws, upto, 0, legacy
+    def __init__(self, ws, upto):
+        self.ws, self.upto, self.n = ws, upto, 0
 
     def poll(self):
         self.n += 1
         phase = min(self.n, self.upto)
-        if self.legacy:
-            (self.ws / ".deploy_state.json").write_text(json.dumps({"last_phase": phase}))
-        else:
-            (self.ws / "estate-state.json").write_text(
-                json.dumps({"identity": {"run_id": "run-1"}, "run": {"last_phase": phase}}))
+        (self.ws / "estate-state.json").write_text(
+            json.dumps({"identity": {"run_id": "run-1"}, "run": {"last_phase": phase}}))
         return None if self.n <= self.upto else 0
 
     def wait(self):
         return 0
 
 
-@pytest.mark.parametrize("legacy", [False, True])
-def test_deploy_emits_phases_with_index_and_total(tmp_path, monkeypatch, legacy):
+def test_deploy_emits_phases_with_index_and_total(tmp_path, monkeypatch):
     ws = tmp_path / "comp"
     ws.mkdir()
-    name = ".deploy_state.json" if legacy else "estate-state.json"
-    (ws / name).write_text(json.dumps({"last_phase": 0}) if legacy
-                          else json.dumps({"identity": {"run_id": "run-1"},
-                                           "run": {"last_phase": 0}}))
+    (ws / "estate-state.json").write_text(json.dumps(
+        {"identity": {"run_id": "run-1"}, "run": {"last_phase": 0}}))
     monkeypatch.setattr("dashboard.runner.time.sleep", lambda _seconds: None)
     mgr, store = _manager(tmp_path, monkeypatch)
-    mgr._track_stages("run-1", ws, PhaseProc(ws, 3, legacy=legacy), "deploy")
+    mgr._track_stages("run-1", ws, PhaseProc(ws, 3), "deploy")
     assert [e["stage"] for e in store.events] == [
         "phase 1/8 cleanup", "phase 2/8 engine_template", "phase 3/8 prepare_engine"]
     assert [(e["index"], e["total"]) for e in store.events] == [(1, 8), (2, 8), (3, 8)]

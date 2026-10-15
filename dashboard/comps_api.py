@@ -495,7 +495,7 @@ def get_templates():
         except (ValueError, AttributeError):
             continue
     live = []
-    if os.getenv("TF_VAR_proxmox_endpoint") and os.getenv("TF_VAR_proxmox_api_token"):
+    if os.getenv("TEZ_PROXMOX_ENDPOINT") and os.getenv("TEZ_PROXMOX_API_TOKEN"):
         try:
             from config.config_prompts import list_proxmox_templates
             live = list_proxmox_templates()

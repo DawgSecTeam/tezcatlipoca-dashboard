@@ -2,13 +2,11 @@
 
 A range's workspace carries everything: the estate document's identity records the scoring
 engine's address, its secrets section the `scoring` automation account's password, and its
-run section the hold/ended markers (a pre-v0.3 workspace has the legacy `.deploy_state.json`
-plus terraform state instead — `dashboard.estate` reads both). The engine's own API is the
-live truth for the rest — status is polled as `scoring` (never `admin`: Quotient allows ONE
-session per account and the operator's browser session must survive a panel refresh).
+run section the hold/ended markers. The engine's own API is the live truth for the rest —
+status is polled as `scoring` (never `admin`: Quotient allows ONE session per account and
+the operator's browser session must survive a panel refresh).
 """
 
-import json
 from pathlib import Path
 
 import requests
@@ -32,25 +30,10 @@ def lifecycle_state(engine, state):
     return "running" if engine.get("running") else "paused"
 
 
-def _tfstate_engine_ip(ws):
-    """A pre-v0.3 workspace's engine address, from terraform's agent_context output."""
-    try:
-        raw = json.loads((Path(ws) / "terraform" / "terraform.tfstate").read_text())
-        return json.loads(raw["outputs"]["agent_context"]["value"])["scoring_engine_ip"]
-    except (OSError, ValueError, KeyError, TypeError):
-        return None
-
-
 def _engine_ip(ws):
     # estate.engine_setup.engine_ctx's own read: the document's identity.engine_mgmt_ip
     # ("" on a DHCP engine, which has no stable address to record).
-    legacy = _tfstate_engine_ip(ws)
-    # A workspace folded into a document by estate.state.migrate has no resources list and
-    # an engine IP taken from the ambient env at migration time; terraform's recorded output
-    # is still the range's own answer, so it wins there.
-    if legacy and not estate.has_inventory(ws):
-        return legacy
-    return estate.load_flat(ws).get("engine_mgmt_ip") or legacy
+    return estate.load_flat(ws).get("engine_mgmt_ip") or None
 
 
 def _login(base_url, password):

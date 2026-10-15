@@ -95,10 +95,9 @@ function Networks({ networks }) {
 }
 
 const TEARDOWN_STEP = {
-  terraform: 'Terraform-managed resources', red01: 'Red box (red01)',
-  engine: 'Scoring engine', scoring_engine: 'Scoring engine',
-  team_boxes: 'Team boxes', networks: 'Networks', goldens: 'Golden images',
-  engine_template: 'Engine template',
+  portal: 'Portal', engine_capture: 'Engine capture', artifacts: 'Artifacts',
+  red01: 'Red box (red01)', pre_stop: 'Force-stop VMs', estate: 'Estate resources',
+  remote_access: 'Remote access',
 }
 
 function TeardownJournal({ teardown, opHref }) {

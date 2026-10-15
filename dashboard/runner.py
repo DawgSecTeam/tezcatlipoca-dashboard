@@ -3,9 +3,8 @@
 One thread per run. The engine stays standalone: a run gets a disposable worktree plus a
 workspace comp dir, and the driver is the same CLI a human would type. Stage progress is
 observed, never parsed out of the driver's stdout: the estate document's `last_phase` for
-deploys (via `dashboard.estate`, which mirrors the engine's `estate.state.load_flat` and
-still reads a pre-v0.3 `.deploy_state.json`), the scrim harness's run.json phases
-otherwise."""
+deploys (via `dashboard.estate`, which mirrors the engine's `estate.state.load_flat`), the
+scrim harness's run.json phases otherwise."""
 
 import json
 import os
@@ -369,13 +368,11 @@ class RunManager:
         """The environment a driver child gets.
 
         PATH carries the user-space tool dirs (opencode, sshpass). The ssh key path is forced
-        ABSOLUTE to this service's own key file and exported under BOTH the canonical
-        `TEZ_SSH_PRIVATE_KEY_PATH` and the legacy `TF_VAR_ssh_private_key_path`: v0.3.0's
+        ABSOLUTE to this service's own key file and exported as `TEZ_SSH_PRIVATE_KEY_PATH`:
         `estate/config.py` resolves a relative key path against the CURRENT DIRECTORY — which
         for a run is the throwaway worktree — and the estate document records the result. The
         worktree is deleted when the run ends, so a relative value leaves a range whose key
-        cannot be found at teardown (2026-10-14, run-3aaf37f1, four attempts). Both names are
-        exported because a run may still be cut at a pre-v0.3 engine that reads only TF_VAR_*.
+        cannot be found at teardown (2026-10-14, run-3aaf37f1, four attempts).
         """
         env = {**os.environ, "PYTHONUNBUFFERED": "1", "PATH": config.driver_path()}
         # Catalog tokens ride the child env: the engine reads them by token_env name, so
@@ -384,15 +381,13 @@ class RunManager:
         key = config.engine_proxmox_file()
         if key and Path(key).is_file():
             key = Path(key).resolve()
-            env["TF_VAR_ssh_private_key_path"] = str(key)
             env["TEZ_SSH_PRIVATE_KEY_PATH"] = str(key)
             # bad-auto reads `<deploy.ssh_key>.pub` beside the private key, and a run host may
             # hold only the private half — the assume-breach red01 deploy then died on
             # FileNotFoundError AFTER the range itself was built (2026-10-14). The public half
-            # is in the engine env under either its canonical or its legacy name; materialize
-            # it so the two halves always travel together.
+            # is in the engine env; materialize it so the two halves always travel together.
             pub = key.with_name(key.name + ".pub")
-            public = env.get("TEZ_SSH_PUBLIC_KEY") or env.get("TF_VAR_ssh_public_key")
+            public = env.get("TEZ_SSH_PUBLIC_KEY")
             if not pub.exists() and public:
                 pub.write_text(public.strip() + "\n")
         return env
@@ -543,10 +538,10 @@ class RunManager:
         head = subprocess.run(["git", "-C", str(worktree), "rev-parse", "HEAD"],
                               capture_output=True, text=True).stdout.strip()
         # Per-run configuration. A worktree is a fresh checkout and both config surfaces are
-        # gitignored, so the run carries its own: `.env` (legacy TF_VAR_* / TEZ_* names, which
-        # v0.3.0's estate/config.py still resolves through _SPEC) and, when the operator has
-        # one, the native `tezcatlipoca.toml` profile. Without at least one of them a v0.3.0
-        # driver starts with no endpoint, node or API token.
+        # gitignored, so the run carries its own: `.env` (canonical TEZ_* names, which
+        # estate/config.py resolves through its _SPEC) and, when the operator has one, the
+        # native `tezcatlipoca.toml` profile. Without at least one of them a driver starts
+        # with no endpoint, node or API token.
         env_file = config.engine_env_file()
         if env_file:
             shutil.copy2(env_file, worktree / ".env")
@@ -624,8 +619,7 @@ class RunManager:
 
     @staticmethod
     def _deploy_held(ws):
-        # estate.state.load_flat's flat view (run section of a v0.3.0 document, or the legacy
-        # .deploy_state.json), so a pre-v0.3 hold still displays.
+        # estate.state.load_flat's flat view (the document's run section).
         try:
             return estate.load_flat(ws).get("paused_after_phase")
         except Exception:      # a tracker poll must never kill the run it observes
@@ -638,7 +632,7 @@ class RunManager:
 
     @staticmethod
     def _deploy_phase(ws):
-        # The estate document's run.last_phase (v0.3.0), else the legacy .deploy_state.json.
+        # The estate document's run.last_phase.
         try:
             return int(estate.load_flat(ws).get("last_phase") or 0)
         except (TypeError, ValueError):

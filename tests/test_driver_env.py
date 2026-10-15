@@ -29,7 +29,7 @@ def test_driver_path_adds_the_users_local_bin(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", "/usr/local/bin:/usr/bin")
     monkeypatch.setenv("TEZ_OPENCODE_BIN", "/opt/oc/bin")
     monkeypatch.setenv("HOME", str(tmp_path))
-    (tmp_path / ".local" / "bin").mkdir(parents=True)   # terraform/sshpass live here
+    (tmp_path / ".local" / "bin").mkdir(parents=True)   # sshpass lives here
     assert config.driver_path() == "/opt/oc/bin:" + str(tmp_path / ".local" / "bin") + ":/usr/local/bin:/usr/bin"
 
 
@@ -132,32 +132,13 @@ def test_driver_env_materializes_the_public_key_beside_the_private_one(tmp_path,
     monkeypatch.setattr(config, "data_dir", lambda: tmp_path)
     monkeypatch.setattr(config, "engine_proxmox_file", lambda: key)
     monkeypatch.setattr(config, "driver_path", lambda: "/usr/bin")
-    monkeypatch.setenv("TF_VAR_ssh_public_key", "ssh-ed25519 AAAA test@host")
+    monkeypatch.setenv("TEZ_SSH_PUBLIC_KEY", "ssh-ed25519 AAAA test@host")
 
     env = RunManager(store=None, bus=None)._driver_env()
 
-    assert env["TF_VAR_ssh_private_key_path"] == str(key)
+    assert env["TEZ_SSH_PRIVATE_KEY_PATH"] == str(key)
     assert (tmp_path / "proxmox.pub").read_text().strip() == "ssh-ed25519 AAAA test@host"
 
-
-def test_driver_env_exports_the_canonical_names_too(tmp_path, monkeypatch):
-    """v0.3.0 resolves config through estate/config.py's _SPEC, whose canonical override is
-    TEZ_*; the legacy TF_VAR_* names stay exported for a run cut at an older engine."""
-    from dashboard import config
-    from dashboard.runner import RunManager
-
-    key = tmp_path / "proxmox"
-    key.write_text("PRIVATE\n")
-    monkeypatch.setattr(config, "engine_proxmox_file", lambda: key)
-    monkeypatch.setattr(config, "driver_path", lambda: "/usr/bin")
-    monkeypatch.delenv("TF_VAR_ssh_public_key", raising=False)
-    monkeypatch.setenv("TEZ_SSH_PUBLIC_KEY", "ssh-ed25519 BBBB canonical@host")
-
-    env = RunManager(store=None, bus=None)._driver_env()
-
-    assert env["TEZ_SSH_PRIVATE_KEY_PATH"] == str(key.resolve())
-    assert env["TF_VAR_ssh_private_key_path"] == str(key.resolve())
-    assert (tmp_path / "proxmox.pub").read_text().strip() == "ssh-ed25519 BBBB canonical@host"
 
 
 def test_missing_driver_deps_reports_what_this_interpreter_lacks():
@@ -195,19 +176,19 @@ def test_submit_refuses_when_a_driver_dep_is_missing(monkeypatch, tmp_path):
 def test_driver_env_forces_an_absolute_ssh_key_path(monkeypatch, tmp_path):
     """A relative key path is resolved against the worktree by the engine and recorded in state,
     so it must never reach a driver relative (it made the range un-destroyable once the worktree
-    was gone: `terraform destroy` -> "no file exists at <worktree>/proxmox")."""
+    was gone: teardown could not find `<worktree>/proxmox`)."""
     key = tmp_path / "tez-proxmox"
     key.write_text("KEY")
     monkeypatch.setattr(config, "engine_proxmox_file", lambda: key)
-    monkeypatch.setenv("TF_VAR_ssh_private_key_path", "../proxmox")
+    monkeypatch.setenv("TEZ_SSH_PRIVATE_KEY_PATH", "../proxmox")
     mgr = RunManager(store=None, bus=None)
     env = mgr._driver_env()
-    assert env["TF_VAR_ssh_private_key_path"] == str(key.resolve())
+    assert env["TEZ_SSH_PRIVATE_KEY_PATH"] == str(key.resolve())
     assert env["PYTHONUNBUFFERED"] == "1"
 
 
 def test_driver_env_leaves_the_path_alone_without_a_key_file(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "engine_proxmox_file", lambda: tmp_path / "missing")
-    monkeypatch.setenv("TF_VAR_ssh_private_key_path", "/already/absolute")
+    monkeypatch.setenv("TEZ_SSH_PRIVATE_KEY_PATH", "/already/absolute")
     mgr = RunManager(store=None, bus=None)
-    assert mgr._driver_env()["TF_VAR_ssh_private_key_path"] == "/already/absolute"
+    assert mgr._driver_env()["TEZ_SSH_PRIVATE_KEY_PATH"] == "/already/absolute"

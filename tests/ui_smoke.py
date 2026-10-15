@@ -24,7 +24,7 @@ def build_fixture_app(root, patches):
     root = Path(root)
     # Do not load service.py/.env or inherit any service/engine configuration.
     for name in list(os.environ):
-        if name.startswith(("TEZ_", "TF_VAR_")):
+        if name.startswith("TEZ_"):
             os.environ.pop(name)
     os.environ.update(TEZ_DASHBOARD_DATA=str(root),
                       TEZ_DASHBOARD_TOKENS="ui=range-ui-smoke",

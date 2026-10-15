@@ -18,9 +18,10 @@ run's state and evidence in its own data dir.
 A run pins a tezcatlipoca git ref (branch/SHA/tag) and a competition. The runner:
 
 1. cuts an engine worktree at the ref under `<data>/runs/<id>/engine` — the ref defaults to
-   `estate-v0.3.0`, the estate release with no terraform (`TEZ_ENGINE_REF` overrides it, e.g.
-   the merge commit or a SHA for an event), and provisioning fetches `origin` first so a
-   branch name means the fresh one, not whatever the clone had at clone time,
+   `estate-v0.3.0`, the estate release that writes `estate-state.json` (`TEZ_ENGINE_REF`
+   overrides it, e.g. the merge commit or a SHA for an event), and provisioning fetches
+   `origin` first so a branch name means the fresh one, not whatever the clone had at clone
+   time,
 2. seeds the comp's definitions into `<data>/runs/<id>/comp` (per-run state stays in
    the workspace; the competitions repo stays definitions-only),
 3. drops the engine configuration into that worktree: `TEZ_ENGINE_ENV_FILE` as `.env` and,
@@ -31,8 +32,7 @@ A run pins a tezcatlipoca git ref (branch/SHA/tag) and a competition. The runner
    `destroy-competition.py` / `run-agent-scrim.py` / `redeploy-competition.py`) with
    `--comp-dir <workspace>`,
 5. emits one stage event per step — a deploy's `[N/8]` phases from the estate document's
-   `run.last_phase` (v0.3.0; a pre-v0.3 range's `.deploy_state.json` is read as a read-only
-   fallback, both through `dashboard/estate.py`, the service-side mirror of the engine's
+   `run.last_phase` (through `dashboard/estate.py`, the service-side mirror of the engine's
    `estate.state.load_flat`), a scrim's phases from its own
    `.automated-tests/<run>/run.json`, and a single stage for the actions whose driver
    reports none (`verify`, `destroy` → `teardown`, `redeploy`); every event carries
@@ -41,29 +41,28 @@ A run pins a tezcatlipoca git ref (branch/SHA/tag) and a competition. The runner
 
 ### Where a range's state lives
 
-v0.3.0 replaced terraform AND `.deploy_state.json` with the competition's monolithic
-**`estate-state.json`**: `identity` / `secrets` / `roster` / `templates` / `run` sections
-plus a `resources` list (every VM and bridge the deploy created — engine, team boxes,
-goldens, the engine template, jumps, bridges). Nothing in the dashboard writes it; the
-engine does, and every reader here agrees with `estate.state.load_flat` on its shape:
+A range's state is the competition's monolithic **`estate-state.json`**: `identity` /
+`secrets` / `roster` / `templates` / `run` sections plus a `resources` list (every VM and
+bridge the deploy created — engine, team boxes, goldens, the engine template, jumps,
+bridges). Nothing in the dashboard writes it; the engine does, and every reader here agrees
+with `estate.state.load_flat` on its shape:
 
-| Reading | v0.3.0 | pre-v0.3 fallback |
-|---|---|---|
-| deploy progress / run id | document `run.last_phase`, `identity.run_id` | `.deploy_state.json` |
-| range liveness | document `resources` (a destroy forgets each VM as it goes) | `terraform/terraform.tfstate` |
-| engine IP | `identity.engine_mgmt_ip` (the read behind `estate.engine_setup.engine_ctx`) | tfstate `outputs.agent_context` |
-| teams/boxes/networks/machines | document `resources` + `teams.json` + `targets.json` | tfstate |
-| teardown steps | `.teardown-journal.json`, else the document's `teardown` section | same |
+| Reading | Source |
+|---|---|
+| deploy progress / run id | document `run.last_phase`, `identity.run_id` |
+| range liveness | document `resources` (a destroy forgets each VM as it goes) |
+| engine IP | `identity.engine_mgmt_ip` (the read behind `estate.engine_setup.engine_ctx`) |
+| teams/boxes/networks/machines | document `resources` + `teams.json` |
+| teardown steps | the document's `teardown` section |
 
 Because the document carries **every generated password, the run id and the VM inventory**,
 workspace seeding treats it as runtime state and strips it on a fresh seed (keeping it only
 when resuming a workspace that already exists, i.e. the same range). Seeding one in from the
 definitions repo would make a fresh deploy adopt a previous run's identity.
 
-Engine settings still resolve through the legacy names (`TF_VAR_proxmox_endpoint`, …), so a
-`.env` is enough; the canonical `TEZ_*` names and a `tezcatlipoca.toml` profile are the new
-surface if you want them. `TEZ_PAUSE_FILE`, `TEZ_OPS_URL`/`TEZ_OPS_TOKEN`,
-`TEZ_COMPETITIONS_ROOT` and `TEZ_DASHBOARD_*` are read the same way they always were.
+Engine settings resolve from `.env` (canonical `TEZ_*` names) or from a `tezcatlipoca.toml`
+profile. `TEZ_PAUSE_FILE`, `TEZ_OPS_URL`/`TEZ_OPS_TOKEN`, `TEZ_COMPETITIONS_ROOT` and
+`TEZ_DASHBOARD_*` are read from the environment.
 
 Concurrency is parallel: several runs — including several of the same competition — may
 execute at once, each in its own worktree and workspace. The engine's preflight/locks stay
@@ -80,20 +79,19 @@ its range without asking the estate.
 
 `GET /api/ranges` reads each range's state from the workspace itself rather than from the run
 records: `building` (a run is queued or running), `live` (the estate document still records a
-VM — v0.3.0's `resources` list is the inventory its teardown drains, and the run that built
-the range having failed means nothing; a pre-v0.3 range's terraform state is the fallback),
-`retired` (those resources are gone and a destroy ended rc=0), or `teardown_failed` (they are
-gone, the newest destroy ended non-zero — the estate never owned red01, so a VM holding the
-LLM key can outlive its range; `.teardown-journal.json` records which teardown steps actually
-completed). Only `building`, `live` and `teardown_failed` reach the board. Retirement is
+VM — the document's `resources` list is the inventory its teardown drains, and the run that
+built the range having failed means nothing), `retired` (those resources are gone and a
+destroy ended rc=0), or `teardown_failed` (they are gone, the newest destroy ended non-zero —
+the estate never owned red01, so a VM holding the LLM key can outlive its range; the
+document's `teardown` section records which teardown steps actually completed). Only `building`, `live` and `teardown_failed` reach the board. Retirement is
 enforced on the way in too: `submit` refuses verify/destroy/redeploy against a retired range,
 naming the run that retired it, which is what stops a dead range from collecting teardown
 attempts forever.
 
 Two ranges of one competition on ONE node each need their own team vmid block and their own
 engine management address, because the engine env the runner shares across runs pins both as
-single values (`TF_VAR_team_identifiers`, `TF_VAR_engine_mgmt_ip`) and the node catalog holds
-one `engine_mgmt_ip` per node. `team_identifiers` ("130,131") and `engine_mgmt_ip` are
+single values (`TEZ_TEAM_IDENTIFIERS`, `TEZ_ENGINE_MGMT_IP`) and the node catalog holds one
+`engine_mgmt_ip` per node. `team_identifiers` ("130,131") and `engine_mgmt_ip` are
 therefore per-run submit inputs, passed through to `create-competition.py`'s
 `--team-identifiers`/`--engine-mgmt-ip`; absent, a run keeps the env/catalog defaults exactly
 as before.
@@ -214,9 +212,6 @@ host tools — so the host needs more than the Python deps:
 | `opencode` | every blue cycle is an `opencode run`; absent → all cycles rc=127, run looks undefended | `~/.opencode/bin` is prepended to the driver PATH (`TEZ_OPENCODE_BIN` overrides) |
 | `sshpass` | Windows boxes are reached over password auth | user-space `~/.local/bin` is on the driver PATH (no sudo needed on Fedora) |
 | `ssh`, `scp`, `curl`, `git`, `jq` | driver plumbing | distro packages |
-
-`terraform` is NOT on this list: v0.3.0 builds the estate through the Proxmox API, and the
-tfvars/tfstate surface is gone.
 
 Health check before submitting: `python3 -c "import toml, paramiko, mysql.connector"` in the
 service venv, `command -v opencode sshpass`, and `GET /api/health`.

@@ -28,13 +28,13 @@ def test_nakon_symlink_replaces_submodule_slot(tmp_path, monkeypatch):
 
 
 def test_provision_worktree_carries_the_config_surfaces(tmp_path, monkeypatch):
-    """v0.3.0 reads its config from the worktree: `.env` (legacy names resolve) and, when the
+    """A run reads its config from the worktree: `.env` (canonical TEZ_* names) and, when the
     operator has one, the native `tezcatlipoca.toml` profile. Both are gitignored, so a fresh
     checkout has neither — the run would start with no endpoint, node or API token."""
     worktree = tmp_path / "engine"
     worktree.mkdir()
     env_file = tmp_path / "tez-engine.env"
-    env_file.write_text("TF_VAR_proxmox_node=pve\n")
+    env_file.write_text("TEZ_PROXMOX_NODE=pve\n")
     profile = tmp_path / "tezcatlipoca.toml"
     profile.write_text("[proxmox]\nnode = 'pve'\n")
     monkeypatch.setattr(config, "nakon_path", lambda: None)
@@ -48,7 +48,7 @@ def test_provision_worktree_carries_the_config_surfaces(tmp_path, monkeypatch):
     RunManager(store=None, bus=None)._provision_worktree(worktree, "estate-v0.3.0",
                                                          tmp_path / "run")
 
-    assert (worktree / ".env").read_text() == "TF_VAR_proxmox_node=pve\n"
+    assert (worktree / ".env").read_text() == "TEZ_PROXMOX_NODE=pve\n"
     assert (worktree / "tezcatlipoca.toml").read_text() == "[proxmox]\nnode = 'pve'\n"
 
 
@@ -95,10 +95,7 @@ def test_seed_workspace_carries_the_pfsense_seed(tmp_path):
     (src / "Compfile").write_text("name scrim-one\n")
     (src / ".automated-tests").mkdir()
     (src / ".automated-tests" / "old.json").write_text("{}")
-    (src / ".deploy_state.json").write_text('{"run_id": "run-old"}')
     (src / "estate-state.json").write_text('{"identity": {"run_id": "run-old"}}')
-    (src / "terraform").mkdir()
-    (src / "terraform" / "terraform.tfstate").write_text("{}")
     ws = seed_workspace(src, tmp_path / "ws")
     assert (ws / "pfsense" / "pfsense-config-orig.xml").exists()
     assert (ws / "vyos" / "config-team120.cmds").exists()
@@ -106,9 +103,7 @@ def test_seed_workspace_carries_the_pfsense_seed(tmp_path):
     # per-run state still stays behind — the estate document above all (it carries every
     # password and the run id a fresh deploy must NOT adopt)
     assert not (ws / ".automated-tests").exists()
-    assert not (ws / ".deploy_state.json").exists()
     assert not (ws / "estate-state.json").exists()
-    assert not (ws / "terraform").exists()
 
 
 def test_destroy_runs_against_the_workspace_holding_the_state(tmp_path, monkeypatch):
@@ -122,7 +117,8 @@ def test_destroy_runs_against_the_workspace_holding_the_state(tmp_path, monkeypa
     ws = run_dir / "comp"
     ws.mkdir(parents=True)
     (ws / "Compfile").write_text("name scrim-one\n")
-    (ws / ".deploy_state.json").write_text(_json.dumps({"run_id": "run-engineid"}))
+    (ws / "estate-state.json").write_text(
+        _json.dumps({"identity": {"comp_name": "scrim-one", "run_id": "run-engineid"}}))
     store = Store(tmp_path / "db.sqlite3")
     store.create_run("run-failed", "scrim-one", "scrim", "main", {}, run_dir,
                      run_dir / "run.log")
@@ -143,8 +139,7 @@ def test_destroy_runs_against_the_workspace_holding_the_state(tmp_path, monkeypa
 
 
 def test_a_v030_document_is_the_range_workspace(tmp_path, monkeypatch):
-    """A v0.3.0 range has no .deploy_state.json at all: the document's identity.run_id is
-    the ownership proof the submit resolves against."""
+    """The document's identity.run_id is the ownership proof the submit resolves against."""
     import json as _json
     from dashboard.runner import RunManager
     from dashboard.store import Store

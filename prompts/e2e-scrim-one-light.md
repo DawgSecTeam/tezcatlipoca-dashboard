@@ -80,10 +80,9 @@ recovers in one call, and `get_run_log` reads by byte offset.
    the deploy's range through its recorded workspace).
 3. `submit_run {"action": "destroy", "comp_id": "scrim-one-light"}`.
    Assert: exactly one `teardown` stage (1/1); rc 0 and the driver's own "estate clean for this
-   ownership set" verdict; `.teardown-journal.json` `done` lists every step INCLUDING `red01`;
-   the workspace's `estate-state.json` records no VM in `resources` (v0.3.0's inventory — the
-   teardown forgets each entry as the VM goes; a pre-v0.3 range's `terraform/terraform.tfstate`
-   is the fallback); the board card leaves and a one-line
+   ownership set" verdict; the workspace's `estate-state.json` `teardown.done` lists every step
+   INCLUDING `red01`; its `resources` records no VM (the teardown forgets each entry as the VM
+   goes); the board card leaves and a one-line
    tombstone appears naming this destroy run; `GET /api/ranges` shows `state: "retired"`,
    `retired_by` = that run, `retired_at` set.
    Then re-submit `destroy` for the same comp: it must be REFUSED, naming the run that retired the
@@ -136,8 +135,7 @@ Root-cause from evidence before retrying; "flaky" means broken. No workarounds: 
 repairs, hand-edited VMs, hand-cleared flags, `--force`, or ad-hoc destroy scripts — if a
 workaround feels necessary, the thing that made it necessary is the bug. For anything that fails,
 capture the run id, log tail, events, teardown journal and the workspace's state document
-(`estate-state.json`, or the legacy `.deploy_state.json` + tfstate for a v0.2 range), classify
-it (product vs
+(`estate-state.json`), classify it (product vs
 dashboard vs estate), and file it where it belongs: dashboard/engine code gets fixed at the root
 with a regression test (architectural changes go to the user first); infrastructure findings go
 into the report and `docs/known-issues.md` where the engine owns them. Never re-dispatch an

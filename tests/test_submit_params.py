@@ -54,7 +54,8 @@ def _manager(tmp_path, monkeypatch):
     ws = run_dir / "comp"
     ws.mkdir(parents=True)
     (ws / "Compfile").write_text("name comp-a\n")
-    (ws / ".deploy_state.json").write_text(json.dumps({"run_id": "run-deploy"}))
+    (ws / "estate-state.json").write_text(
+        json.dumps({"identity": {"comp_name": "comp-a", "run_id": "run-deploy"}}))
     store.create_run("run-deploy", "comp-a", "deploy", "main", {"teams": 1}, run_dir,
                      run_dir / "run.log")
     return mgr

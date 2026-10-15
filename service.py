@@ -9,7 +9,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 
 from dashboard import config  # noqa: E402
 
-if config.engine_env_file():  # TF_VAR_* for the templates/nodes endpoints
+if config.engine_env_file():  # TEZ_* for the templates/nodes endpoints
     load_dotenv(config.engine_env_file())
 
 import uvicorn  # noqa: E402

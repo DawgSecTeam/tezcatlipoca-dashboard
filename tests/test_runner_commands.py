@@ -16,7 +16,7 @@ def test_deploy_command_carries_flags():
 
 def test_deploy_can_give_a_run_its_own_team_block_and_mgmt_ip():
     # Two ranges of one competition on one node: the shared engine env pins one
-    # TF_VAR_team_identifiers block and one engine mgmt IP, so without these flags the
+    # TEZ_TEAM_IDENTIFIERS block and one engine mgmt IP, so without these flags the
     # second range can only collide (2026-10-14).
     cmd = build_command("deploy", "comp-a", "/ws", {"teams": 1, "team_identifiers": "130",
                                                     "engine_mgmt_ip": "10.0.0.251"})
@@ -74,7 +74,7 @@ def test_deploy_carries_the_runs_nodes_file():
     assert cmd[cmd.index("--nodes") + 1] == "/run/nodes.json"
     # nothing selected -> single-node from .env stays the default
     assert "--nodes" not in build_command("deploy", "c", "/ws", {"teams": 1})
-    # companion ops resolve placement.json; they do not take the list
+    # companion ops resolve the workspace's recorded placement; they do not take the list
     assert "--nodes" not in build_command("verify", "c", "/ws", {}, "/run/nodes.json")
 
 
