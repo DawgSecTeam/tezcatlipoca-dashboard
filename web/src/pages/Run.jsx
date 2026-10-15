@@ -241,7 +241,7 @@ export default function Run() {
   const log = useRunLog(id)
   useTick(1000)
   const reload = () => api.run(id).then(setRun).catch(() => {})
-  const { submit, destroy, cancel, live } = useRunActions(run, reload)
+  const { submit, destroy, cancel, pause, resume, live, held, canPause } = useRunActions(run, reload)
   const { updated } = useRunEvents(id, (ev) => {
     setEvents((e) => (e.some((x) => x.seq === ev.seq) ? e : [...e, ev].sort((a, b) => (a.seq || 0) - (b.seq || 0))))
     reload()
@@ -345,6 +345,8 @@ export default function Run() {
               </Button>
               <Button onClick={() => setResetBox({})}><Icon name="box" />Reset a box…</Button>
               <Button variant="danger" onClick={destroy}><Icon name="trash" />Destroy / teardown</Button>
+              {canPause && <Button onClick={pause}><Icon name="pause" />Pause after next stage</Button>}
+              {held && <Button variant="primary" onClick={resume}><Icon name="play" />Resume</Button>}
               {live && <Button variant="danger" onClick={cancel}><Icon name="warn" />Cancel run</Button>}
             </div>
           </Card>

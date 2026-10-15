@@ -14,7 +14,7 @@ import { ACTION_LABEL, NewRunModal, StageStrip, useRunEvents } from '../componen
 
 function RangeCard({ range, comp }) {
   const run = range.runs?.[0] // the store returns newest first
-  const running = !!run && (run.state === 'running' || run.state === 'queued')
+  const running = !!run && ['running', 'queued', 'pausing', 'paused'].includes(run.state)
   // Only a live run's clock moves; a finished card needs a nudge just for its relative times.
   useTick(running ? 1000 : 60000)
   const [stageEvents, setStageEvents] = useState([])

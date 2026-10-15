@@ -117,6 +117,8 @@ def test_the_spawned_driver_gets_the_prepended_path(monkeypatch, tmp_path):
     assert captured["stdin"] is subprocess.DEVNULL
     assert captured["start_new_session"] is True
     assert captured["cwd"].endswith("engine")
+    # The per-run boundary hold: the path is the run's own dir, never the shared workspace.
+    assert captured["env"]["TEZ_PAUSE_FILE"] == str(run_dir / "pause")
 
 
 def test_driver_env_materializes_the_public_key_beside_the_private_one(tmp_path, monkeypatch):

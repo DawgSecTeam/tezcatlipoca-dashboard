@@ -34,6 +34,8 @@ const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
 const STATE_CLS = {
   queued: 'bg-sunken text-muted',
   running: 'bg-accent-soft text-accent',
+  pausing: 'bg-sunken text-accent',
+  paused: 'bg-accent-soft text-accent',
   succeeded: 'bg-sunken text-muted',
   failed: 'bg-danger-soft text-danger',
   cancelled: 'bg-sunken text-faint',
@@ -43,6 +45,7 @@ export function StatePill({ state }) {
   return (
     <span className={`chip px-2.5 py-1 ${STATE_CLS[state] || 'bg-sunken text-muted'}`}>
       {state === 'running' && <span className="mr-1.5 h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />}
+      {state === 'paused' && <Icon name="pause" className="mr-1 h-3 w-3" />}
       {state === 'succeeded' && <Icon name="check" className="mr-1 h-3 w-3" />}
       {state}
     </span>
@@ -77,8 +80,22 @@ export function useRunActions(run, onChanged) {
     if (!ok) return
     try { await api.cancelRun(run.id); toast('Cancel requested'); onChanged() } catch (e) { toast(e.message, 'error') }
   }
-  const live = !!run && (run.state === 'running' || run.state === 'queued')
-  return { submit, destroy, cancel, live }
+  const pause = async () => {
+    try {
+      const r = await api.pauseRun(run.id)
+      toast(r?.detail || 'Pause requested')
+      onChanged()
+    } catch (e) { toast(e.message, 'error') }
+  }
+  const resume = async () => {
+    try { await api.resumeRun(run.id); toast('Resume requested'); onChanged() } catch (e) { toast(e.message, 'error') }
+  }
+  // A held run's process is alive, so Cancel stays offered; only a moving deploy can be asked
+  // to hold at a boundary.
+  const live = !!run && ['running', 'queued', 'pausing', 'paused'].includes(run.state)
+  const held = !!run && (run.state === 'pausing' || run.state === 'paused')
+  const canPause = !!run && run.action === 'deploy' && (run.state === 'running' || run.state === 'queued')
+  return { submit, destroy, cancel, pause, resume, live, held, canPause }
 }
 
 // ── stage progress strip ───────────────────────────────────────────────────────────────────

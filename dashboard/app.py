@@ -102,13 +102,29 @@ def create_app():
         except RunRefused as e:
             raise HTTPException(409, str(e))
 
+    @app.post("/api/runs/{run_id}/pause")
+    def pause(run_id: str):
+        _run_or_404(run_id)
+        try:
+            return manager.pause(run_id)
+        except RunRefused as e:
+            raise HTTPException(409, str(e))
+
+    @app.post("/api/runs/{run_id}/resume")
+    def resume(run_id: str):
+        _run_or_404(run_id)
+        try:
+            return manager.resume(run_id)
+        except RunRefused as e:
+            raise HTTPException(409, str(e))
+
     @app.get("/api/runs/{run_id}/log")
     def log(run_id: str, since: int = 0):
         run = _run_or_404(run_id)
         path = Path(run["log_path"])
         data = path.read_bytes() if path.exists() else b""
         return {"offset": len(data), "text": data[since:].decode(errors="replace"),
-                "running": run["state"] in ("queued", "running"),
+                "running": run["state"] in ("queued", "running", "pausing", "paused"),
                 "returncode": run["returncode"]}
 
     @app.get("/api/runs/{run_id}/events")

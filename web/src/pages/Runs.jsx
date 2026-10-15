@@ -4,13 +4,13 @@ import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api'
 import TopNav from '../components/Nav'
 import { Button, Card, ErrorBanner, Spinner } from '../components/ui'
-import { EmptyState, Icon, PageHeader, agoMs, fmtSpan, useConfirm, useTick, useToast } from '../components/kit'
+import { EmptyState, Icon, PageHeader, agoMs, fmtSpan, useTick } from '../components/kit'
 import {
   ACTION_LABEL, ArtifactsList, EventList, LogView, StageStrip, StatePill,
-  useRunEvents, useRunLog,
+  useRunActions, useRunEvents, useRunLog,
 } from '../components/runui'
 
-const FILTERS = ['all', 'queued', 'running', 'succeeded', 'failed', 'cancelled']
+const FILTERS = ['all', 'queued', 'running', 'pausing', 'paused', 'succeeded', 'failed', 'cancelled']
 
 function Row({ r, selected, onPick }) {
   return (
@@ -32,8 +32,6 @@ function Drawer({ runId, onClose }) {
   const [run, setRun] = useState(null)
   const [events, setEvents] = useState([])
   const [err, setErr] = useState(null)
-  const ask = useConfirm()
-  const toast = useToast()
   const log = useRunLog(runId)
   const { updated } = useRunEvents(runId, (ev) => {
     if (ev.seq != null) setEvents((e) => (e.some((x) => x.seq === ev.seq) ? e : [...e, ev].sort((a, b) => (a.seq || 0) - (b.seq || 0))))
@@ -46,15 +44,10 @@ function Drawer({ runId, onClose }) {
     api.runEvents(runId, 0).then((r) => setEvents(r.events || [])).catch(() => {})
   }, [runId])
 
-  const live = run && (run.state === 'running' || run.state === 'queued')
-  const cancel = async () => {
-    const ok = await ask({
-      title: 'Cancel this run?', danger: true, confirm: 'Cancel run',
-      body: "Kills the run's process group. The range may be left half-built.",
-    })
-    if (!ok) return
-    try { await api.cancelRun(runId); toast('Cancel requested') } catch (e) { toast(e.message, 'error') }
-  }
+  // The shared action row: without it the pause/resume controls would be duplicated here.
+  const { cancel, pause, resume, live, held, canPause } = useRunActions(run, () => {
+    api.run(runId).then(setRun).catch(() => {})
+  })
 
   return (
     <div className="fixed inset-0 z-40 flex justify-end bg-bg/60 backdrop-blur-sm" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
@@ -72,6 +65,8 @@ function Drawer({ runId, onClose }) {
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            {canPause && <Button onClick={pause}><Icon name="pause" />Pause after next stage</Button>}
+            {held && <Button variant="primary" onClick={resume}><Icon name="play" />Resume</Button>}
             {live && <Button variant="danger" onClick={cancel}><Icon name="warn" />Cancel</Button>}
             <button onClick={onClose} className="btn btn-ghost h-9 w-9 !p-0 text-faint" aria-label="Close">✕</button>
           </div>

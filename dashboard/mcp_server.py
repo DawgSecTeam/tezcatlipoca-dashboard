@@ -97,7 +97,7 @@ def build_mcp(manager):
     @mcp.tool()
     def list_runs(state: str = "") -> list:
         """Run records, newest first; optionally filter by state
-        (queued|running|succeeded|failed|cancelled)."""
+        (queued|running|pausing|paused|succeeded|failed|cancelled)."""
         return store.list_runs(state=state or None)
 
     @mcp.tool()
@@ -142,6 +142,22 @@ def build_mcp(manager):
         """Cancel a running run (kills its process group; recoverable)."""
         try:
             return manager.cancel(run_id)
+        except RunRefused as e:
+            raise ToolError(f"refused: {e}") from e
+
+    @mcp.tool()
+    def pause_run(run_id: str) -> dict:
+        """Hold a running deploy at its next phase boundary (only deploy has boundaries)."""
+        try:
+            return manager.pause(run_id)
+        except RunRefused as e:
+            raise ToolError(f"refused: {e}") from e
+
+    @mcp.tool()
+    def resume_run(run_id: str) -> dict:
+        """Withdraw a pause request, or let a held deploy continue."""
+        try:
+            return manager.resume(run_id)
         except RunRefused as e:
             raise ToolError(f"refused: {e}") from e
 

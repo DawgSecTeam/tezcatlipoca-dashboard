@@ -24,6 +24,9 @@ PHASE_NAMES = {
     5: "firewall_bootstrap", 6: "repair_sweep", 7: "domains_and_final", 8: "seed",
 }
 FAIL_FAST_ACTIONS = ("deploy", "plan", "scrim")
+# The one action with boundaries to hold at: verify/destroy/redeploy report a single stage,
+# and a parked scrim would freeze its harness while red, blue and the clock keep running.
+PAUSABLE_ACTIONS = ("deploy",)
 # Actions whose driver reports no engine phase: they get ONE stage event, not the range's
 # stale deploy phases (a 6-second teardown used to re-emit phase 1/8..8/8 in one second).
 SINGLE_STEP_STAGES = {"verify": "verify", "destroy": "teardown", "redeploy": "redeploy"}
@@ -239,6 +242,67 @@ class RunManager:
         self._emit(run_id, "lifecycle", data={"state": "cancelling"})
         return self.store.get_run(run_id)
 
+    def pause(self, run_id):
+        """Ask this run's driver to hold at its next phase boundary (deploy_lib/pause.py).
+
+        The request is a file in the run's OWN dir, never the shared workspace: a later run in
+        the same comp dir must not inherit it."""
+        run = self.store.get_run(run_id)
+        if not run:
+            raise RunRefused(f"no such run: {run_id}")
+        if run["action"] not in PAUSABLE_ACTIONS:
+            raise RunRefused(f"a {run['action']} run has no phase boundary to hold at")
+        if run["state"] not in ("queued", "running", "pausing"):
+            raise RunRefused(f"run {run_id} is {run['state']} — nothing to hold")
+        run_dir = Path(run["run_dir"])
+        if not self._pause_hook(run, run_dir):
+            raise RunRefused(
+                f"engine ref {run['engine_ref'] or 'main'} predates the boundary hook "
+                f"(deploy_lib/pause.py) — the driver would ignore the request")
+        if self._deploy_phase(run_dir / "comp") >= 8:
+            raise RunRefused("the deploy is past its last phase — no boundary left to hold at")
+        request = run_dir / "pause"
+        if not request.exists():        # a second click is the same request, not a second event
+            request.touch()
+            self.store.update_run(run_id, state="pausing")
+            self._emit(run_id, "lifecycle", stage="pause requested",
+                       data={"state": "pausing"})
+        return {"run": self.store.get_run(run_id),
+                "detail": "holding at the end of the phase in progress"}
+
+    def resume(self, run_id):
+        """Withdraw the request: a pending one never lands, a landed one lets the driver go."""
+        run = self.store.get_run(run_id)
+        if not run:
+            raise RunRefused(f"no such run: {run_id}")
+        if run["state"] not in ("pausing", "paused"):
+            raise RunRefused(f"run {run_id} is {run['state']} — nothing to resume")
+        (Path(run["run_dir"]) / "pause").unlink(missing_ok=True)
+        if run["state"] == "pausing":
+            # The driver never reached a boundary, so no tracker will announce this one.
+            self.store.update_run(run_id, state="running")
+            self._emit(run_id, "lifecycle", data={"state": "running", "resumed": True})
+        else:
+            # A parked driver clears its marker within the second; the stage tracker sees that
+            # and announces the resume, so one transition keeps one writer.
+            self._emit(run_id, "lifecycle", data={"state": "resume_requested"})
+        return {"run": self.store.get_run(run_id), "detail": "resuming"}
+
+    def _pause_hook(self, run, run_dir):
+        """Whether the engine this run executes carries the boundary hook.
+
+        A cut worktree answers for itself. Before that the ref has to be fetched first: the
+        clone's last fetch is stale exactly when a click lands mid-provisioning, and a refusal
+        on a stale fetch would reject a pause the fresh worktree would honor."""
+        if (run_dir / "engine").is_dir():
+            return (run_dir / "engine" / "deploy_lib" / "pause.py").exists()
+        subprocess.run(["git", "-C", str(self.engine_repo), "fetch", "origin", "--quiet"],
+                       capture_output=True)
+        probe = subprocess.run(
+            ["git", "-C", str(self.engine_repo), "cat-file", "-e",
+             f"{self._resolve_ref(run['engine_ref'])}:deploy_lib/pause.py"], capture_output=True)
+        return probe.returncode == 0
+
     def _driver_env(self):
         """The environment a driver child gets.
 
@@ -301,12 +365,18 @@ class RunManager:
             cmd = build_command(record["action"], record["comp_id"], ws, record["params"],
                                 nodes_file)
             child_env = self._driver_env()
+            # The run's own control file (deploy_lib/pause.py reads it): a per-run path, so a
+            # request cannot outlive its run into a shared workspace.
+            child_env["TEZ_PAUSE_FILE"] = str(run_dir / "pause")
             log = open(record["log_path"], "w")
             log.write(f"$ engine {engine_used['ref']} @ {engine_used['commit'][:12]}\n")
             log.write("$ " + " ".join(cmd) + "\n")
             log.flush()
-            self.store.update_run(run_id, state="running", started_at=time.time())
-            self._emit(run_id, "lifecycle", data={"state": "running", "cmd": cmd})
+            # Keep a request made while the run was still provisioning: writing "running" over
+            # it would make the operator's click look lost.
+            state = "pausing" if (run_dir / "pause").exists() else "running"
+            self.store.update_run(run_id, state=state, started_at=time.time())
+            self._emit(run_id, "lifecycle", data={"state": state, "cmd": cmd})
             proc = subprocess.Popen(cmd, cwd=str(worktree), stdout=log, stderr=subprocess.STDOUT,
                                     stdin=subprocess.DEVNULL, start_new_session=True,
                                     env=child_env)
@@ -322,6 +392,7 @@ class RunManager:
         finally:
             shutil.rmtree(run_dir / "engine", ignore_errors=True)
             (run_dir / "bad-auto").unlink(missing_ok=True)
+            (run_dir / "pause").unlink(missing_ok=True)
             subprocess.run(["git", "-C", str(self.engine_repo), "worktree", "prune"],
                            capture_output=True)
 
@@ -410,10 +481,11 @@ class RunManager:
             self._stage(run_id, SINGLE_STEP_STAGES[action], 1, 1)
             proc.wait()
             return
-        last_phase, seen, since = 0, set(), time.time()
+        last_phase, seen, since, held = 0, set(), time.time(), None
         while proc.poll() is None:
             if action in ("deploy", "plan"):
                 last_phase = self._emit_deploy_phases(run_id, ws, last_phase)
+                held = self._reflect_pause(run_id, ws, held)
             else:  # scrim: the harness's phases only, and only this run's manifests
                 for phase in self._scrim_phases(ws, since):
                     if phase not in seen:
@@ -428,6 +500,30 @@ class RunManager:
         for n in range(last_phase + 1, phase + 1):
             self._stage(run_id, f"phase {n}/8 {PHASE_NAMES.get(n, '')}".strip(), n, 8)
         return max(last_phase, phase)
+
+    def _reflect_pause(self, run_id, ws, held):
+        """Mirror the driver's boundary hold into the run's state and event stream.
+
+        The driver writes the held phase to .deploy_state.json and never to stdout, so this
+        poll is the observer's only signal — and the marker clearing again is the resume."""
+        now = self._deploy_held(ws)
+        if now == held:
+            return held
+        if now is None:
+            self.store.update_run(run_id, state="running")
+            self._emit(run_id, "lifecycle", data={"state": "running", "resumed": True})
+        else:
+            self.store.update_run(run_id, state="paused", stage=f"paused after phase {now}/8")
+            self._emit(run_id, "lifecycle", stage=f"paused after phase {now}/8",
+                       data={"state": "paused", "after_phase": now})
+        return now
+
+    @staticmethod
+    def _deploy_held(ws):
+        try:
+            return json.loads((Path(ws) / ".deploy_state.json").read_text()).get("paused_after_phase")
+        except (OSError, ValueError):
+            return None
 
     def _stage(self, run_id, stage, index=None, total=None):
         self.store.update_run(run_id, stage=stage)
