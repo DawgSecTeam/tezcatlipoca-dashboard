@@ -51,6 +51,11 @@ def create_app():
 
     @asynccontextmanager
     async def lifespan(_app):
+        # Startup, not construction: a non-terminal row that outlived the service lifetime
+        # executing it holds no Popen here, so it can never start, finish or be cancelled
+        # (cancel refuses a run this lifetime never spawned) and its range boards as
+        # `building` forever — run-31072cb0, stuck six hours on 2026-10-15.
+        manager.reconcile_orphans()
         async with mcp.session_manager.run():
             yield
 

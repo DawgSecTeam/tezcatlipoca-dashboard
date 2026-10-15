@@ -150,6 +150,26 @@ class RunManager:
         self._procs = {}  # run_id -> Popen
         self._lock = threading.Lock()
 
+    # ---- startup reconciliation ----
+
+    def reconcile_orphans(self):
+        """Fail every non-terminal run this lifetime holds no process for.
+
+        A restart loses every Popen, and `cancel` refuses a run it never spawned, so a row
+        left `queued`/`running` by a dead worker is unmanageable forever — and a `queued`
+        row is what makes its range board as `building` (2026-10-15 run-31072cb0, stuck six
+        hours; its worker died unpacking a None record before the try block).
+        """
+        with self._lock:
+            live = set(self._procs)
+        orphans = [r["id"] for r in self.store.list_runs()
+                   if r["state"] in ranges.IN_FLIGHT and r["id"] not in live]
+        for run_id in orphans:
+            self.store.update_run(run_id, state="failed", ended_at=time.time(),
+                                  error="orphaned: no worker after service restart")
+            self._emit(run_id, "state", data={"state": "failed", "orphaned": True})
+        return orphans
+
     # ---- repo checkouts ----
 
     def ensure_repos(self):
@@ -413,8 +433,8 @@ class RunManager:
         return event
 
     def _run(self, record, comp_src, engine_ref):
-        run_id, run_dir = record["id"], Path(record["run_dir"])
         try:
+            run_id, run_dir = record["id"], Path(record["run_dir"])
             ws = self._workspace(record, comp_src)
             worktree = run_dir / "engine"
             engine_used = self._provision_worktree(worktree, engine_ref, run_dir)

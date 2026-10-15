@@ -30,6 +30,11 @@ LEGACY_NAME = ".deploy_state.json"
 # estate/state.py's _SECTIONS: the sections flatten() folds into the flat view, in order.
 _SECTIONS = ("identity", "secrets", "roster", "templates", "run")
 
+# Kinds a teardown deliberately leaves behind: `--teams-only` / `--keep-templates` keep this
+# competition's golden + engine templates for its next run, so a range whose only remaining
+# rows are these is torn down, not live.
+KEPT_KINDS = ("engine_template", "golden")
+
 
 def state_path(comp_dir):
     """Path of the competition's estate document."""

@@ -40,10 +40,14 @@ def has_vms(key):
     "still a VM out there". A workspace with no resource inventory (pre-v0.3, or one folded
     into a document without a resources list) falls back to its terraform state, read-only,
     so such a range still boards.
+
+    Kept templates are not infrastructure: a teardown that keeps this competition's goldens
+    and engine template leaves exactly those rows behind, and counting them made every
+    `--teams-only`/`--keep-templates` range read live after a clean destroy (2026-10-15).
     """
     ws = Path(key)
     if estate.has_inventory(ws):
-        return bool(estate.vms(ws))
+        return any(row.get("kind") not in estate.KEPT_KINDS for row in estate.vms(ws))
     try:
         state = json.loads((ws / "terraform" / "terraform.tfstate").read_text())
     except (OSError, ValueError):

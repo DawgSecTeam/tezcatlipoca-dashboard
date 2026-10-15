@@ -419,3 +419,68 @@ def test_board_and_detail_are_local_non_secret_and_workspace_scoped(tmp_path, mo
     compatible = http.get("/api/ranges").json()
     assert {row["id"] for row in compatible} == {row["id"] for row in board}
     assert all("runs" in row for row in compatible)
+
+
+def _kept_template_workspace(tmp_path, rid):
+    """The document a `--keep-templates` teardown leaves behind: templates only."""
+    ws = tmp_path / rid / "comp"
+    ws.mkdir(parents=True)
+    (ws / "Compfile").write_text("name c\n")
+    (ws / "estate-state.json").write_text(json.dumps({
+        "identity": {"comp_name": "c", "run_id": rid},
+        "resources": [
+            {"kind": "engine_template", "node": "pve", "name": "engine-template", "vmid": 2241},
+            {"kind": "golden", "node": "pve", "name": "golden-web01", "vmid": 2251},
+        ]}))
+    return ws
+
+
+def test_kept_templates_are_not_a_live_range(tmp_path):
+    """Four ranges boarded `live` after a clean destroy that kept their templates."""
+    ws = _kept_template_workspace(tmp_path, "run-kt")
+    rng = _range_of(_rec("run-kt", "deploy", created=1, run_dir=tmp_path / "run-kt"),
+                    _rec("run-kd", "destroy", created=2, run_dir=tmp_path / "run-kt"))
+    assert (rng["state"], rng["live"]) == ("retired", False)
+    assert ranges.has_vms(str(ws)) is False
+
+
+def test_kept_templates_without_a_destroy_are_not_live(tmp_path):
+    _kept_template_workspace(tmp_path, "run-kt2")
+    rng = _range_of(_rec("run-kt2", "deploy", created=1, run_dir=tmp_path / "run-kt2"))
+    assert (rng["state"], rng["live"]) == ("failed", False)
+
+
+def test_reconcile_orphans_closes_a_run_no_worker_holds(tmp_path):
+    """run-31072cb0: the worker died before its try block, leaving the row queued forever."""
+    from dashboard.events import EventBus
+    from dashboard.store import Store
+
+    store = Store(tmp_path / "db.sqlite3")
+    store.create_run("run-ghost", "c", "deploy", "main", {}, tmp_path / "g", None)
+    store.create_run("run-live", "c", "deploy", "main", {}, tmp_path / "l", None)
+    mgr = RunManager(store, EventBus())
+    mgr._procs["run-live"] = object()  # spawned this lifetime — not an orphan
+
+    assert set(mgr.reconcile_orphans()) == {"run-ghost"}
+    ghost = store.get_run("run-ghost")
+    assert ghost["state"] == "failed" and "orphaned" in ghost["error"]
+    assert store.get_run("run-live")["state"] == "queued"
+    assert mgr.reconcile_orphans() == []
+
+
+def test_startup_reconciles_a_run_whose_worker_is_gone(tmp_path, monkeypatch):
+    """Entering the app's lifespan is what closes the orphan — construction must not."""
+    from fastapi.testclient import TestClient
+    from dashboard.app import create_app
+    from dashboard.store import Store
+
+    data = tmp_path / "data"
+    monkeypatch.setenv("TEZ_DASHBOARD_DATA", str(data))
+    store = Store(data / "dashboard.sqlite3")
+    store.create_run("run-stuck", "c", "deploy", "main", {}, tmp_path / "s", None)
+    assert store.get_run("run-stuck")["state"] == "queued"  # create_app() alone leaves it
+
+    with TestClient(create_app()):
+        pass
+    row = store.get_run("run-stuck")
+    assert row["state"] == "failed" and "orphaned" in row["error"]

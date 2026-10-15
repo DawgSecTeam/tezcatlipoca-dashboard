@@ -53,7 +53,9 @@ def comp_dir(comp_id: str) -> Path:
 def read_json(path: Path, default):
     try:
         return json.loads(path.read_text())
-    except FileNotFoundError:
+    except (FileNotFoundError, ValueError):
+        # ValueError covers a malformed file (JSONDecodeError subclasses it). Letting it
+        # escape turned one bad boxes.json into a 500 on every endpoint that reads it.
         return default
 
 
@@ -497,7 +499,10 @@ def get_templates():
         try:
             from config.config_prompts import list_proxmox_templates
             live = list_proxmox_templates()
-        except Exception:
+        except Exception as e:  # noqa: BLE001
+            # Never silently: "0 of 17 live" is indistinguishable from an unreachable
+            # Proxmox, and this read failed on every call for a day (2026-10-15).
+            print(f"  WARNING: cannot read live templates from Proxmox ({e})", flush=True)
             live = []
     names = sorted(set(live) | used)
     return [{"name": n, "platform": os_to_platform(n), "live": n in live} for n in names]

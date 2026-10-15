@@ -51,14 +51,21 @@ class Store:
             self._db.executescript(_SCHEMA)
 
     def create_run(self, run_id, comp_id, action, engine_ref, params, run_dir, log_path):
+        created = time.time()
         with self._lock:
             self._db.execute(
                 "INSERT INTO runs (id, comp_id, action, engine_ref, params, state, run_dir, "
                 "log_path, created_at) VALUES (?,?,?,?,?, 'queued', ?,?,?)",
                 (run_id, comp_id, action, engine_ref, json.dumps(params), str(run_dir),
-                 str(log_path), time.time()))
+                 str(log_path), created))
             self._db.commit()
-        return self.get_run(run_id)
+        # The inserted record, not a re-read: a transient read failure here handed the
+        # caller None, which then died unpacking in the worker and left the queued row
+        # behind forever with no process (2026-10-15 run-31072cb0).
+        return {"id": run_id, "comp_id": comp_id, "action": action, "engine_ref": engine_ref,
+                "params": params, "state": "queued", "stage": "", "run_dir": str(run_dir),
+                "log_path": str(log_path), "pid": None, "returncode": None, "error": None,
+                "created_at": created, "started_at": None, "ended_at": None}
 
     def update_run(self, run_id, **fields):
         allowed = {"state", "stage", "pid", "returncode", "error", "started_at", "ended_at"}
@@ -186,6 +193,10 @@ class Store:
     def mint_range_token(self, range_key, comp_id):
         token = secrets.token_urlsafe(24)
         with self._lock:
+            # One token per WORKSPACE: the primary key is the token, so INSERT OR REPLACE
+            # only replaced a row when the token collided, and a re-deploy into the same
+            # workspace accumulated rows that token_for_range then picked arbitrarily.
+            self._db.execute("DELETE FROM range_tokens WHERE range_key = ?", (range_key,))
             self._db.execute(
                 "INSERT OR REPLACE INTO range_tokens (token, range_key, comp_id, created_ts) "
                 "VALUES (?,?,?,?)", (token, range_key, comp_id, time.time()))
