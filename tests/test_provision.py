@@ -194,3 +194,18 @@ def test_submit_defaults_to_the_services_pinned_engine_ref(tmp_path, monkeypatch
     assert config.default_engine_ref() == "0" * 40
     assert mgr.submit("mini", "deploy", None, {"teams": 1})["engine_ref"] == "0" * 40
     assert mgr.submit("mini", "deploy", "v0.2.0", {"teams": 1})["engine_ref"] == "v0.2.0"
+
+
+def test_an_explicit_comp_dir_wins_for_any_action(tmp_path):
+    """A scrim of a range that is already deployed acts on the workspace holding it
+    (`--skip-deploy`), not a fresh seed: the range actions resolve theirs into
+    `_destroy_comp_dir`, and a submit may name `comp_dir` directly (2026-10-15, the v0.3.0
+    full-range scrim)."""
+    from dashboard.runner import RunManager
+    defs, run_dir, range_dir = tmp_path / "defs", tmp_path / "run", tmp_path / "range"
+    defs.mkdir()
+    rec = {"params": {"comp_dir": str(range_dir)}, "run_dir": str(run_dir)}
+    assert RunManager._workspace(rec, defs) == range_dir
+    resolved = {"params": {"_destroy_comp_dir": str(range_dir)}, "run_dir": str(run_dir)}
+    assert RunManager._workspace(resolved, defs) == range_dir
+    assert RunManager._workspace({"params": {}, "run_dir": str(run_dir)}, defs) == run_dir / "comp"

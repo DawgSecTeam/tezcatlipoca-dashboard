@@ -363,6 +363,19 @@ class RunManager:
                 pub.write_text(public.strip() + "\n")
         return env
 
+    @staticmethod
+    def _workspace(record, comp_src):
+        """The workspace a run acts in.
+
+        An explicit `comp_dir` wins for ANY action: a scrim of an already-deployed range must
+        act on the workspace that holds it (`--skip-deploy`), not a fresh seed, and the range
+        actions get theirs resolved by `_range_workspace` into `_destroy_comp_dir`.
+        """
+        explicit = (record["params"].get("comp_dir")
+                    or record["params"].get("_destroy_comp_dir"))
+        return (Path(explicit) if explicit
+                else workspaces.seed_workspace(comp_src, Path(record["run_dir"]) / "comp"))
+
     def _run_nodes_file(self, params, run_dir):
         """The run's selected nodes, in the engine's nodes.json schema.
 
@@ -388,9 +401,7 @@ class RunManager:
     def _run(self, record, comp_src, engine_ref):
         run_id, run_dir = record["id"], Path(record["run_dir"])
         try:
-            destroy_dir = record["params"].get("_destroy_comp_dir")
-            ws = (Path(destroy_dir) if destroy_dir
-                  else workspaces.seed_workspace(comp_src, run_dir / "comp"))
+            ws = self._workspace(record, comp_src)
             worktree = run_dir / "engine"
             engine_used = self._provision_worktree(worktree, engine_ref, run_dir)
             nodes_file = self._run_nodes_file(record["params"], run_dir)
