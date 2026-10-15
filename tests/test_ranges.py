@@ -450,6 +450,22 @@ def test_kept_templates_without_a_destroy_are_not_live(tmp_path):
     assert (rng["state"], rng["live"]) == ("failed", False)
 
 
+def test_a_scrim_that_tore_its_own_range_down_retires_it(tmp_path):
+    """run-952b279e: a 30-minute scrim ran destroy-competition in its teardown stage and
+    the range read `failed`, because only an action literally named destroy retired."""
+    _doc_workspace(tmp_path, "run-s", vms=False)
+    rng = _range_of(_rec("run-s", "scrim", created=2, run_dir=tmp_path / "run-s"),
+                    _rec("run-d", "deploy", created=1, run_dir=tmp_path / "run-s"))
+    assert (rng["state"], rng["live"]) == ("retired", False)
+    assert rng["retired_by"] == "run-s"
+
+
+def test_a_scrim_that_kept_its_range_stays_live(tmp_path):
+    _doc_workspace(tmp_path, "run-sk", vms=True)
+    rng = _range_of(_rec("run-sk", "scrim", created=1, run_dir=tmp_path / "run-sk"))
+    assert (rng["state"], rng["live"]) == ("live", True)
+
+
 def test_reconcile_orphans_closes_a_run_no_worker_holds(tmp_path):
     """run-31072cb0: the worker died before its try block, leaving the row queued forever."""
     from dashboard.events import EventBus

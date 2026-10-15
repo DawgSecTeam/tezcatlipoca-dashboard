@@ -60,12 +60,19 @@ def has_vms(key):
 
 
 def retired_by(runs):
-    """The newest destroy of these runs that ended rc=0, or None.
+    """The newest run of these that ended rc=0 having torn the range down, or None.
 
-    Teardown is idempotent and re-runnable, so a failed or cancelled destroy retires
+    Teardown is idempotent and re-runnable, so a failed or cancelled run retires
     nothing — it is the signal that the range must stay on the board.
+
+    A `scrim` retires too: its teardown stage runs `destroy-competition.py` itself, so a
+    scrim that exited 0 and left no resource behind has retired the range. Without it a
+    clean 30-minute scrim plus teardown read `failed` (2026-10-15, run-952b279e). A scrim
+    that kept the range cannot be mislabelled by this: `has_vms` is evaluated first, and a
+    kept range still carries its VMs, so it never reaches this predicate.
     """
-    return next((r for r in runs if r["action"] == "destroy" and r["returncode"] == 0), None)
+    return next((r for r in runs
+                 if r["action"] in ("destroy", "scrim") and r["returncode"] == 0), None)
 
 
 def range_state(key, runs):
