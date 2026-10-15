@@ -72,6 +72,8 @@ as before.
 | `GET /api/runs`, `GET /api/runs/{id}` | run records (`state`, `stage`, timings, rc) |
 | `GET /api/ranges` | ranges derived from run workspaces (state, retire, runs) |
 | `POST /api/runs/{id}/cancel` | kill the run's process group |
+| `POST /api/runs/{id}/pause` | hold a deploy at its next phase boundary (`{run, detail}`) |
+| `POST /api/runs/{id}/resume` | withdraw the request, or let a held deploy continue |
 | `GET /api/runs/{id}/log?since=N` | log tail by byte offset |
 | `GET /api/runs/{id}/events?since=N` | event cursor recovery (no polling loops needed) |
 | `GET /api/runs/{id}/events/stream` | SSE of live run events |
@@ -90,10 +92,22 @@ networks, boxes and machines from the inventory; Evidence: collected files group
 that produced them; `/scrims/{id}` redirects here), and the per-competition editor under
 `/c/{id}`.
 
+### Pausing a deploy
+
+`Pause after next stage` on a run page asks the driver to hold at its next phase boundary: the
+phase in progress finishes and the process parks there — the only consistent place to stop, since
+a phase can have a terraform apply or a VM build in flight. The range stays `building`, the
+deploy lock stays held, and `Resume` carries on in the same process. Only `deploy` has
+boundaries (verify/destroy/redeploy report one stage; a parked scrim would freeze its harness
+while red, blue and the clock keep running), a request is refused when the run's engine ref
+predates the hook, and a held run shows the phase it stopped after. The engine side is
+`deploy_lib/pause.py` in the tezcatlipoca checkout.
+
 ## MCP (`/mcp`, Streamable HTTP, same bearer token)
 
 Tools: `list_comps`, `get_comp`, `submit_run`, `list_runs`, `get_run`, `watch_run`,
-`unwatch_run`, `cancel_run`, `get_run_log`, `get_run_events`, `get_artifacts`.
+`unwatch_run`, `cancel_run`, `pause_run`, `resume_run`, `get_run_log`, `get_run_events`,
+`get_artifacts`.
 
 ## Nodes
 

@@ -9,7 +9,7 @@ on; a deploy/scrim run's own workspace is `<run_dir>/comp` (see runner._range_wo
 import json
 from pathlib import Path
 
-IN_FLIGHT = ("queued", "running")
+IN_FLIGHT = ("queued", "running", "pausing", "paused")
 
 
 def range_key(run):

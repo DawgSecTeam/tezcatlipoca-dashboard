@@ -66,6 +66,8 @@ export const api = {
   runs: (state) => request('GET', `/runs${state && state !== 'all' ? `?state=${enc(state)}` : ''}`),
   run: (id) => request('GET', `/runs/${enc(id)}`),
   cancelRun: (id) => request('POST', `/runs/${enc(id)}/cancel`),
+  pauseRun: (id) => request('POST', `/runs/${enc(id)}/pause`),
+  resumeRun: (id) => request('POST', `/runs/${enc(id)}/resume`),
   runLog: (id, since = 0) => request('GET', `/runs/${enc(id)}/log?since=${since || 0}`),
   runEvents: (id, since = 0) => request('GET', `/runs/${enc(id)}/events?since=${since || 0}`),
   runArtifacts: (id) => request('GET', `/runs/${enc(id)}/artifacts`),
