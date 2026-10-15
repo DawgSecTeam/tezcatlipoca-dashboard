@@ -2,10 +2,13 @@
 // pills, the stage progress strip, offset-polled log views, the event list, the artifacts
 // tree, and the two submit forms (new run / reset a box).
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { marked } from 'marked'
 import { api, streamRunEvents } from '../api'
 import { Button, ErrorBanner, Field, Modal, Spinner, inputCls } from './ui'
 import { Icon, Stepper, fmtDur, toMs, useConfirm, useTick, useToast } from './kit'
+import { LogView as LogViewImpl, prettyStage, stripEsc } from './logtex'
+
+export { prettyStage } from './logtex'
 
 export const ACTION_LABEL = {
   deploy: 'Deploy', plan: 'Dry run', verify: 'Verify',
@@ -26,6 +29,19 @@ export const stagesFor = (action) =>
           : DEPLOY_STAGES
 
 const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
+
+// What the Stage column should say for a run record alone (no events). The runner stamps
+// single-step actions with one stage of their own, but the store's `stage` string can carry
+// the workspace's deploy phases — a 6-second Destroy then reads "phase 8/8 seed", which is
+// nonsense. Single-step actions show their step only while in flight; deploy-family actions
+// show the phase string prettified ("6/8 · Repair sweep").
+const SINGLE_STEP = { verify: 'Verify', destroy: 'Teardown', redeploy: 'Redeploy' }
+
+export function stageLabel(run) {
+  const single = SINGLE_STEP[run?.action]
+  if (single) return run?.state === 'running' || run?.state === 'queued' ? single : ''
+  return prettyStage(run?.stage)
+}
 
 // ── state pill ─────────────────────────────────────────────────────────────────────────────
 
@@ -161,7 +177,7 @@ export function StageStrip({ action, stage, state, endedAt, stageEvents = [] }) 
   // card on a board then has the same height.
   if ((succeeded || failed) && !open) {
     const label = failed
-      ? `failed at ${stages[failIdx] || current || 'the last step'}`
+      ? `failed at ${stages[failIdx] || prettyStage(current) || 'the last step'}`
       : 'complete'
     return (
       <button onClick={() => setOpen(true)} className="group w-full text-left" title="Show the steps">
@@ -201,9 +217,9 @@ export function StageStrip({ action, stage, state, endedAt, stageEvents = [] }) 
       <div className="mt-2 flex items-center gap-2 text-xs text-muted">
         <span className={`h-2 w-2 shrink-0 rounded-full ${failed ? 'bg-danger' : succeeded ? 'bg-accent' : 'animate-pulse bg-accent'}`} />
         <span className="min-w-0 truncate">
-          {failed ? `failed at ${stages[failIdx] || current || 'the last step'}`
+          {failed ? `failed at ${stages[failIdx] || prettyStage(current) || 'the last step'}`
             : succeeded ? `${total} step${total === 1 ? '' : 's'} complete`
-              : current || 'waiting for the first stage'}
+              : prettyStage(current) || 'waiting for the first stage'}
         </span>
         {elapsed != null && <span className="ml-auto shrink-0 tabular-nums text-faint">{fmtDur(elapsed)}</span>}
         {(succeeded || failed) && (
@@ -240,24 +256,10 @@ export function useRunLog(runId) {
   return log
 }
 
-export function LogView({ log, height = '60vh' }) {
-  const [follow, setFollow] = useState(true)
-  const pre = useRef()
-  useEffect(() => { if (follow && pre.current) pre.current.scrollTop = pre.current.scrollHeight }, [log.text, follow])
-  return (
-    <div>
-      <div className="mb-3 flex items-center gap-3 text-sm">
-        {log.running ? <><Spinner /><span className="text-muted">Running…</span></>
-          : <span className={`chip px-3 py-1 ${log.returncode === 0 ? 'bg-accent-soft text-accent' : 'bg-danger-soft text-danger'}`}>
-              {log.returncode === 0 ? 'Finished' : `Failed · exit ${log.returncode}`}
-            </span>}
-        <label className="ml-auto flex shrink-0 items-center gap-2 text-xs text-muted">
-          <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} className="accent-[var(--accent)]" /> Follow
-        </label>
-      </div>
-      <pre ref={pre} style={{ height }} className="overflow-auto rounded-2xl bg-sunken p-4 font-mono text-xs leading-relaxed text-fg shadow-inset">{log.text || ' '}</pre>
-    </div>
-  )
+// The shared log view lives in logtex.jsx (ANSI parsing, repeat folding, search, exact phase
+// jumps); the drawer and the run page's Output panel both render through it.
+export function LogView({ log, height = '60vh', showPhases = false }) {
+  return <LogViewImpl log={log} height={height} showPhases={showPhases} />
 }
 
 export function RunLogModal({ open, onClose, title, log }) {
@@ -272,13 +274,14 @@ export function RunLogModal({ open, onClose, title, log }) {
 export function LogTail({ text, height = '8rem' }) {
   const pre = useRef()
   useEffect(() => { if (pre.current) pre.current.scrollTop = pre.current.scrollHeight }, [text])
-  return <pre ref={pre} style={{ height }} className="overflow-auto rounded-2xl bg-sunken p-3 font-mono text-[11px] leading-relaxed text-fg shadow-inset">{text || ' '}</pre>
+  return <pre ref={pre} style={{ height }} className="overflow-auto rounded-2xl bg-sunken p-3 font-mono text-[11px] leading-relaxed text-fg shadow-inset">{stripEsc(text) || ' '}</pre>
 }
 
 // ── live events: SSE with an offset-polling fallback ───────────────────────────────────────
 
 export function useRunEvents(runId, onEvent, enabled = true) {
-  const [updated, setUpdated] = useState(null) // ms timestamp of the last event or poll
+  const [updated, setUpdated] = useState(null) // ms timestamp of the last event or keepalive
+  const [live, setLive] = useState(false) // an SSE stream is currently open
   const cb = useRef(onEvent)
   cb.current = onEvent
   useEffect(() => {
@@ -302,8 +305,12 @@ export function useRunEvents(runId, onEvent, enabled = true) {
       while (!stop) {
         ctrl = new AbortController()
         try {
-          await streamRunEvents(runId, take, { since: seq, signal: ctrl.signal })
+          setLive(true)
+          // The server sends a keepalive comment every 15s; the stream can otherwise sit
+          // silent for minutes between phase changes, and "updated" must not read as dead.
+          await streamRunEvents(runId, take, { since: seq, signal: ctrl.signal, onKeepalive: () => setUpdated(Date.now()) })
         } catch { /* stream refused or dropped; fall back to polling */ }
+        setLive(false)
         if (stop) return
         await poll()
         await new Promise((r) => { timer = setTimeout(r, 3000) })
@@ -312,7 +319,7 @@ export function useRunEvents(runId, onEvent, enabled = true) {
     loop()
     return () => { stop = true; ctrl?.abort(); clearTimeout(timer) }
   }, [runId, enabled])
-  return { updated }
+  return { updated, live }
 }
 
 // ── events + artifacts ─────────────────────────────────────────────────────────────────────
@@ -352,6 +359,7 @@ function flattenArtifacts(node, prefix = '', out = []) {
 export function ArtifactsList({ runId }) {
   const [rows, setRows] = useState(null)
   const [err, setErr] = useState(null)
+  const [preview, setPreview] = useState(null) // {path, name}
   useEffect(() => {
     setRows(null); setErr(null)
     api.runArtifacts(runId)
@@ -361,8 +369,8 @@ export function ArtifactsList({ runId }) {
   if (err) return <ErrorBanner error={err} />
   if (!rows) return <Spinner />
   if (!rows.length) return <p className="text-xs text-faint">No artifacts collected yet.</p>
-  // A row's click fetches the file (the API needs the bearer header, so a plain href
-  // cannot do it) and hands the blob to the browser as a download.
+  // The API needs the bearer header, so a plain href cannot do it. A row click opens the
+  // file in-app; the trailing icon downloads it without leaving the page.
   const grab = async (path) => {
     try {
       const blob = await api.runArtifactFile(runId, path)
@@ -374,18 +382,78 @@ export function ArtifactsList({ runId }) {
     } catch (e) { setErr(e) }
   }
   return (
-    <ul className="space-y-1.5">
-      {rows.map((r) => (
-        <li key={r.path}>
-          <button onClick={() => grab(r.path)} title={`Download ${r.path}`}
-            className="flex w-full items-center gap-2 rounded-xl px-2 py-0.5 text-left text-xs transition hover:bg-sunken">
-            <Icon name="packet" className="h-3.5 w-3.5 shrink-0 text-faint" />
-            <span className="min-w-0 truncate font-mono text-muted">{r.path}</span>
-            {(r.bytes ?? r.size) != null && <span className="ml-auto shrink-0 tabular-nums text-faint">{r.bytes ?? r.size}</span>}
-          </button>
-        </li>
-      ))}
-    </ul>
+    <>
+      <ul className="space-y-1.5">
+        {rows.map((r) => (
+          <li key={r.path} className="group flex items-center gap-1">
+            <button onClick={() => setPreview({ path: r.path })} title={`Preview ${r.path}`}
+              className="flex min-w-0 flex-1 items-center gap-2 rounded-xl px-2 py-0.5 text-left text-xs transition hover:bg-sunken">
+              <Icon name="packet" className="h-3.5 w-3.5 shrink-0 text-faint" />
+              <span className="min-w-0 truncate font-mono text-muted">{r.path}</span>
+              {(r.bytes ?? r.size) != null && <span className="shrink-0 tabular-nums text-faint">{r.bytes ?? r.size}</span>}
+            </button>
+            <button onClick={() => grab(r.path)} title={`Download ${r.path}`}
+              className="shrink-0 rounded-lg px-1.5 py-0.5 text-[11px] text-faint opacity-0 transition hover:text-accent group-hover:opacity-100">
+              ↓
+            </button>
+          </li>
+        ))}
+      </ul>
+      <ArtifactPreview runId={runId} file={preview} onClose={() => setPreview(null)} onDownload={(p) => grab(p)} />
+    </>
+  )
+}
+
+// An artifact/evidence file opened in-app. Markdown renders, JSON pretty-prints, everything
+// else shows as text — a 200-file evidence tree is useless if the report itself can't be
+// read. Oversized files fall back to download; binary types go straight to download.
+const TEXTY = /\.(md|json|jsonl|txt|log|env|py|ya?ml|conf|ini|toml)$/i
+
+export function ArtifactPreview({ runId, file, onClose, onDownload }) {
+  const [state, setState] = useState(null) // {kind: 'md'|'json'|'text', text} | {kind: 'binary'}
+  const [err, setErr] = useState(null)
+  const name = file?.path?.split('/').pop() || ''
+  useEffect(() => {
+    setState(null); setErr(null)
+    if (!file) return
+    ;(async () => {
+      try {
+        const blob = await api.runArtifactFile(runId, file.path)
+        const pretty = file.path.endsWith('.json') || file.path.endsWith('.jsonc')
+        if (!TEXTY.test(file.path) && !blob.type.startsWith('text/')) { setState({ kind: 'binary' }); return }
+        const text = await blob.text()
+        if (text.length > 2_000_000) { setState({ kind: 'binary' }); return } // preview limit; download still works
+        setState({ kind: pretty ? 'json' : file.path.endsWith('.md') ? 'md' : 'text', text })
+      } catch (e) { setErr(e) }
+    })()
+  }, [file, runId]) // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <Modal wide open={!!file} onClose={onClose} title={name}>
+      <ErrorBanner error={err} />
+      {!file ? null : !state ? <div className="flex justify-center p-8"><Spinner /></div> : (
+        <>
+          {state.kind === 'md' && (
+            <div className="prose prose-sm max-h-[60vh] max-w-none overflow-auto rounded-2xl bg-sunken p-5 text-fg shadow-inset dark:prose-invert prose-headings:font-[family-name:var(--font-display)] prose-headings:font-semibold prose-a:text-accent"
+              dangerouslySetInnerHTML={{ __html: marked.parse(state.text) }} />
+          )}
+          {state.kind === 'json' && (
+            <pre className="max-h-[60vh] overflow-auto rounded-2xl bg-sunken p-4 font-mono text-xs leading-relaxed text-fg shadow-inset">
+              {(() => { try { return JSON.stringify(JSON.parse(state.text), null, 2) } catch { return state.text } })()}
+            </pre>
+          )}
+          {state.kind === 'text' && (
+            <pre className="max-h-[60vh] overflow-auto rounded-2xl bg-sunken p-4 font-mono text-xs leading-relaxed text-fg shadow-inset">{state.text}</pre>
+          )}
+          {state.kind === 'binary' && (
+            <p className="text-sm text-muted">This file is too large or not text to preview here{onDownload && <> — use the download button below</>}.</p>
+          )}
+          <div className="mt-4 flex items-center justify-between gap-3">
+            <span className="truncate font-mono text-[11px] text-faint" title={file.path}>{file.path}</span>
+            {onDownload && <Button onClick={() => onDownload(file.path)}><Icon name="packet" />Download</Button>}
+          </div>
+        </>
+      )}
+    </Modal>
   )
 }
 
@@ -426,9 +494,9 @@ export function NewRunModal({ open, onClose, comps, initial = {}, onSubmitted })
             {(comps || []).map((c) => <option key={c.id} value={c.id}>{c.name} ({c.id})</option>)}
           </select>
         </Field>
-        <Field label="Action">
+        <Field label="Action" hint="Scrim, redeploy and teardown options (teams to target, per-box modes) live on the competition and run pages.">
           <select className={inputCls} value={form.action} onChange={set('action')}>
-            {RUN_ACTIONS.map((a) => <option key={a} value={a}>{ACTION_LABEL[a]} ({a})</option>)}
+            {RUN_ACTIONS.map((a) => <option key={a} value={a}>{ACTION_LABEL[a]}</option>)}
           </select>
         </Field>
         <div className="grid grid-cols-3 gap-4">
@@ -450,10 +518,29 @@ export function NewRunModal({ open, onClose, comps, initial = {}, onSubmitted })
   )
 }
 
-// "Reset a box…" — redeploy action with box/team/mode fields.
+// "Reset a box…" — redeploy action with box/team/mode fields. Box and team are pickers, not
+// free text: the driver's --boxes/--teams take comma lists ("2" or "team2,team3"), and a
+// typo used to silently widen a per-box reset to every team on the range.
 export const REDEPLOY_MODES = ['reset', 'rebuild', 'rollback-ready', 'rollback-base', 'reconfigure', 'resync', 'engine-recovery']
 
-export function ResetBoxModal({ open, onClose, run, initial = {}, onSubmitted }) {
+const MODE_HINT = {
+  reset: 'Re-provision the box in place — config and misconfigs are re-applied.',
+  rebuild: 'Delete the VM and build it fresh from its template.',
+  'rollback-ready': 'Roll back to the last known-good (ready) snapshot.',
+  'rollback-base': 'Roll back to the pristine base snapshot.',
+  reconfigure: 'Re-run configuration management without touching the VM itself.',
+  resync: 'Re-sync the box state to what the range expects, no rebuild.',
+  'engine-recovery': 'Recover the scoring engine VM, not a team box.',
+}
+
+// One team chip per deployed team; with no inventory, plain numbers from the run's params.
+function teamChoices(run, inventoryTeams) {
+  if (inventoryTeams?.length) return inventoryTeams.map((t) => ({ value: t.identifier || t.key, label: t.key }))
+  const n = Number(run?.params?.teams) || 0
+  return n > 0 ? Array.from({ length: n }, (_, i) => ({ value: String(i + 1), label: `team ${i + 1}` })) : []
+}
+
+export function ResetBoxModal({ open, onClose, run, initial = {}, teams, onSubmitted }) {
   const [form, setForm] = useState({ box: '', team: '', mode: 'reset' })
   const [boxes, setBoxes] = useState([])
   const [err, setErr] = useState(null)
@@ -464,6 +551,12 @@ export function ResetBoxModal({ open, onClose, run, initial = {}, onSubmitted })
     api.comp(run.comp_id).then((c) => setBoxes(c.boxes || [])).catch(() => setBoxes([]))
   }, [open, run]) // eslint-disable-line react-hooks/exhaustive-deps
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value })
+  const toggle = (k, v) => {
+    const cur = form[k] ? form[k].split(',').filter(Boolean) : []
+    const next = cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v]
+    setForm({ ...form, [k]: next.join(',') })
+  }
+  const picked = (k) => (form[k] ? form[k].split(',').filter(Boolean) : [])
   const submit = async (e) => {
     e.preventDefault()
     try {
@@ -471,33 +564,43 @@ export function ResetBoxModal({ open, onClose, run, initial = {}, onSubmitted })
         comp_id: run.comp_id,
         action: 'redeploy',
         engine_ref: run.engine_ref,
-        // The runner maps these straight onto the driver's flags (boxes -> --boxes,
-        // teams -> --teams); `box`/`team` are silently dropped, which turns a per-box
-        // reset into a range-wide one.
         params: { boxes: form.box, teams: form.team, mode: form.mode },
       })
       onSubmitted?.(r)
       onClose()
     } catch (e2) { setErr(e2) }
   }
+  const boxNames = boxes.map((b) => b.name)
+  const teamOpts = teamChoices(run, teams)
+  const Chip = ({ k, v, label }) => (
+    <button type="button" onClick={() => toggle(k, v)}
+      className={`chip px-2.5 py-1 font-mono text-xs transition ${picked(k).includes(v) ? 'bg-accent-soft text-accent' : 'bg-sunken text-muted hover:text-fg'}`}>
+      {label || v}
+    </button>
+  )
   return (
     <Modal open={open} onClose={onClose} title="Reset a box">
       <form onSubmit={submit} className="space-y-4">
         <ErrorBanner error={err} />
-        <Field label="Box" hint="Comma-separated, from boxes.json — empty means every box of the selected teams">
-          <input className={`${inputCls} font-mono`} list="reset-box-names" value={form.box} onChange={set('box')} autoFocus placeholder="web01" />
-          <datalist id="reset-box-names">{boxes.map((b) => <option key={b.name} value={b.name} />)}</datalist>
+        <Field label="Boxes" hint={picked('box').length ? `--boxes ${form.box}` : 'None picked — every box of the selected teams is reset.'}>
+          <div className="flex flex-wrap gap-2 rounded-2xl bg-sunken p-3 shadow-inset">
+            {boxNames.map((n) => <Chip key={n} k="box" v={n} />)}
+            {!boxNames.length && <span className="text-xs text-faint">The competition defines no boxes.</span>}
+          </div>
         </Field>
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Team" hint="e.g. 2 or team2,team3">
-            <input className={`${inputCls} font-mono`} value={form.team} onChange={set('team')} placeholder="all" />
-          </Field>
-          <Field label="Mode">
-            <select className={inputCls} value={form.mode} onChange={set('mode')}>
-              {REDEPLOY_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
-            </select>
-          </Field>
-        </div>
+        <Field label="Teams" hint={picked('team').length ? `--teams ${form.team}` : 'None picked — the redeploy covers the whole range.'}>
+          <div className="flex flex-wrap gap-2 rounded-2xl bg-sunken p-3 shadow-inset">
+            {teamOpts.map((t) => <Chip key={t.value} k="team" v={t.value} label={t.label} />)}
+            {!teamOpts.length && (
+              <input className={`${inputCls} font-mono`} value={form.team} onChange={set('team')} placeholder="e.g. 2 or team2,team3" />
+            )}
+          </div>
+        </Field>
+        <Field label="Mode" hint={MODE_HINT[form.mode]}>
+          <select className={inputCls} value={form.mode} onChange={set('mode')}>
+            {REDEPLOY_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+        </Field>
         <div className="flex justify-end gap-3 pt-2">
           <Button type="button" onClick={onClose}>Cancel</Button>
           <Button variant="primary" disabled={!form.box && !form.team}><Icon name="play" />Submit redeploy</Button>

@@ -88,8 +88,9 @@ export const api = {
 }
 
 // SSE of run events, with the bearer header intact (EventSource cannot send one).
-// Calls onEvent per server event and resolves when the stream ends.
-export async function streamRunEvents(id, onEvent, { since = 0, signal } = {}) {
+// Calls onEvent per server event, onKeepalive for the server's ":" comment frames (the
+// stream can otherwise sit silent for minutes), and resolves when the stream ends.
+export async function streamRunEvents(id, onEvent, { since = 0, signal, onKeepalive } = {}) {
   const res = await fetch(`/api/runs/${enc(id)}/events/stream?since=${since}`, {
     headers: { Accept: 'text/event-stream', Authorization: `Bearer ${getToken()}` },
     signal,
@@ -109,7 +110,9 @@ export async function streamRunEvents(id, onEvent, { since = 0, signal } = {}) {
     while ((i = buf.indexOf('\n\n')) >= 0) {
       const frame = buf.slice(0, i)
       buf = buf.slice(i + 2)
-      const data = frame.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim()).join('\n')
+      const lines = frame.split('\n')
+      if (lines.length && lines.every((l) => !l || l.startsWith(':'))) { onKeepalive?.(); continue }
+      const data = lines.filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim()).join('\n')
       if (data) {
         try { onEvent(JSON.parse(data)) } catch { /* non-JSON keepalive */ }
       }

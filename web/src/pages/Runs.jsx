@@ -1,30 +1,94 @@
 // Every run the service has executed: filterable table plus a detail drawer with the
 // stage timeline, event list, live log and collected artifacts.
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import TopNav from '../components/Nav'
-import { Button, Card, ErrorBanner, Spinner } from '../components/ui'
+import { Button, Card, ErrorBanner, SearchInput, Spinner } from '../components/ui'
 import { EmptyState, Icon, PageHeader, agoMs, fmtSpan, useTick } from '../components/kit'
 import {
-  ACTION_LABEL, ArtifactsList, EventList, LogView, StageStrip, StatePill,
+  ACTION_LABEL, ArtifactsList, EventList, LogView, StageStrip, StatePill, stageLabel,
   useRunActions, useRunEvents, useRunLog,
 } from '../components/runui'
 
 const FILTERS = ['all', 'queued', 'running', 'pausing', 'paused', 'succeeded', 'failed', 'cancelled']
+const terminal = (s) => s === 'succeeded' || s === 'failed' || s === 'cancelled'
 
+// A row: state pill, identity (comp, run id), the prettified stage, timing — and, for a
+// terminal failure, the stored error spelled out underneath, so eight identical-looking
+// "failed · rc 1" rows stop hiding eight different causes.
 function Row({ r, selected, onPick }) {
+  const err = terminal(r.state) && r.error ? String(r.error) : ''
   return (
-    <tr onClick={() => onPick(r.id)} className={`cursor-pointer transition hover:bg-sunken ${selected ? 'bg-sunken' : ''}`}>
-      <td className="px-4 py-2.5"><StatePill state={r.state} /></td>
-      <td className="px-4 py-2.5 font-mono text-sm">{r.comp_id}</td>
-      <td className="px-4 py-2.5 text-sm text-muted">{ACTION_LABEL[r.action] || r.action}</td>
-      <td className="px-4 py-2.5 font-mono text-xs text-muted">{r.engine_ref || 'main'}</td>
-      <td className="max-w-40 truncate px-4 py-2.5 text-xs text-muted" title={r.stage || ''}>{r.stage || '—'}</td>
-      <td className="px-4 py-2.5 text-xs text-muted">{agoMs(r.started_at || r.created_at) || '—'}</td>
-      <td className="px-4 py-2.5 text-xs tabular-nums text-muted">{fmtSpan(r.started_at || r.created_at, r.ended_at)}</td>
-      <td className="px-4 py-2.5 font-mono text-xs tabular-nums text-muted">{r.returncode ?? '—'}</td>
-    </tr>
+    <>
+      <tr onClick={() => onPick(r.id)} className={`cursor-pointer transition hover:bg-sunken ${selected ? 'bg-sunken' : ''}`}>
+        <td className="px-4 py-2.5"><StatePill state={r.state} /></td>
+        <td className="px-4 py-2.5 font-mono text-sm">{r.comp_id}</td>
+        <td className="px-4 py-2.5 font-mono text-xs text-muted" title={r.id}>{r.id.replace(/^run-/, '')}</td>
+        <td className="px-4 py-2.5 text-sm text-muted">{ACTION_LABEL[r.action] || r.action}</td>
+        <td className="max-w-40 truncate px-4 py-2.5 text-xs text-muted" title={r.stage || ''}>{stageLabel(r) || '—'}</td>
+        <td className="px-4 py-2.5 text-xs text-muted">{agoMs(r.started_at || r.created_at) || '—'}</td>
+        <td className="px-4 py-2.5 text-xs tabular-nums text-muted">{fmtSpan(r.started_at || r.created_at, r.ended_at)}</td>
+        <td className="px-4 py-2.5 font-mono text-xs tabular-nums text-muted">{r.returncode ?? '—'}</td>
+      </tr>
+      {err && (
+        <tr className="cursor-pointer hover:bg-sunken" onClick={() => onPick(r.id)}>
+          <td colSpan={8} className="pb-2.5 pl-14 pr-4">
+            <span className="flex items-start gap-2 text-xs text-danger" title={err}>
+              <Icon name="warn" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span className="line-clamp-2">{err}</span>
+            </span>
+          </td>
+        </tr>
+      )}
+    </>
   )
+}
+
+// Retries repeat: N quick failures with the same comp/action/state/exit and no error text
+// collapse into one row with a ×N badge until clicked. Only genuinely identical micro-runs
+// fold — anything with a distinct error stays on its own row.
+const durMs = (r) => ((r.ended_at || Date.now() / 1000) - (r.started_at || r.created_at)) * 1000
+
+function collapseRuns(rows) {
+  const groups = []
+  for (const r of rows) {
+    const g = groups[groups.length - 1]
+    const first = g?.runs[0]
+    if (
+      first && terminal(r.state) && durMs(r) < 15000 && durMs(first) < 15000
+      && first.comp_id === r.comp_id && first.action === r.action && first.state === r.state
+      && (first.error || '') === (r.error || '') && (first.returncode ?? '') === (r.returncode ?? '')
+    ) g.runs.push(r)
+    else groups.push({ runs: [r] })
+  }
+  return groups
+}
+
+function GroupRow({ g, selected, onPick }) {
+  const [open, setOpen] = useState(false)
+  const r = g.runs[0]
+  const n = g.runs.length
+  const body = (
+    <>
+      <tr onClick={() => onPick(r.id)} className={`cursor-pointer transition hover:bg-sunken ${selected ? 'bg-sunken' : ''}`}>
+        <td className="px-4 py-2.5"><StatePill state={r.state} /></td>
+        <td className="px-4 py-2.5 font-mono text-sm">{r.comp_id}</td>
+        <td className="px-4 py-2.5">
+          <button onClick={(e) => { e.stopPropagation(); setOpen((o) => !o) }} title={open ? 'Show each attempt' : `${n} identical quick attempts — click to expand`}
+            className="chip bg-danger-soft px-2 py-0.5 text-[10px] font-semibold text-danger">
+            ×{n}
+          </button>
+        </td>
+        <td className="px-4 py-2.5 text-sm text-muted">{ACTION_LABEL[r.action] || r.action}</td>
+        <td className="max-w-40 truncate px-4 py-2.5 text-xs text-muted" title={r.stage || ''}>{stageLabel(r) || '—'}</td>
+        <td className="px-4 py-2.5 text-xs text-muted">{agoMs(g.runs[n - 1].started_at || g.runs[n - 1].created_at) || '—'}</td>
+        <td className="px-4 py-2.5 text-xs tabular-nums text-muted">{fmtSpan(g.runs[n - 1].started_at || g.runs[n - 1].created_at, g.runs[n - 1].ended_at)}</td>
+        <td className="px-4 py-2.5 font-mono text-xs tabular-nums text-muted">{r.returncode ?? '—'}</td>
+      </tr>
+      {open && g.runs.map((x) => <Row key={x.id} r={x} selected={selected === x.id} onPick={onPick} />)}
+    </>
+  )
+  return body
 }
 
 function Drawer({ runId, onClose }) {
@@ -33,7 +97,7 @@ function Drawer({ runId, onClose }) {
   const [events, setEvents] = useState([])
   const [err, setErr] = useState(null)
   const log = useRunLog(runId)
-  const { updated } = useRunEvents(runId, (ev) => {
+  const { updated, live } = useRunEvents(runId, (ev) => {
     if (ev.seq != null) setEvents((e) => (e.some((x) => x.seq === ev.seq) ? e : [...e, ev].sort((a, b) => (a.seq || 0) - (b.seq || 0))))
     api.run(runId).then(setRun).catch(() => {})
   })
@@ -89,7 +153,7 @@ function Drawer({ runId, onClose }) {
                 ['Started', agoMs(run.started_at) || '—'],
                 ['Ended', run.ended_at ? agoMs(run.ended_at) : '—'],
                 ['Duration', fmtSpan(run.started_at || run.created_at, run.ended_at)],
-                ['Updated', updated ? agoMs(updated) : '—'],
+                ['Updated', live ? 'live' : updated ? agoMs(updated) : '—'],
                 ['Run dir', run.run_dir || '—'],
               ].map(([k, v]) => (
                 <div key={k} className="flex items-baseline justify-between gap-3 rounded-2xl bg-sunken px-4 py-2.5 shadow-inset">
@@ -130,6 +194,8 @@ export default function Runs() {
   const [runs, setRuns] = useState(null)
   const [err, setErr] = useState(null)
   const [sel, setSel] = useState(null)
+  const [q, setQ] = useState('')
+  const [comp, setComp] = useState('')
   const refresh = useCallback(
     () => api.runs(filter === 'all' ? undefined : filter).then(setRuns).catch(setErr),
     [filter],
@@ -140,6 +206,15 @@ export default function Runs() {
     const t = setInterval(refresh, 8000)
     return () => clearInterval(t)
   }, [refresh])
+
+  const comps = useMemo(() => [...new Set((runs || []).map((r) => r.comp_id))].sort(), [runs])
+  const groups = useMemo(() => {
+    const needle = q.trim().toLowerCase()
+    const filtered = (runs || []).filter((r) =>
+      (!comp || r.comp_id === comp)
+      && (!needle || `${r.comp_id} ${r.id} ${r.action} ${r.engine_ref || ''} ${r.stage || ''} ${r.error || ''}`.toLowerCase().includes(needle)))
+    return collapseRuns(filtered)
+  }, [runs, q, comp])
 
   return (
     <div className="mx-auto max-w-6xl px-8 py-10">
@@ -152,8 +227,14 @@ export default function Runs() {
             {f}
           </button>
         ))}
+        <select value={comp} onChange={(e) => setComp(e.target.value)}
+          className="field !w-auto !rounded-full !py-1.5 text-xs" aria-label="Filter by competition">
+          <option value="">All competitions</option>
+          {comps.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <SearchInput value={q} onChange={setQ} placeholder="Search runs" className="w-64" />
       </div>
-      <ErrorBanner error={err} />
+      <ErrorBanner error={err} onRetry={() => { setErr(null); refresh() }} />
       <Card className="rise rise-2 overflow-hidden p-2">
         {!runs && !err && <div className="flex justify-center p-10"><Spinner /></div>}
         {runs && !runs.length && (
@@ -167,8 +248,8 @@ export default function Runs() {
               <tr className="text-[11px] font-semibold uppercase tracking-wider text-faint">
                 <th className="px-4 py-2">State</th>
                 <th className="px-4 py-2">Comp</th>
+                <th className="px-4 py-2">Run</th>
                 <th className="px-4 py-2">Action</th>
-                <th className="px-4 py-2">Ref</th>
                 <th className="px-4 py-2">Stage</th>
                 <th className="px-4 py-2">Started</th>
                 <th className="px-4 py-2">Duration</th>
@@ -176,7 +257,9 @@ export default function Runs() {
               </tr>
             </thead>
             <tbody className="divide-y-2 divide-line">
-              {runs.map((r) => <Row key={r.id} r={r} selected={sel === r.id} onPick={setSel} />)}
+              {groups.map((g, i) => (g.runs.length === 1
+                ? <Row key={g.runs[0].id} r={g.runs[0]} selected={sel === g.runs[0].id} onPick={setSel} />
+                : <GroupRow key={`${g.runs[0].id}-${i}`} g={g} selected={sel && g.runs.some((x) => x.id === sel)} onPick={setSel} />))}
             </tbody>
           </table>
         )}

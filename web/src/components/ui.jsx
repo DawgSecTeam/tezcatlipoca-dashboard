@@ -38,12 +38,15 @@ export function Card({ className = '', ...props }) {
   return <div className={`panel ${className}`} {...props} />
 }
 
-export function ErrorBanner({ error, onClose }) {
+export function ErrorBanner({ error, onClose, onRetry }) {
   if (!error) return null
   return (
     <div className="mb-4 flex items-start justify-between gap-3 rounded-2xl bg-danger-soft px-4 py-2.5 text-sm text-danger">
       <span className="whitespace-pre-wrap">{String(error.message || error)}</span>
-      {onClose && <button onClick={onClose} className="opacity-70 hover:opacity-100">✕</button>}
+      <span className="flex shrink-0 items-center gap-2">
+        {onRetry && <button onClick={onRetry} className="chip bg-bg px-2.5 py-1 text-xs font-semibold text-danger transition hover:opacity-80">Retry</button>}
+        {onClose && <button onClick={onClose} className="opacity-70 hover:opacity-100">✕</button>}
+      </span>
     </div>
   )
 }

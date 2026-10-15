@@ -2,6 +2,7 @@
 // that live outside the teams. Props: run (run record), comp (competition detail),
 // inventory (GET /api/runs/{id}/inventory payload, or null while loading).
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { kindOf } from '../api'
 import { Button, Card, PlatformBadge, inputCls } from './ui'
 import { EmptyState, Icon, fmtMem, useToast } from './kit'
@@ -158,6 +159,10 @@ function Machines({ machines }) {
     ...(machines?.goldens || []).map((g) => ({ role: 'Golden', name: g.name, vmid: g.vmid, node: g.node, ips: [] })),
   ].filter(Boolean)
   if (!rows.length) return null
+  // Columns the inventory actually knows about: a workspace projection without node or
+  // address facts renders a wall of "—" otherwise.
+  const showNode = rows.some((r) => r.node)
+  const showIps = rows.some((r) => r.ips.length)
   return (
     <Card className="overflow-hidden">
       <div className="px-5 pt-4 pb-3">
@@ -170,8 +175,8 @@ function Machines({ machines }) {
             <th className="px-4 py-2">Role</th>
             <th className="px-4 py-2">Name</th>
             <th className="px-4 py-2">VMID</th>
-            <th className="px-4 py-2">Node</th>
-            <th className="px-4 py-2">Addresses</th>
+            {showNode && <th className="px-4 py-2">Node</th>}
+            {showIps && <th className="px-4 py-2">Addresses</th>}
           </tr>
         </thead>
         <tbody className="divide-y-2 divide-line">
@@ -180,8 +185,8 @@ function Machines({ machines }) {
               <td className="px-4 py-2 text-muted">{r.role}</td>
               <td className="px-4 py-2 font-mono">{r.name || '—'}</td>
               <td className="px-4 py-2 font-mono text-xs tabular-nums text-muted">{r.vmid ?? '—'}</td>
-              <td className="px-4 py-2 font-mono text-xs text-muted">{r.node || '—'}</td>
-              <td className="px-4 py-2 font-mono text-xs text-muted">{r.ips.join(', ') || '—'}</td>
+              {showNode && <td className="px-4 py-2 font-mono text-xs text-muted">{r.node || '—'}</td>}
+              {showIps && <td className="px-4 py-2 font-mono text-xs text-muted">{r.ips.join(', ') || '—'}</td>}
             </tr>
           ))}
         </tbody>
@@ -196,6 +201,7 @@ export default function RunTeams({ run, comp, inventory }) {
   const specs = specMap(comp)
   const teams = inventory?.teams || []
   const redeploy = (box, team, mode) => setReset({ box, team, mode })
+  const deployedFor = Number(run?.params?.teams) || rangeTeamCount(inventory)
   return (
     <div className="space-y-5">
       {!inventory ? <Definition run={run} comp={comp} /> : teams.length ? (
@@ -203,7 +209,11 @@ export default function RunTeams({ run, comp, inventory }) {
       ) : (
         <Card className="p-2">
           <EmptyState icon="boxes" title="No teams in the inventory">
-            The range's inventory lists no teams — nothing is deployed under it, or this is not a team-based competition.
+            The range's inventory lists no live team networks right now
+            {deployedFor ? <> — it was deployed for <b className="tabular-nums">{deployedFor}</b> team{deployedFor === 1 ? '' : 's'}, so the range is most likely torn down or still building</> : ''}
+            {inventory?.range?.deploy_run_id
+              ? <> — the deploying run <Link to={`/c/${inventory.range.comp_id}/runs/${inventory.range.deploy_run_id}`} className="font-mono underline">{inventory.range.deploy_run_id}</Link> has the build record.</>
+              : '.'}
           </EmptyState>
         </Card>
       )}
@@ -211,9 +221,13 @@ export default function RunTeams({ run, comp, inventory }) {
       {!!inventory && <Machines machines={inventory.machines} />}
 
       {run && (
-        <ResetBoxModal open={!!reset} onClose={() => setReset(null)} run={run} initial={reset || {}}
+        <ResetBoxModal open={!!reset} onClose={() => setReset(null)} run={run} teams={inventory?.teams} initial={reset || {}}
           onSubmitted={() => toast('Redeploy submitted')} />
       )}
     </div>
   )
 }
+
+// inventory.range.teams is the team count the range was deployed with — the same number the
+// Overview panel shows, so the empty state can reconcile the two views.
+const rangeTeamCount = (inventory) => inventory?.range?.teams ?? null

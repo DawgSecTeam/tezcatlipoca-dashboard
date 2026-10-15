@@ -6,8 +6,15 @@ import { Link } from 'react-router-dom'
 import { kindOf } from '../api'
 import { Card, PlatformBadge } from './ui'
 import { EmptyState, Icon } from './kit'
+import { DEPLOY_STAGES } from './runui'
 
 const NET_KIND = { team: 'Team', transit: 'Transit', satellite: 'Satellite' }
+
+// The deploy state stores the last phase as a number; a bare "8" told the operator nothing.
+const phaseName = (n) => {
+  const i = Number(n)
+  return Number.isInteger(i) && i >= 1 && i <= DEPLOY_STAGES.length ? `${i}/8 · ${DEPLOY_STAGES[i - 1]}` : String(n ?? '—')
+}
 
 // The range's state, not the run's: a live range outlives the deploy run that built it.
 // teardown_failed means terraform's resources are gone but a VM survived (ranges.py) — a
@@ -49,7 +56,7 @@ function DeployFacts({ deploy }) {
     <Card className="p-5">
       <h3 className="label">Deploy</h3>
       <div className="flex flex-wrap items-start gap-x-10 gap-y-3">
-        <Fact k="Last phase"><span className="font-mono tabular-nums">{deploy.last_phase ?? '—'}</span></Fact>
+        <Fact k="Last phase"><span className="font-mono tabular-nums">{deploy.last_phase != null ? phaseName(deploy.last_phase) : '—'}</span></Fact>
         <Fact k="Seeded"><Bool v={deploy.seeded} /></Fact>
         <Fact k="Multi-node"><Bool v={deploy.multi_node} /></Fact>
         {deploy.endpoint && (
@@ -145,13 +152,19 @@ function Machines({ machines }) {
     ...(machines?.goldens || []).map((g) => ({ role: 'Golden', name: g.name, vmid: g.vmid, node: g.node, ips: [] })),
   ].filter(Boolean)
   if (!rows.length) return null
+  // Columns the inventory actually knows about — a projection without node/address facts
+  // otherwise renders a wall of "—".
+  const showNode = rows.some((r) => r.node)
+  const showIps = rows.some((r) => r.ips.length)
   return (
     <Card className="overflow-hidden">
       <h3 className="px-5 pt-4 pb-3 text-sm font-semibold">Machines <span className="font-normal text-faint">outside the teams</span></h3>
       <table className="w-full text-left">
         <thead>
           <tr className="border-t-2 border-line text-[11px] font-semibold uppercase tracking-wider text-faint">
-            <TH>Role</TH><TH>Name</TH><TH>VMID</TH><TH>Node</TH><TH>Addresses</TH>
+            <TH>Role</TH><TH>Name</TH><TH>VMID</TH>
+            {showNode && <TH>Node</TH>}
+            {showIps && <TH>Addresses</TH>}
           </tr>
         </thead>
         <tbody className="divide-y-2 divide-line">
@@ -160,8 +173,8 @@ function Machines({ machines }) {
               <td className="px-4 py-2 text-muted">{r.role}</td>
               <td className="px-4 py-2 font-mono">{r.name || '—'}</td>
               <td className="px-4 py-2 font-mono text-xs tabular-nums text-muted">{r.vmid ?? '—'}</td>
-              <td className="px-4 py-2 font-mono text-xs text-muted">{r.node || '—'}</td>
-              <td className="px-4 py-2 font-mono text-xs text-muted">{r.ips.join(', ') || '—'}</td>
+              {showNode && <td className="px-4 py-2 font-mono text-xs text-muted">{r.node || '—'}</td>}
+              {showIps && <td className="px-4 py-2 font-mono text-xs text-muted">{r.ips.join(', ') || '—'}</td>}
             </tr>
           ))}
         </tbody>

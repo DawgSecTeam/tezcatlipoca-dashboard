@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import TopNav from '../components/Nav'
@@ -59,6 +59,7 @@ function Stat({ icon, n, label }) {
 
 export default function Comps() {
   const [comps, setComps] = useState(null)
+  const [ranges, setRanges] = useState([])
   const [err, setErr] = useState(null)
   const [q, setQ] = useState('')
   const [sort, setSort] = useState('recent')
@@ -66,6 +67,17 @@ export default function Comps() {
   const searchRef = useRef()
   useSlashFocus(searchRef)
   useEffect(() => { api.comps().then(setComps).catch(setErr) }, [])
+  // Which competitions currently have a range on the board — the card grid otherwise gives
+  // no way to tell a deployed comp from a dormant one without visiting each page.
+  useEffect(() => { api.ranges().then(setRanges).catch(() => {}) }, [])
+  const rangeState = useMemo(() => {
+    const map = {}
+    for (const r of ranges) {
+      if (r.state === 'teardown_failed') map[r.comp_id] = 'teardown_failed'
+      else if (r.live && !map[r.comp_id]) map[r.comp_id] = 'up'
+    }
+    return map
+  }, [ranges])
 
   const needle = q.toLowerCase()
   const shown = (comps || [])
@@ -79,7 +91,7 @@ export default function Comps() {
       <div className="rise rise-1 mb-10 text-center">
         <h1 className="display text-6xl">Competitions</h1>
         <p className="mt-3 text-muted">
-          {comps ? `${comps.length} ranges` : '…'} · author boxes, services and misconfigs, then deploy to Proxmox
+          {comps ? `${comps.length} competition${comps.length === 1 ? '' : 's'}` : '…'} · author boxes, services and misconfigs, then deploy to Proxmox
         </p>
       </div>
 
@@ -100,7 +112,19 @@ export default function Comps() {
           <Link key={c.id} to={`/c/${c.id}`} className={`panel rise group flex flex-col p-7 transition duration-200 hover:-translate-y-1 ${i < 4 ? `rise-${i + 1}` : ''}`}>
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <h2 className="display truncate text-2xl">{c.name}</h2>
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <h2 className="display truncate text-2xl">{c.name}</h2>
+                  {rangeState[c.id] === 'up' && (
+                    <span className="chip shrink-0 bg-accent-soft px-2 py-0.5 text-accent" title="This competition has a range on the Active board">
+                      <span className="mr-1 h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />range up
+                    </span>
+                  )}
+                  {rangeState[c.id] === 'teardown_failed' && (
+                    <span className="chip shrink-0 bg-danger-soft px-2 py-0.5 text-danger" title="Its range's teardown failed — something survived the destroy">
+                      teardown failed
+                    </span>
+                  )}
+                </div>
                 <p className="mt-0.5 truncate text-xs text-faint"><span className="font-mono">{c.id}</span> · edited {timeAgo(c.modified)}</p>
               </div>
               <DifficultyMeter value={c.difficulty} />

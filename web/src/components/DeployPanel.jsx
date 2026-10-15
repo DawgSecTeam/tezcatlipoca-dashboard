@@ -1,6 +1,7 @@
 // Overview's deploy panel: same form as the old job-based panel, but every action
 // submits a run to POST /api/runs and watches it through the run log API.
 import { useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { Button, Card, ErrorBanner, Field, Modal, inputCls } from './ui'
 import { Icon, Stepper, agoMs, fmtMem, useToast } from './kit'
@@ -105,6 +106,19 @@ export default function DeployPanel({ comp }) {
       </div>
       <ErrorBanner error={err} onClose={() => setErr(null)} />
       <div className="space-y-5">
+        {/* The engine preflight is the real collision authority, but a second deploy while
+            one is running deserves a visible heads-up before the operator burns a build. */}
+        {(() => {
+          const busy = runs.find((r) => r.state === 'running' || r.state === 'queued')
+          return busy ? (
+            <div className="rounded-2xl bg-accent-soft px-4 py-2.5 text-xs text-accent">
+              <span className="font-semibold">{ACTION_LABEL[busy.action] || busy.action}</span> is running now
+              ({busy.id}, {agoMs(busy.started_at || busy.created_at)}) —
+              a second concurrent run may collide on the engine.{' '}
+              <Link to={`/c/${comp.id}/runs/${busy.id}`} className="underline">Open it</Link>.
+            </div>
+          ) : null
+        })()}
         <Field label="Engine ref" hint="The tezcatlipoca ref the run pins (branch, SHA or tag)">
           <input className={`${inputCls} font-mono`} value={form.engine_ref} onChange={set('engine_ref')} placeholder="main" />
         </Field>
@@ -153,30 +167,6 @@ export default function DeployPanel({ comp }) {
           </div>
           {noBoxes && <p className="text-center text-xs text-faint">Add a box before deploying.</p>}
         </div>
-      </div>
-
-      <div className="mt-6">
-        <h3 className="label">Recent runs</h3>
-        {runs.length === 0
-          ? <p className="text-xs text-faint">No runs for this competition yet.</p>
-          : (
-            <ul className="space-y-2">
-              {runs.slice(0, 6).map((r) => (
-                <li key={r.id}>
-                  <button onClick={() => setViewing(r)} className="tile tile-hover flex w-full items-center gap-3 px-4 py-2 text-left text-sm">
-                    <span className={`h-2 w-2 shrink-0 rounded-full ${r.state === 'running' || r.state === 'queued' ? 'animate-pulse bg-accent' : r.state === 'succeeded' ? 'bg-accent' : r.state === 'failed' ? 'bg-danger' : 'bg-line'}`} />
-                    <span className="font-medium">{ACTION_LABEL[r.action] || r.action}</span>
-                    <StatePill state={r.state} />
-                    <span className="ml-auto text-xs text-faint">{agoMs(r.started_at || r.created_at)}</span>
-                    <Icon name="terminal" className="h-3.5 w-3.5 text-faint" />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        <p className="mt-4 text-[11px] leading-relaxed text-faint">
-          Runs execute in the dashboard service's own workspace. Tear down with a Destroy run.
-        </p>
       </div>
 
       <Modal open={confirm} onClose={() => setConfirm(false)} title={`Deploy ${comp.name}?`}>
@@ -229,3 +219,38 @@ export default function DeployPanel({ comp }) {
     </Card>
   )
 }
+
+// The competition's recent runs, as a card in the Overview's left column — the deploy panel
+// was the only thing tall enough to fill its column, and a bare half-page next to it read as
+// an unfinished layout. Rows navigate to the run page, so the drawer log modal stays here.
+export function RecentRuns({ compId }) {
+  const [runs, setRuns] = useState([])
+  useEffect(() => { api.runs().then((rs) => setRuns(rs.filter((r) => r.comp_id === compId))).catch(() => {}) }, [compId])
+  return (
+    <Card className="rise rise-3 p-6">
+      <h3 className="label">Recent runs</h3>
+      {runs.length === 0
+        ? <p className="text-xs text-faint">No runs for this competition yet.</p>
+        : (
+          <ul className="space-y-2">
+            {runs.slice(0, 6).map((r) => (
+              <li key={r.id}>
+                <Link to={`/c/${compId}/runs/${r.id}`}
+                  className="tile tile-hover flex w-full items-center gap-3 px-4 py-2 text-sm">
+                  <span className={`h-2 w-2 shrink-0 rounded-full ${r.state === 'running' || r.state === 'queued' ? 'animate-pulse bg-accent' : r.state === 'succeeded' ? 'bg-accent' : r.state === 'failed' ? 'bg-danger' : 'bg-line'}`} />
+                  <span className="font-medium">{ACTION_LABEL[r.action] || r.action}</span>
+                  <StatePill state={r.state} />
+                  <span className="ml-auto text-xs text-faint">{agoMs(r.started_at || r.created_at)}</span>
+                  <Icon name="chevron" className="h-3.5 w-3.5 shrink-0 text-faint" />
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      <p className="mt-4 text-[11px] leading-relaxed text-faint">
+        Runs execute in the dashboard service's own workspace. Tear down with a Destroy run.
+      </p>
+    </Card>
+  )
+}
+

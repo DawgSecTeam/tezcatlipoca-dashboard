@@ -44,7 +44,7 @@ function Schedule({ list, span, onPick }) {
         </div>
         {list.map((i) => (
           <button key={i.slug} onClick={() => onPick(i.slug)} className="group relative grid w-full grid-cols-[34%_1fr] items-center text-left">
-            <span className="truncate pr-4 text-sm transition group-hover:text-accent">{i.title || i.slug}</span>
+            <span className="truncate pr-4 text-sm transition group-hover:text-accent" title={i.title || i.slug}>{i.title || i.slug}</span>
             <Bar inj={i} span={end} tall />
           </button>
         ))}
@@ -159,7 +159,7 @@ export default function Injects() {
             <li key={i.slug}>
               <button onClick={() => navigate(`/c/${comp.id}/injects/${i.slug}`)}
                 className={`tile tile-hover w-full px-4 py-3 text-left ${slug === i.slug ? 'hatched !border-accent' : ''}`}>
-                <div className="truncate text-sm font-semibold">{i.title || i.slug}</div>
+                <div className="truncate text-sm font-semibold" title={i.title || i.slug}>{i.title || i.slug}</div>
                 <div className="mb-2 mt-0.5 font-mono text-[11px] text-faint">{fmtOffset(i.open_offset_min)} → due {fmtOffset(i.due_offset_min)}</div>
                 <Bar inj={i} span={span} />
               </button>

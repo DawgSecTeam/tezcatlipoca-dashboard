@@ -1,13 +1,13 @@
 // One run's page, mounted under the competition shell (/c/:id/runs/:run): identity header,
 // a sourced "General" panel (phase display, facts, actions), this run's own timeline and
 // log, its teams and infrastructure, and the evidence it produced. /scrims/:id redirects here.
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, Navigate, useParams } from 'react-router-dom'
 import { api } from '../api'
-import { Button, Card, ErrorBanner, Spinner } from '../components/ui'
-import { Crumbs, Icon, agoMs, fmtSpan, toMs, useTick } from '../components/kit'
+import { Button, Card, ErrorBanner, SearchInput, Spinner } from '../components/ui'
+import { Crumbs, Icon, agoMs, fmtSpan, toMs, useTick, useToast } from '../components/kit'
 import {
-  ACTION_LABEL, NewRunModal, ResetBoxModal, StageStrip, StatePill,
+  ACTION_LABEL, ArtifactPreview, LogView, NewRunModal, ResetBoxModal, StageStrip, StatePill,
   useRunActions, useRunEvents, useRunLog,
 } from '../components/runui'
 import RunTeams from '../components/RunTeams'
@@ -20,32 +20,46 @@ export function ScrimRedirect() {
   const { id } = useParams()
   const [run, setRun] = useState(null)
   const [err, setErr] = useState(null)
-  useEffect(() => { api.run(id).then(setRun).catch(setErr) }, [id])
-  if (err) return <div className="p-10"><ErrorBanner error={err} /></div>
+  const [attempt, setAttempt] = useState(0)
+  useEffect(() => { api.run(id).then(setRun).catch(setErr) }, [id, attempt])
+  if (err) return <div className="p-10"><ErrorBanner error={err} onRetry={() => { setErr(null); setAttempt((a) => a + 1) }} /></div>
   if (!run) return <div className="flex h-screen items-center justify-center"><Spinner /></div>
   return <Navigate to={`/c/${run.comp_id}/runs/${id}`} replace />
 }
 
-// Every fact names its source: the competition definition, this run's record, or the range's
-// inventory. Conflating them is what put "2 teams" on a 1-team range — a range's team count
-// comes from its inventory, never from run.params.teams.
-const FACT_SOURCE = {
-  comp: ['comp', 'From the competition definition (this workspace)'],
-  run: ['run', "From this run's own record"],
-  range: ['range', "From the range's inventory"],
+// One labeled key-value group; the old panel mixed every source in one grid and a middle
+// "RANGE/COMP/RUN" column that read like a value.
+function FactGroup({ title, children }) {
+  return (
+    <div>
+      <h3 className="label !mb-2">{title}</h3>
+      <dl className="grid grid-cols-[8.5rem_minmax(0,1fr)] items-baseline gap-x-3 gap-y-1.5 text-sm">{children}</dl>
+    </div>
+  )
 }
 
-function Facts({ facts }) {
+const KV = ({ k, v, title }) => (
+  <>
+    <dt className="truncate text-[11px] font-semibold uppercase tracking-wider text-faint" title={title}>{k}</dt>
+    <dd className="min-w-0 truncate font-mono text-xs text-muted" title={title ?? String(v ?? '—')}>{v ?? '—'}</dd>
+  </>
+)
+
+// The run's server-side directory, offered as a copy button — it is a server path, not a
+// fact to read, and the old truncated display could not even be copied whole.
+function CopyPath({ path }) {
+  const toast = useToast()
+  if (!path) return null
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(path); toast('Path copied') } catch { toast('Copy failed', 'error') }
+  }
   return (
-    <dl className="grid grid-cols-[7rem_3.5rem_minmax(0,1fr)] items-baseline gap-x-3 gap-y-2 text-sm">
-      {facts.map((f) => (
-        <Fragment key={f.label}>
-          <dt className="truncate text-[11px] font-semibold uppercase tracking-wider text-faint">{f.label}</dt>
-          <dd className="truncate text-[10px] font-semibold uppercase tracking-wider text-faint/70" title={FACT_SOURCE[f.source][1]}>{FACT_SOURCE[f.source][0]}</dd>
-          <dd className="min-w-0 truncate font-mono text-xs text-muted" title={f.title ?? String(f.value ?? '—')}>{f.value ?? '—'}</dd>
-        </Fragment>
-      ))}
-    </dl>
+    <button onClick={copy} title={`Copy ${path}`}
+      className="flex min-w-0 items-center gap-2 rounded-xl px-2 py-1 text-left font-mono text-[11px] text-faint transition hover:text-accent">
+      <Icon name="packet" className="h-3 w-3 shrink-0" />
+      <span className="truncate">{path}</span>
+      <span className="shrink-0 text-[10px] uppercase tracking-wider">copy</span>
+    </button>
   )
 }
 
@@ -77,56 +91,10 @@ function Timeline({ events, start }) {
   )
 }
 
-// Deploy phases announce themselves as "[3/8] …", scrims as "phase 3/8"; both become jump
-// targets. The line is derived from the marker's character offset — every log line has the
-// same height, so the offset ratio is an accurate scroll position.
-const PHASE = /\[(\d+)\/(\d+)\]|phase\s+(\d+)\s*\/\s*(\d+)/gi
-
-function phaseMarks(text) {
-  const out = [], seen = new Set()
-  for (const m of text.matchAll(PHASE)) {
-    const n = m[1] ?? m[3]
-    if (seen.has(n)) continue
-    seen.add(n)
-    out.push({ n, total: m[2] ?? m[4], line: text.slice(0, m.index).split('\n').length })
-  }
-  return out
-}
-
-// LogView owns its own <pre> ref, so the phase anchors need our own scroll container; the
-// status row and follow toggle mirror it.
+// The engine log renders through the shared LogView (ANSI colors, folded repeats, log
+// search, exact phase jumps); this wrapper only carries the panel caption.
 function Output({ log }) {
-  const [follow, setFollow] = useState(true)
-  const pre = useRef()
-  useEffect(() => { if (follow && pre.current) pre.current.scrollTop = pre.current.scrollHeight }, [log.text, follow])
-  // The page ticks every second; don't rescan a multi-megabyte log on each tick.
-  const marks = useMemo(() => phaseMarks(log.text), [log.text])
-  const jump = (m) => {
-    const el = pre.current
-    if (!el) return
-    setFollow(false)
-    el.scrollTop = (m.line / (log.text.split('\n').length || 1)) * el.scrollHeight
-  }
-  return (
-    <div>
-      <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
-        {log.running ? <><Spinner /><span className="text-muted">Running…</span></>
-          : <span className={`chip px-3 py-1 ${log.returncode === 0 ? 'bg-accent-soft text-accent' : 'bg-danger-soft text-danger'}`}>
-              {log.returncode === 0 ? 'Finished' : `Failed · exit ${log.returncode}`}
-            </span>}
-        {marks.map((m) => (
-          <button key={m.n} onClick={() => jump(m)} title={`Jump to phase ${m.n} of ${m.total}`}
-            className="chip bg-sunken px-2 py-0.5 font-mono text-[11px] text-muted transition hover:text-accent">
-            phase {m.n}/{m.total}
-          </button>
-        ))}
-        <label className="ml-auto flex shrink-0 items-center gap-2 text-xs text-muted">
-          <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} className="accent-[var(--accent)]" /> Follow
-        </label>
-      </div>
-      <pre ref={pre} style={{ height: '50vh' }} className="overflow-auto rounded-2xl bg-sunken p-4 font-mono text-xs leading-relaxed text-fg shadow-inset">{log.text || ' '}</pre>
-    </div>
-  )
+  return <LogView log={log} height="50vh" showPhases />
 }
 
 const fmtBytes = (n) => (n == null ? '' : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`)
@@ -139,7 +107,7 @@ const CATS = [
   ['Harness', (rel, base) => rel.startsWith('evidence/harness') || base === '.deploy-timings.jsonl'],
 ]
 
-function FileGroups({ rows, group, onDownload }) {
+function FileGroups({ rows, group, onPreview, onDownload }) {
   const rel = (p) => (p.startsWith(`${group}/`) ? p.slice(group.length + 1) : p)
   const base = (p) => p.split('/').pop()
   const cats = CATS.map(([name, match]) => ({ name, files: rows.filter((r) => match(rel(r.path), base(rel(r.path)))) }))
@@ -155,12 +123,16 @@ function FileGroups({ rows, group, onDownload }) {
           </div>
           <ul className="space-y-1">
             {c.files.map((r) => (
-              <li key={r.path}>
-                <button onClick={() => onDownload(r.path, base(r.path))} title={`Download ${r.path}`}
-                  className="flex w-full items-center gap-2 rounded-xl px-2 py-1 text-left text-xs transition hover:bg-sunken">
+              <li key={r.path} className="group flex items-center gap-1">
+                <button onClick={() => onPreview(r.path)} title={`Preview ${rel(r.path)}`}
+                  className="flex min-w-0 flex-1 items-center gap-2 rounded-xl px-2 py-1 text-left text-xs transition hover:bg-sunken">
                   <Icon name="packet" className="h-3.5 w-3.5 shrink-0 text-faint" />
                   <span className="min-w-0 truncate font-mono text-muted">{rel(r.path)}</span>
                   <span className="ml-auto shrink-0 tabular-nums text-faint">{fmtBytes(r.bytes)}</span>
+                </button>
+                <button onClick={() => onDownload(r.path, base(r.path))} title={`Download ${rel(r.path)}`}
+                  className="shrink-0 rounded-lg px-1.5 py-0.5 text-[11px] text-faint opacity-0 transition hover:text-accent group-hover:opacity-100">
+                  ↓
                 </button>
               </li>
             ))}
@@ -174,6 +146,8 @@ function FileGroups({ rows, group, onDownload }) {
 function Evidence({ runId }) {
   const [rows, setRows] = useState(null)
   const [err, setErr] = useState(null)
+  const [q, setQ] = useState('')
+  const [preview, setPreview] = useState(null)
   useEffect(() => {
     setRows(null); setErr(null)
     api.runArtifacts(runId).then(setRows).catch(setErr)
@@ -182,8 +156,9 @@ function Evidence({ runId }) {
   if (!rows) return <div className="flex justify-center p-10"><Spinner /></div>
   // The evidence root belongs to the whole workspace, so a path's first segment is the run
   // that produced it — a run page must never present another run's files as its own.
+  const filtered = q.trim() ? rows.filter((r) => r.path.toLowerCase().includes(q.trim().toLowerCase())) : rows
   const groups = {}
-  rows.forEach((r) => { (groups[r.path.split('/')[0]] ||= []).push(r) })
+  filtered.forEach((r) => { (groups[r.path.split('/')[0]] ||= []).push(r) })
   const mine = groups[runId] || []
   const others = Object.entries(groups).filter(([g]) => g !== runId)
   // The API needs the bearer header, so a row fetches the file and hands the blob to the browser.
@@ -197,15 +172,33 @@ function Evidence({ runId }) {
       URL.revokeObjectURL(a.href)
     } catch (e) { setErr(e) }
   }
+  // Browsers throttle programmatic downloads; a small gap keeps "download all" from dropping
+  // files when a run's evidence carries a couple hundred of them.
+  const grabAll = async (list) => {
+    for (const r of list) {
+      await grab(r.path, r.path.split('/').pop())
+      await new Promise((res) => setTimeout(res, 250))
+    }
+  }
+  const totalFiles = filtered.length
   return (
     <div className="rise space-y-6 pb-6">
       <Card className="p-6">
-        <div className="mb-4 flex items-baseline justify-between gap-2">
+        <div className="mb-4 flex flex-wrap items-center gap-3">
           <h2 className="label !mb-0">This run</h2>
           <span className="font-mono text-[11px] text-faint">{mine.length} file{mine.length === 1 ? '' : 's'}</span>
+          <div className="ml-auto flex items-center gap-2">
+            <SearchInput value={q} onChange={setQ} placeholder="Filter by path" className="w-56" />
+            {mine.length > 1 && !q.trim() && (
+              <Button onClick={() => grabAll(mine)}><Icon name="packet" />Download all</Button>
+            )}
+          </div>
         </div>
+        {totalFiles !== rows.length && (
+          <p className="mb-3 text-xs text-faint">{totalFiles} of {rows.length} files match “{q.trim()}”.</p>
+        )}
         {mine.length
-          ? <FileGroups rows={mine} group={runId} onDownload={grab} />
+          ? <FileGroups rows={mine} group={runId} onPreview={(p) => setPreview({ path: p })} onDownload={grab} />
           : <p className="text-sm text-faint">No evidence collected for <span className="font-mono">{runId}</span> yet — teardown copies a run's evidence into the workspace's <span className="font-mono">.automated-tests/</span> folder.</p>}
       </Card>
       {others.length > 0 && (
@@ -215,14 +208,22 @@ function Evidence({ runId }) {
             <div className="mt-4 space-y-6">
               {others.map(([g, list]) => (
                 <div key={g}>
-                  <div className="mb-2 font-mono text-xs font-semibold text-muted">{g} <span className="text-faint">· {list.length}</span></div>
-                  <FileGroups rows={list} group={g} onDownload={grab} />
+                  <div className="mb-2 flex items-baseline gap-2 font-mono text-xs font-semibold text-muted">
+                    {g} <span className="text-faint">· {list.length}</span>
+                    {list.length > 1 && (
+                      <button onClick={() => grabAll(list)} className="ml-auto text-[11px] font-normal text-faint underline-offset-2 transition hover:text-accent hover:underline">
+                        download all
+                      </button>
+                    )}
+                  </div>
+                  <FileGroups rows={list} group={g} onPreview={(p) => setPreview({ path: p })} onDownload={grab} />
                 </div>
               ))}
             </div>
           </details>
         </Card>
       )}
+      <ArtifactPreview runId={runId} file={preview} onClose={() => setPreview(null)} onDownload={(p) => grab(p, p.split('/').pop())} />
     </div>
   )
 }
@@ -236,13 +237,14 @@ export default function Run() {
   const [comps, setComps] = useState(null)
   const [events, setEvents] = useState([])
   const [err, setErr] = useState(null)
+  const [attempt, setAttempt] = useState(0)
   const [newRun, setNewRun] = useState(false)
   const [resetBox, setResetBox] = useState(null) // null = closed, {} | {team} = prefill
   const log = useRunLog(id)
   useTick(1000)
   const reload = () => api.run(id).then(setRun).catch(() => {})
   const { submit, destroy, cancel, pause, resume, live, held, canPause } = useRunActions(run, reload)
-  const { updated } = useRunEvents(id, (ev) => {
+  const { updated, live: streamLive } = useRunEvents(id, (ev) => {
     setEvents((e) => (e.some((x) => x.seq === ev.seq) ? e : [...e, ev].sort((a, b) => (a.seq || 0) - (b.seq || 0))))
     reload()
   })
@@ -254,14 +256,18 @@ export default function Run() {
       .catch(setErr)
     api.runInventory(id).then(setInventory).catch(() => {})
     api.runEvents(id, 0).then((r) => setEvents(r.events || [])).catch(() => {})
-  }, [id])
+  }, [id, attempt])
   useEffect(() => {
     document.title = run
       ? `${comp?.name || run.comp_id} · ${ACTION_LABEL[run.action] || run.action} · tezcatlipoca`
       : 'tezcatlipoca'
   }, [run, comp])
 
-  if (err) return <div className="p-10"><ErrorBanner error={err} /></div>
+  if (err) {
+    // The first fetch of a deep link occasionally races the service (a fresh "Open run"
+    // landed on a raw "no such run" / 500 that a reload cured) — offer the retry inline.
+    return <div className="p-10"><ErrorBanner error={err} onRetry={() => { setErr(null); setAttempt((a) => a + 1) }} /></div>
+  }
   if (!run) return <div className="flex justify-center p-10"><Spinner /></div>
 
   const boxes = comp?.boxes || []
@@ -271,23 +277,40 @@ export default function Run() {
   // holding the LLM key is still up".
   const teardown = inventory?.teardown?.run_id || inventory?.teardown?.done?.length ? inventory.teardown : null
   const teams = range?.teams ?? '—'
-  const facts = [
-    { label: 'Teams', source: 'range', value: teams, title: "The deployed range's live team count" },
-    { label: 'Range', source: 'range', value: range?.state?.replace('_', ' ') ?? '—', title: 'building, live, retired, teardown_failed or failed — as the range last reported it' },
-    { label: 'Deploy run', source: 'range', value: range?.deploy_run_id ?? '—', title: 'The run that deployed this range' },
-    { label: 'Teardown', source: 'range', value: teardown ? `${teardown.run_id || '—'} · red01 ${teardown.red01_done ? 'down' : 'still up'}` : '—', title: teardown ? `Journal steps done: ${(teardown.done || []).join(', ') || 'none'}` : 'No teardown journal in this range workspace' },
-    { label: 'Boxes', source: 'comp', value: comp?.boxes?.length ?? '—' },
-    { label: 'Services', source: 'comp', value: comp?.services ?? '—' },
-    { label: 'Box names', source: 'comp', value: boxes.map((b) => b.name).join(', ') || '—' },
-    { label: 'Action', source: 'run', value: ACTION_LABEL[run.action] || run.action },
-    { label: 'Engine ref', source: 'run', value: run.engine_ref || 'main' },
-    { label: 'rc', source: 'run', value: run.returncode ?? '—' },
-    { label: 'Created', source: 'run', value: agoMs(run.created_at) || '—' },
-    { label: 'Started', source: 'run', value: agoMs(run.started_at || run.created_at) || '—' },
-    { label: 'Ended', source: 'run', value: run.ended_at ? agoMs(run.ended_at) : '—' },
-    { label: 'Duration', source: 'run', value: fmtSpan(run.started_at || run.created_at, run.ended_at) },
-    { label: 'Run dir', source: 'run', value: run.run_dir || '—' },
+  const runFacts = [
+    { label: 'Action', value: ACTION_LABEL[run.action] || run.action },
+    { label: 'Engine ref', value: run.engine_ref || 'main' },
+    { label: 'rc', value: run.returncode ?? '—' },
+    { label: 'Created', value: agoMs(run.created_at) || '—' },
+    { label: 'Started', value: agoMs(run.started_at || run.created_at) || '—' },
+    { label: 'Ended', value: run.ended_at ? agoMs(run.ended_at) : '—' },
+    { label: 'Duration', value: fmtSpan(run.started_at || run.created_at, run.ended_at) },
   ]
+  const rangeFacts = [
+    { label: 'Teams', value: teams, title: 'Team count the range was deployed with (its deploy params)' },
+    { label: 'Range', value: range?.state?.replace('_', ' ') ?? '—', title: 'building, live, retired, teardown_failed or failed — as the range last reported it' },
+    { label: 'Deploy run', value: range?.deploy_run_id ?? '—', title: 'The run that deployed this range', link: range?.deploy_run_id },
+    { label: 'Teardown', value: teardown ? `${teardown.run_id || '—'} · red01 ${teardown.red01_done ? 'down' : 'still up'}` : '—', title: teardown ? `Journal steps done: ${(teardown.done || []).join(', ') || 'none'}` : 'No teardown journal in this range workspace' },
+  ]
+  const compFacts = [
+    { label: 'Boxes', value: comp?.boxes?.length ?? '—' },
+    { label: 'Services', value: comp?.services ?? '—' },
+    { label: 'Box names', value: boxes.map((b) => b.name).join(', ') || '—' },
+  ]
+  const FactList = ({ facts }) => (
+    <dl className="space-y-1.5">
+      {facts.map((f) => (
+        <div key={f.label} className="flex items-baseline justify-between gap-3">
+          <dt className="shrink-0 text-[11px] font-semibold uppercase tracking-wider text-faint" title={f.title}>{f.label}</dt>
+          <dd className="min-w-0 truncate text-right font-mono text-xs text-muted" title={f.title ?? String(f.value ?? '—')}>
+            {f.link && f.value && f.value !== '—'
+              ? <Link to={`/c/${run.comp_id}/runs/${f.link}`} className="text-accent hover:underline">{f.value}</Link>
+              : (f.value ?? '—')}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  )
 
   return (
     <div className="rise space-y-6 pb-6">
@@ -310,9 +333,9 @@ export default function Run() {
           <span className="shrink-0">rc {run.returncode ?? '—'}</span>
           <span className="shrink-0">started {agoMs(run.started_at || run.created_at) || '—'}</span>
           <span className="shrink-0">elapsed {fmtSpan(run.started_at || run.created_at, run.ended_at)}</span>
-          <span className="ml-auto flex shrink-0 items-center gap-1.5" title="Last SSE event or poll">
-            <span className={`h-1.5 w-1.5 rounded-full ${Date.now() - (updated || 0) < 15000 ? 'bg-accent' : 'bg-line'}`} />
-            updated {updated ? agoMs(updated) : '—'}
+          <span className="ml-auto flex shrink-0 items-center gap-1.5" title={streamLive ? 'The live event stream is connected' : 'Last event or poll'}>
+            <span className={`h-1.5 w-1.5 rounded-full ${streamLive || Date.now() - (updated || 0) < 15000 ? 'animate-pulse bg-accent' : 'bg-line'}`} />
+            {updated ? `updated ${agoMs(updated)}` : streamLive ? 'live' : '—'}
           </span>
         </div>
       </header>
@@ -325,9 +348,20 @@ export default function Run() {
               <StageStrip action={run.action} stage={run.stage} state={run.state} endedAt={run.ended_at}
                 stageEvents={events.filter((e) => e.kind === 'stage')} />
             </div>
-            <div className="mt-5">
-              <Facts facts={facts} />
+            <div className="mt-5 grid gap-x-10 gap-y-5 md:grid-cols-2">
+              <FactGroup title="From this run">
+                <FactList facts={runFacts} />
+              </FactGroup>
+              <div className="space-y-5">
+                <FactGroup title="From the range">
+                  <FactList facts={rangeFacts} />
+                </FactGroup>
+                <FactGroup title="From the competition">
+                  <FactList facts={compFacts} />
+                </FactGroup>
+              </div>
             </div>
+            <CopyPath path={run.run_dir} />
             {range?.state === 'teardown_failed' && (
               <div className="mt-4 rounded-2xl bg-danger-soft px-4 py-2.5 text-xs text-danger">
                 Range teardown failed: terraform's resources are gone but a VM survives
@@ -380,7 +414,7 @@ export default function Run() {
         }}
         onSubmitted={reload} />
       <ResetBoxModal open={resetBox !== null} onClose={() => setResetBox(null)} run={run}
-        initial={resetBox || {}} onSubmitted={reload} />
+        teams={inventory?.teams} initial={resetBox || {}} onSubmitted={reload} />
     </div>
   )
 }

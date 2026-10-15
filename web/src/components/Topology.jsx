@@ -76,7 +76,13 @@ export default function Topology({ boxes, onSelect, selected }) {
 
       <Node x={cx} y={engineY} w={170} h={46} label="Scoring engine" sub="Quotient" kind="engine" />
       {firewalls.length > 0 && (
-        <text x={cx} y={(engineY + fwY) / 2 + 22} textAnchor="middle" fontSize="10.5" fill="var(--muted)" fontFamily="var(--font-mono)">172.31.&lt;team&gt;.0/30 transit</text>
+        // The transit label rides beside the engine→firewall link. Centered on the link it
+        // sat under the firewall node (the tile starts 23px above its center) and clipped;
+        // with several firewalls the row is crowded, so it hugs the left margin instead.
+        <text
+          x={firewalls.length === 1 ? cx + 84 : 8}
+          y={(engineY + fwY) / 2 + 8}
+          fontSize="10.5" fill="var(--muted)" fontFamily="var(--font-mono)">172.31.&lt;team&gt;.0/30 transit</text>
       )}
       {firewalls.map((b, i) => (
         <Node key={b.name} x={cx + (i - (firewalls.length - 1) / 2) * 160} y={fwY} w={136} h={46}

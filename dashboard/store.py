@@ -54,7 +54,13 @@ class Store:
             self._db.commit()
 
     def get_run(self, run_id):
-        row = self._db.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        # Reads take the same lock as writes: the connection is shared across the FastAPI
+        # threadpool, and sqlite3 connections are not thread-safe even with
+        # check_same_thread=False — concurrent drawer fetches could reset each other's
+        # statements and made get_run transiently return nothing ("no such run" on a run
+        # that plainly exists).
+        with self._lock:
+            row = self._db.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
         return self._view(row) if row else None
 
     def list_runs(self, state=None, comp_id=None):
@@ -66,7 +72,9 @@ class Store:
             sql += " AND comp_id = ?"
             vals.append(comp_id)
         sql += " ORDER BY created_at DESC"
-        return [self._view(r) for r in self._db.execute(sql, vals).fetchall()]
+        with self._lock:
+            rows = self._db.execute(sql, vals).fetchall()
+        return [self._view(r) for r in rows]
 
     def add_event(self, run_id, kind, stage="", data=None):
         """Append one event and return it in the SAME shape `get_events` yields.
@@ -85,9 +93,10 @@ class Store:
         return {"seq": seq, "ts": ts, "kind": kind, "stage": stage, **(data or {})}
 
     def get_events(self, run_id, since=0):
-        rows = self._db.execute(
-            "SELECT * FROM events WHERE run_id = ? AND seq > ? ORDER BY seq",
-            (run_id, since)).fetchall()
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM events WHERE run_id = ? AND seq > ? ORDER BY seq",
+                (run_id, since)).fetchall()
         events = [{"seq": r["seq"], "ts": r["ts"], "kind": r["kind"], "stage": r["stage"],
                    **json.loads(r["data"])} for r in rows]
         nxt = events[-1]["seq"] if events else since

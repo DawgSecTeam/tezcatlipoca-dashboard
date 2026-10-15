@@ -117,9 +117,15 @@ export default function Live() {
   const up = cards.filter((r) => r.state === 'live').length
   const building = cards.filter((r) => r.state === 'building').length
   const dirty = cards.filter((r) => r.state === 'teardown_failed').length
-  // A failed teardown is not "up" — it is counted on its own so the header never reads as health.
-  const sub = `${up} range${up === 1 ? '' : 's'} up · ${building} building`
-    + (dirty ? ` · ${dirty} teardown${dirty === 1 ? '' : 's'} failed` : '')
+  // A failed teardown is not "up" — it is counted on its own so the header never reads as
+  // health. Zero counts drop out: "2 building" beats "0 ranges up · 2 building" when the
+  // board below shows exactly those two building cards.
+  const parts = [
+    up ? `${up} range${up === 1 ? '' : 's'} up` : '',
+    building ? `${building} building` : '',
+    dirty ? `${dirty} teardown${dirty === 1 ? '' : 's'} failed` : '',
+  ].filter(Boolean)
+  const sub = parts.join(' · ') || 'nothing on the board'
 
   return (
     <div className="mx-auto max-w-6xl px-8 py-10">
