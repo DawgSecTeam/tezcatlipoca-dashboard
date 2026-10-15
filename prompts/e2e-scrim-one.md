@@ -31,7 +31,7 @@ queue).
 2. `submit_run` (record the returned `run_id`):
 
    ```json
-   {"comp_id": "scrim-one", "action": "scrim", "engine_ref": "main", "teams": 2,
+   {"comp_id": "scrim-one", "action": "scrim", "engine_ref": "estate-v0.3.0", "teams": 2,
     "params": {"duration_min": 45,
       "red_vmid": "<free>", "red_ip": "<free cluster IP>",
       "red_model": "<current working model>", "blue_model": "<current working model>",

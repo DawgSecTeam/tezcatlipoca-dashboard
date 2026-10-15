@@ -1,8 +1,17 @@
 """The range's deployed infrastructure, projected for the run page's Teams/Infra tabs.
 
-The workspace holds two files with every generated password (`.deploy_state.json` and
-`teams.json`), so everything here reads named fields and never returns a whole file. A
-missing workspace, tfstate or config degrades to empty sections instead of a 500.
+v0.3.0 replaced terraform's state with the competition's monolithic estate document
+(`estate-state.json`): every VM and bridge the deploy created is a record in its
+`resources` list, its identity/templates/run sections carry the deploy facts
+`.deploy_state.json` used to, and `teams.json` (engine-written) carries the team roster.
+This projects that document through `dashboard.estate` — the service-side mirror of the
+engine's `estate.state` — and falls back to the legacy `.deploy_state.json` +
+`terraform/terraform.tfstate` pair for a pre-v0.3 workspace, so those ranges still display.
+
+Both shapes hold every generated password (the document's `secrets` section and
+`.deploy_state.json` alike), so everything here reads named fields and never returns a
+whole file. A missing workspace, state, document or config degrades to empty sections
+instead of a 500.
 """
 
 import json
@@ -11,12 +20,14 @@ from pathlib import Path
 import yaml
 from fastapi import HTTPException
 
-from dashboard import comps_api, ranges
+from dashboard import comps_api, estate, ranges
 
-# .deploy_state.json also holds admin_password, box_password, box_creds, domain_creds,
-# inject_password, scoring_password, *_password and teams — never read those.
+# Legacy terraform resource types (pre-v0.3 workspaces only).
 _VM_TYPE = "proxmox_virtual_environment_vm"
 _BRIDGE_TYPE = "proxmox_network_linux_bridge"
+
+# The document's resource kind for a non-VM record.
+_BRIDGE_KIND = "bridge"
 
 
 def build_inventory(store, run):
@@ -24,10 +35,26 @@ def build_inventory(store, run):
     key = ranges.range_key(run)
     ws = Path(key)
     rng = next((r for r in ranges.build_ranges(store) if r["key"] == key), None)
-    state = _json(ws / ".deploy_state.json", {})
-    tfstate = _json(ws / "terraform" / "terraform.tfstate", {})
-    teams = _teams(tfstate, _comp_boxes(run["comp_id"]))
-    networks = _networks(tfstate)
+    # The flat view is the deploy facts (last_phase, endpoint, seeded, …); load_flat reads
+    # the v0.3.0 document with the legacy file as its read-only fallback.
+    state = estate.load_flat(ws)
+    boxes = _comp_boxes(run["comp_id"])
+    document = estate.document(ws)
+    resources = estate.resources(ws)
+    # A document always wins for the flat deploy facts; the INVENTORY is different. A
+    # workspace folded into a document by `estate.state.migrate` has a document and an empty
+    # resources list, with terraform's state still the only VM inventory it owns — so fall
+    # back there (and for a workspace with no document at all).
+    tfstate = {} if resources else _json(ws / "terraform" / "terraform.tfstate", {})
+    if resources or not tfstate:
+        identifiers = _team_identifiers(ws, state)
+        teams = _teams_from_resources(resources, identifiers, _targets(ws, state), boxes)
+        networks = _networks_from_resources(resources, identifiers, state)
+        machines = _machines_from_resources(resources, state, teams, ws)
+    else:
+        teams = _teams(tfstate, boxes)
+        networks = _networks(tfstate)
+        machines = _machines(tfstate, state, ws, teams)
     return {
         # Mirrors /api/ranges minus its run history: the page already holds the run it is
         # showing, and a range's whole history must not ride in on every inventory read.
@@ -41,8 +68,8 @@ def build_inventory(store, run):
         },
         "teams": teams,
         "networks": networks,
-        "machines": _machines(tfstate, state, ws, teams),
-        "teardown": _teardown(ws),
+        "machines": machines,
+        "teardown": _teardown(ws, document),
         "counts": {"teams": len(teams), "boxes": sum(len(t["boxes"]) for t in teams),
                    "networks": len(networks)},
     }
@@ -62,6 +89,143 @@ def _comp_boxes(comp_id):
     except HTTPException:
         return []
 
+
+# ── v0.3.0: the estate document ─────────────────────────────────────────────────────────
+
+def _team_identifiers(ws, state):
+    """team key -> subnet identifier.
+
+    The document's own roster — `secrets.teams`, which every deploy writes (`ctx.state
+    ["teams"]` is absorbed on the first checkpoint) — or the engine-written `teams.json`,
+    which a team removal rewrites. Both carry the team's password too, so only `identifier`
+    is ever read. With neither (a document from a partial deploy) there is no key to hang a
+    subnet on, and the teams list stays empty rather than inventing one.
+    """
+    for source in (state.get("teams"), _json(ws / "teams.json", {})):
+        if not isinstance(source, dict):
+            continue
+        found = {str(key): str(entry["identifier"])
+                 for key, entry in source.items()
+                 if isinstance(entry, dict) and entry.get("identifier") not in (None, "")}
+        if found:
+            return found
+    return {}
+
+
+def _targets(ws, state):
+    """vm_name -> the deploy's frozen target row, for a box's assigned address.
+
+    The document's `roster.targets` (written when a legacy range is folded in) or the
+    engine's own `targets.json`. Neither exists for a partial deploy, so the caller falls
+    back to the engine's own IP rule.
+    """
+    rows = state.get("targets")
+    if not isinstance(rows, dict) or not rows:
+        raw = _json(ws / "targets.json", {})
+        rows = raw.get("targets") if isinstance(raw, dict) else {}
+    return rows if isinstance(rows, dict) else {}
+
+
+def _teams_from_resources(resources, identifiers, targets, boxes):
+    """The recorded team boxes, grouped into the teams the roster names.
+
+    A team box's recorded name is the deploy's vm_name (`team1-web01`, `113-web01` for
+    every other team — the engine's positional naming), so the prefix before the first '-'
+    is the team key for team1 and the subnet identifier otherwise. That is the same rule
+    the legacy path reads off terraform's index_key.
+    """
+    by_identifier = {v: k for k, v in identifiers.items()}
+    last_octet = {b["name"]: b.get("last_octet") for b in boxes if b.get("name")}
+    teams = {k: {"key": k, "identifier": v, "subnet": f"192.168.{v}.0/24",
+                 "engine_ip": f"192.168.{v}.1", "boxes": []}
+             for k, v in identifiers.items() if v}
+    for row in resources:
+        if row.get("kind") != "team_box":
+            continue
+        prefix, _, box_name = str(row.get("name") or "").partition("-")
+        team_key = prefix if prefix in teams else by_identifier.get(prefix)
+        if team_key not in teams or not box_name:
+            continue
+        target = targets.get(row.get("name")) or {}
+        ip = target.get("ip") or _fallback_ip(teams[team_key]["identifier"],
+                                             last_octet.get(box_name))
+        teams[team_key]["boxes"].append({
+            "name": box_name,
+            "vmid": row.get("vmid"),
+            "ip": ip,
+            "node": row.get("node") or target.get("node"),
+            # The document records ownership (vmid/tags), not power state: an absent value
+            # renders as "unknown", never as "stopped".
+            "started": None,
+            "tags": row.get("tags") or [],
+        })
+    return [teams[k] for k in sorted(teams, key=_team_order)]
+
+
+def _networks_from_resources(resources, identifiers, state):
+    by_identifier = {v: k for k, v in identifiers.items()}
+    engine_node = state.get("node") or ""
+    out = []
+    for row in resources:
+        if row.get("kind") != _BRIDGE_KIND:
+            continue
+        name = str(row.get("bridge") or row.get("name") or "")
+        if not name:
+            continue
+        node = row.get("node") or None
+        identifier = name[4:].lstrip("W") if name.startswith("vmbr") else ""
+        out.append({
+            "name": name,
+            "node": node,
+            "kind": ("transit" if name.startswith("vmbrW")
+                     else "satellite" if engine_node and node != engine_node
+                     else "team"),
+            "teams": [by_identifier[identifier]] if identifier in by_identifier else [],
+            # A bridge record carries no comment: the engine hands it to the Proxmox API
+            # (where it belongs), not to the state document.
+            "comment": None,
+        })
+    return out
+
+
+def _machines_from_resources(resources, state, teams, ws):
+    machines = {}
+    engine = next((r for r in resources if r.get("kind") == "engine"), None)
+    if engine:
+        machines["scoring_engine"] = {
+            "name": engine.get("name"), "vmid": engine.get("vmid"),
+            "node": engine.get("node"),
+            # estate.engine_setup.engine_ctx's own read: identity.engine_mgmt_ip, "" on a
+            # DHCP engine (which has no stable address to record here).
+            "mgmt_ip": state.get("engine_mgmt_ip") or None,
+            "team_ips": [t["engine_ip"] for t in teams],
+        }
+    red01 = _red01(ws, state)
+    if red01:
+        machines["red01"] = red01
+    template = next((r for r in resources if r.get("kind") == "engine_template"), None)
+    vmid = state.get("engine_template_vmid") or (template or {}).get("vmid")
+    if vmid:
+        entry = {"vmid": vmid}
+        if template and template.get("node"):
+            entry["node"] = template["node"]
+        machines["engine_template"] = entry
+    goldens = state.get("golden_template_ids")
+    if not goldens:
+        # The document's golden records are named `golden-<box>`; the flat map is richer
+        # (it survives the resource being forgotten) so it wins when present.
+        goldens = {str(r["name"])[len("golden-"):]: r.get("vmid")
+                   for r in resources
+                   if r.get("kind") == "golden" and r.get("vmid")
+                   and str(r.get("name") or "").startswith("golden-")}
+    if goldens:
+        machines["goldens"] = ([{"name": name, "vmid": vmid} for name, vmid in goldens.items()]
+                               if isinstance(goldens, dict)
+                               else [{"vmid": vmid} for vmid in goldens])
+    return machines
+
+
+# ── pre-v0.3: terraform's state ─────────────────────────────────────────────────────────
 
 def _instances(tfstate, name):
     """(index_key, attributes) for every instance of a resource, satellites included."""
@@ -121,24 +285,6 @@ def _teams(tfstate, boxes):
     return [teams[k] for k in sorted(teams, key=_team_order)]
 
 
-def _team_order(key):
-    return int(key[4:]) if key.startswith("team") and key[4:].isdigit() else 0
-
-
-def _initialization_ip(attrs):
-    """The cloud-init address, which Windows/unmanaged boxes (and the default-mode engine
-    with no mgmt IP) do not have."""
-    try:
-        return attrs["initialization"][0]["ip_config"][0]["ipv4"][0]["address"].split("/")[0]
-    except (KeyError, IndexError, TypeError):
-        return None
-
-
-def _fallback_ip(identifier, last_octet):
-    # common/targets.py's own rule (192.168.<team identifier>.<box last_octet>).
-    return f"192.168.{identifier}.{last_octet}" if identifier and last_octet else None
-
-
 def _networks(tfstate):
     out = []
     for resource in tfstate.get("resources") or []:
@@ -181,6 +327,26 @@ def _machines(tfstate, state, ws, teams):
     return machines
 
 
+# ── shared ──────────────────────────────────────────────────────────────────────────────
+
+def _team_order(key):
+    return int(key[4:]) if key.startswith("team") and key[4:].isdigit() else 0
+
+
+def _initialization_ip(attrs):
+    """The cloud-init address, which Windows/unmanaged boxes (and the default-mode engine
+    with no mgmt IP) do not have."""
+    try:
+        return attrs["initialization"][0]["ip_config"][0]["ipv4"][0]["address"].split("/")[0]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+def _fallback_ip(identifier, last_octet):
+    # common/targets.py's own rule (192.168.<team identifier>.<box last_octet>).
+    return f"192.168.{identifier}.{last_octet}" if identifier and last_octet else None
+
+
 def _red01(ws, state):
     """red01's identity: the comp's bad-auto config (what `badauto destroy` acts on), else
     the deploy state's assume-breach record (vmid/ip only)."""
@@ -207,9 +373,15 @@ def _yaml(path):
         return {}
 
 
-def _teardown(ws):
+def _teardown(ws, document):
     """The teardown journal's run id and step NAMES — the difference between a retired
-    range and one whose red01 (and the LLM key on it) is still out there."""
+    range and one whose red01 (and the LLM key on it) is still out there.
+
+    The journal file is the engine's own live record; a range folded into the document
+    carries the same fields in its `teardown` section, so read that when the file is gone.
+    """
     journal = _json(ws / ".teardown-journal.json", {})
+    if not isinstance(journal, dict) or not journal:
+        journal = document.get("teardown") if isinstance(document.get("teardown"), dict) else {}
     done = journal.get("done") or {}
     return {"run_id": journal.get("run_id"), "done": list(done), "red01_done": "red01" in done}

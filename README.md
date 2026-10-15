@@ -17,17 +17,53 @@ run's state and evidence in its own data dir.
 
 A run pins a tezcatlipoca git ref (branch/SHA/tag) and a competition. The runner:
 
-1. cuts an engine worktree at the ref under `<data>/runs/<id>/engine`,
+1. cuts an engine worktree at the ref under `<data>/runs/<id>/engine` — the ref defaults to
+   `estate-v0.3.0`, the estate release with no terraform (`TEZ_ENGINE_REF` overrides it, e.g.
+   the merge commit or a SHA for an event), and provisioning fetches `origin` first so a
+   branch name means the fresh one, not whatever the clone had at clone time,
 2. seeds the comp's definitions into `<data>/runs/<id>/comp` (per-run state stays in
    the workspace; the competitions repo stays definitions-only),
-3. runs the driver (`create-competition.py` / `verify-competition.py` /
+3. drops the engine configuration into that worktree: `TEZ_ENGINE_ENV_FILE` as `.env` and,
+   when set, `TEZ_ENGINE_CONFIG_FILE` as `tezcatlipoca.toml`. A worktree is a fresh checkout
+   and both files are gitignored, so without one of them a driver starts with no endpoint,
+   node or API token,
+4. runs the driver (`create-competition.py` / `verify-competition.py` /
    `destroy-competition.py` / `run-agent-scrim.py` / `redeploy-competition.py`) with
    `--comp-dir <workspace>`,
-4. emits one stage event per step — a deploy's `[N/8]` phases from `.deploy_state.json`
-   `last_phase`, a scrim's phases from its own `.automated-tests/<run>/run.json`, and a
-   single stage for the actions whose driver reports none (`verify`, `destroy` → `teardown`,
-   `redeploy`); every event carries `index`/`total`,
-5. archives evidence and removes the worktree.
+5. emits one stage event per step — a deploy's `[N/8]` phases from the estate document's
+   `run.last_phase` (v0.3.0; a pre-v0.3 range's `.deploy_state.json` is read as a read-only
+   fallback, both through `dashboard/estate.py`, the service-side mirror of the engine's
+   `estate.state.load_flat`), a scrim's phases from its own
+   `.automated-tests/<run>/run.json`, and a single stage for the actions whose driver
+   reports none (`verify`, `destroy` → `teardown`, `redeploy`); every event carries
+   `index`/`total`,
+6. archives evidence and removes the worktree.
+
+### Where a range's state lives
+
+v0.3.0 replaced terraform AND `.deploy_state.json` with the competition's monolithic
+**`estate-state.json`**: `identity` / `secrets` / `roster` / `templates` / `run` sections
+plus a `resources` list (every VM and bridge the deploy created — engine, team boxes,
+goldens, the engine template, jumps, bridges). Nothing in the dashboard writes it; the
+engine does, and every reader here agrees with `estate.state.load_flat` on its shape:
+
+| Reading | v0.3.0 | pre-v0.3 fallback |
+|---|---|---|
+| deploy progress / run id | document `run.last_phase`, `identity.run_id` | `.deploy_state.json` |
+| range liveness | document `resources` (a destroy forgets each VM as it goes) | `terraform/terraform.tfstate` |
+| engine IP | `identity.engine_mgmt_ip` (the read behind `estate.engine_setup.engine_ctx`) | tfstate `outputs.agent_context` |
+| teams/boxes/networks/machines | document `resources` + `teams.json` + `targets.json` | tfstate |
+| teardown steps | `.teardown-journal.json`, else the document's `teardown` section | same |
+
+Because the document carries **every generated password, the run id and the VM inventory**,
+workspace seeding treats it as runtime state and strips it on a fresh seed (keeping it only
+when resuming a workspace that already exists, i.e. the same range). Seeding one in from the
+definitions repo would make a fresh deploy adopt a previous run's identity.
+
+Engine settings still resolve through the legacy names (`TF_VAR_proxmox_endpoint`, …), so a
+`.env` is enough; the canonical `TEZ_*` names and a `tezcatlipoca.toml` profile are the new
+surface if you want them. `TEZ_PAUSE_FILE`, `TEZ_OPS_URL`/`TEZ_OPS_TOKEN`,
+`TEZ_COMPETITIONS_ROOT` and `TEZ_DASHBOARD_*` are read the same way they always were.
 
 Concurrency is parallel: several runs — including several of the same competition — may
 execute at once, each in its own worktree and workspace. The engine's preflight/locks stay
@@ -43,14 +79,16 @@ while a deploy/scrim run's own workspace is `<run dir>/comp`, so the service gro
 its range without asking the estate.
 
 `GET /api/ranges` reads each range's state from the workspace itself rather than from the run
-records: `building` (a run is queued or running), `live` (the workspace's terraform state
-still lists VM instances — the run that built it having failed means nothing), `retired`
-(those resources are gone and a destroy ended rc=0), or `teardown_failed` (they are gone, the
-newest destroy ended non-zero — terraform never managed red01, so a VM holding the LLM key can
-outlive its range; `.teardown-journal.json` records which teardown steps actually completed).
-Only `building`, `live` and `teardown_failed` reach the board. Retirement is enforced on the
-way in too: `submit` refuses verify/destroy/redeploy against a retired range, naming the run
-that retired it, which is what stops a dead range from collecting teardown attempts forever.
+records: `building` (a run is queued or running), `live` (the estate document still records a
+VM — v0.3.0's `resources` list is the inventory its teardown drains, and the run that built
+the range having failed means nothing; a pre-v0.3 range's terraform state is the fallback),
+`retired` (those resources are gone and a destroy ended rc=0), or `teardown_failed` (they are
+gone, the newest destroy ended non-zero — the estate never owned red01, so a VM holding the
+LLM key can outlive its range; `.teardown-journal.json` records which teardown steps actually
+completed). Only `building`, `live` and `teardown_failed` reach the board. Retirement is
+enforced on the way in too: `submit` refuses verify/destroy/redeploy against a retired range,
+naming the run that retired it, which is what stops a dead range from collecting teardown
+attempts forever.
 
 Two ranges of one competition on ONE node each need their own team vmid block and their own
 engine management address, because the engine env the runner shares across runs pins both as
@@ -125,7 +163,7 @@ converges on the dashboard's statuses (approved / denied / done / failed).
 
 `Pause after next stage` on a run page asks the driver to hold at its next phase boundary: the
 phase in progress finishes and the process parks there — the only consistent place to stop, since
-a phase can have a terraform apply or a VM build in flight. The range stays `building`, the
+a phase can have a Proxmox API burst or a VM build in flight. The range stays `building`, the
 deploy lock stays held, and `Resume` carries on in the same process. Only `deploy` has
 boundaries (verify/destroy/redeploy report one stage; a parked scrim would freeze its harness
 while red, blue and the clock keep running), a request is refused when the run's engine ref
@@ -174,12 +212,14 @@ host tools — so the host needs more than the Python deps:
 |---|---|---|
 | `requirements.txt` in the service venv | the drivers import the engine deps (toml, requests, urllib3, yaml, dotenv, Pillow, cryptography, websocket-client), `paramiko` for bad-auto, `mysql-connector-python` for nakon's catalog | `submit_run` refuses up front when one is missing |
 | `opencode` | every blue cycle is an `opencode run`; absent → all cycles rc=127, run looks undefended | `~/.opencode/bin` is prepended to the driver PATH (`TEZ_OPENCODE_BIN` overrides) |
-| `terraform` | the deploy's phases 1-5 apply real infra | user-space `~/.local/bin` is on the driver PATH (no sudo needed on Fedora) |
-| `sshpass` | Windows boxes are reached over password auth | same `~/.local/bin` path |
+| `sshpass` | Windows boxes are reached over password auth | user-space `~/.local/bin` is on the driver PATH (no sudo needed on Fedora) |
 | `ssh`, `scp`, `curl`, `git`, `jq` | driver plumbing | distro packages |
 
+`terraform` is NOT on this list: v0.3.0 builds the estate through the Proxmox API, and the
+tfvars/tfstate surface is gone.
+
 Health check before submitting: `python3 -c "import toml, paramiko, mysql.connector"` in the
-service venv, `command -v opencode terraform sshpass`, and `GET /api/health`.
+service venv, `command -v opencode sshpass`, and `GET /api/health`.
 
 ## Running locally
 

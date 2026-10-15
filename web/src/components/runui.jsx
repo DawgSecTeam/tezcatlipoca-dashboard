@@ -471,11 +471,11 @@ export function ArtifactPreview({ runId, file, onClose, onDownload }) {
 
 // The run submit form: comp picker, action, engine ref, teams, scoring vmid.
 export function NewRunModal({ open, onClose, comps, initial = {}, onSubmitted }) {
-  const [form, setForm] = useState({ comp_id: '', action: 'deploy', engine_ref: 'main', teams: 2, scoring_vmid: '' })
+  const [form, setForm] = useState({ comp_id: '', action: 'deploy', engine_ref: 'estate-v0.3.0', teams: 2, scoring_vmid: '' })
   const [err, setErr] = useState(null)
   useEffect(() => {
     if (open) {
-      setForm({ comp_id: '', action: 'deploy', engine_ref: 'main', teams: 2, scoring_vmid: '', ...initial })
+      setForm({ comp_id: '', action: 'deploy', engine_ref: 'estate-v0.3.0', teams: 2, scoring_vmid: '', ...initial })
       setErr(null)
     }
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -510,8 +510,8 @@ export function NewRunModal({ open, onClose, comps, initial = {}, onSubmitted })
           </select>
         </Field>
         <div className="grid grid-cols-3 gap-4">
-          <Field label="Engine ref" hint="Branch, SHA or tag">
-            <input className={`${inputCls} font-mono`} value={form.engine_ref} onChange={set('engine_ref')} placeholder="main" />
+          <Field label="Engine ref" hint="Branch, SHA or tag; empty uses the service's own pin">
+            <input className={`${inputCls} font-mono`} value={form.engine_ref} onChange={set('engine_ref')} placeholder="estate-v0.3.0" />
           </Field>
           <Field label="Teams"><Stepper value={form.teams} onChange={(v) => setForm({ ...form, teams: v })} /></Field>
           <Field label="Engine VMID" hint="Free Proxmox VMID">

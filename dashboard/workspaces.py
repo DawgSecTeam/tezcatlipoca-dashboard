@@ -1,24 +1,36 @@
 """Run workspaces: seed a comp's definitions into the run dir the engine writes in.
 
 The competitions repo is read-only definitions; every per-run output (state, generated
-configs, terraform workdirs, evidence) accumulates in the workspace — the engine treats
-it as its comp dir via --comp-dir. Fresh seeds strip any run-state leftovers so a
-workspace never starts life looking like someone's old deploy."""
+configs, evidence) accumulates in the workspace — the engine treats it as its comp dir via
+--comp-dir. Fresh seeds strip any run-state leftovers so a workspace never starts life
+looking like someone's old deploy.
+
+`estate-state.json` is the v0.3.0 replacement for `.deploy_state.json` and is RUNTIME state
+above all else: it carries every generated password, the run id (the ownership proof
+teardown/redeploy compare against) and the VM inventory the destroy path walks. Copying one
+in from the definitions repo would make a fresh deploy adopt a previous run's identity —
+the credential desync the engine's own ownership guards refuse to touch.
+"""
 
 import shutil
 from pathlib import Path
 
 # Names the engine treats as per-run state (mirrors tezcatlipoca's competitions/*
-# gitignore section and scrim/staging.RUNTIME_FILES).
+# gitignore section and scrim/staging.RUNTIME_FILES; `estate-state.json` and the teardown
+# journal are the v0.3.0 names).
 _STATE_NAMES = {
     "teams.json", "event.conf", "linux.credlist", "credentials.txt", "portal.json",
-    "portal-access.log", ".deploy_state.json", ".deploy-timings.jsonl", ".deploy.lock",
+    "portal-access.log", ".deploy_state.json", "estate-state.json", ".teardown-journal.json",
+    ".deploy-timings.jsonl", ".deploy.lock",
     "nakon-config.json", ".badauto-config.yaml", ".realm-c2-config.yaml", ".frozen.json",
     ".template-hashes.json", ".phase6-swept", ".postclone-swept", "targets.json",
     "known_hosts", "terraform.tfvars.json", "passwords.json", "box_baseline.json",
     "domain_accounts.json", "box_vulns.json.pre-cyberfield-prune1",
 }
 _STATE_DIRS = {
+    # `terraform/` and the *.tfstate* globs below are pre-v0.3 leftovers: v0.3.0 has no
+    # terraform at all, and the reference comps that keep a tracked terraform snapshot must
+    # not have it seeded into a live run's workspace.
     "terraform", ".automated-tests", "remote-access", "evidence",
 }
 # NOT state (they are DEFINITIONS the deploy reads): `pfsense/` holds the factory

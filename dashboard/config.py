@@ -48,6 +48,28 @@ def engine_proxmox_file():
     return Path(raw) if raw else None
 
 
+def engine_config_file():
+    """The engine's native profile (v0.3.0's `tezcatlipoca.toml`), copied into every worktree.
+
+    Optional: `TEZ_ENGINE_ENV_FILE`'s `.env` already carries every key under its legacy
+    name, which v0.3.0's estate/config.py still resolves. A profile is the new surface (and
+    the place a per-node `TEZ_CONFIG` split lands), so give the operator a way to use it
+    without hand-copying into a throwaway checkout."""
+    raw = os.environ.get("TEZ_ENGINE_CONFIG_FILE")
+    return Path(raw) if raw else None
+
+
+def default_engine_ref():
+    """The tezcatlipoca revision a run pins when the submit names no ref.
+
+    v0.3.0 is the estate release: terraform is gone from it and a range's state is
+    `estate-state.json`, so this dashboard's readers are written against it. A run cut at an
+    older ref still deploys (the legacy readers are kept for pre-v0.3 ranges), but a service
+    that defaults to `main` runs whatever the clone happened to fetch — pin the branch, or a
+    SHA for an event, with TEZ_ENGINE_REF."""
+    return os.environ.get("TEZ_ENGINE_REF") or "estate-v0.3.0"
+
+
 def tokens():
     # client-name=token pairs; the token is what authenticates, the name labels it.
     out = {}
@@ -94,8 +116,8 @@ def opencode_bin():
 
 def user_bin():
     """The user's ~/.local/bin, when it exists: where user-space tool installs live on a run
-    host with no sudo (terraform and sshpass here — the deploy needs both and neither is a
-    package the service can install for itself)."""
+    host with no sudo (sshpass here — Windows boxes are reached over password auth and it is
+    not a package the service can install for itself)."""
     default = Path.home() / ".local" / "bin"
     return str(default) if default.is_dir() else ""
 

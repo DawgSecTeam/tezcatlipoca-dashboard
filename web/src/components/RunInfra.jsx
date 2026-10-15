@@ -17,7 +17,7 @@ const phaseName = (n) => {
 }
 
 // The range's state, not the run's: a live range outlives the deploy run that built it.
-// teardown_failed means terraform's resources are gone but a VM survived (ranges.py) — a
+// teardown_failed means the estate's records are gone but a VM survived (ranges.py) — a
 // state that must not read as calm.
 const RANGE_STATE = {
   live: 'bg-accent-soft text-accent',
@@ -240,7 +240,7 @@ export default function RunInfra({ comp, inventory }) {
         <div className="flex items-start gap-2 rounded-2xl bg-danger-soft px-4 py-2.5 text-sm text-danger">
           <Icon name={failed ? 'warn' : 'trash'} className="mt-0.5 h-4 w-4 shrink-0" />
           {failed
-            ? <span>This range's teardown failed — terraform's resources are gone but a machine survived it.</span>
+            ? <span>This range's teardown failed — the estate's own machines are gone but something survived it.</span>
             : <span>This range has been retired{range?.retired_by ? <> by run <Link to={`/c/${range.comp_id}/runs/${range.retired_by}`} className="font-mono underline">{range.retired_by}</Link></> : null} — below is its last known state.</span>}
         </div>
       )}

@@ -3,7 +3,8 @@
 // admin pages (announcements, injects) with the logins that work there.
 //
 // The payload comes from GET /api/competition?range=<workspace>, which reads the
-// workspace's .deploy_state.json and polls the engine's API as the `scoring` automation
+// workspace's estate state document (the legacy .deploy_state.json for a pre-v0.3 range)
+// and polls the engine's API as the `scoring` automation
 // account — so a Start here can never evict the operator's `admin` browser session.
 import { useEffect, useState } from 'react'
 import { api } from '../api'

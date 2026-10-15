@@ -140,6 +140,26 @@ def test_driver_env_materializes_the_public_key_beside_the_private_one(tmp_path,
     assert (tmp_path / "proxmox.pub").read_text().strip() == "ssh-ed25519 AAAA test@host"
 
 
+def test_driver_env_exports_the_canonical_names_too(tmp_path, monkeypatch):
+    """v0.3.0 resolves config through estate/config.py's _SPEC, whose canonical override is
+    TEZ_*; the legacy TF_VAR_* names stay exported for a run cut at an older engine."""
+    from dashboard import config
+    from dashboard.runner import RunManager
+
+    key = tmp_path / "proxmox"
+    key.write_text("PRIVATE\n")
+    monkeypatch.setattr(config, "engine_proxmox_file", lambda: key)
+    monkeypatch.setattr(config, "driver_path", lambda: "/usr/bin")
+    monkeypatch.delenv("TF_VAR_ssh_public_key", raising=False)
+    monkeypatch.setenv("TEZ_SSH_PUBLIC_KEY", "ssh-ed25519 BBBB canonical@host")
+
+    env = RunManager(store=None, bus=None)._driver_env()
+
+    assert env["TEZ_SSH_PRIVATE_KEY_PATH"] == str(key.resolve())
+    assert env["TF_VAR_ssh_private_key_path"] == str(key.resolve())
+    assert (tmp_path / "proxmox.pub").read_text().strip() == "ssh-ed25519 BBBB canonical@host"
+
+
 def test_missing_driver_deps_reports_what_this_interpreter_lacks():
     def no_such(name):
         raise ModuleNotFoundError(name)

@@ -9,6 +9,8 @@ on; a deploy/scrim run's own workspace is `<run_dir>/comp` (see runner._range_wo
 import json
 from pathlib import Path
 
+from dashboard import estate
+
 IN_FLIGHT = ("queued", "running", "pausing", "paused")
 
 
@@ -19,14 +21,23 @@ def range_key(run):
 
 
 def has_vms(key):
-    """Whether the workspace's terraform state still lists a VM instance.
+    """Whether the workspace still records VM infrastructure of its own.
 
     The range's INFRASTRUCTURE is the liveness authority, not the build run's terminal
     state: run-df29374d ended rc=1 while its VMs stayed up, and a board keyed on build
     success hid exactly the range that needed attention (2026-10-15).
+
+    v0.3.0: the estate document's `resources` list IS the inventory the teardown walks, and
+    a destroy forgets each entry only once the VM is gone — so "still a vmid recorded" means
+    "still a VM out there". A workspace with no resource inventory (pre-v0.3, or one folded
+    into a document without a resources list) falls back to its terraform state, read-only,
+    so such a range still boards.
     """
+    ws = Path(key)
+    if estate.has_inventory(ws):
+        return bool(estate.vms(ws))
     try:
-        state = json.loads((Path(key) / "terraform" / "terraform.tfstate").read_text())
+        state = json.loads((ws / "terraform" / "terraform.tfstate").read_text())
     except (OSError, ValueError):
         return False
     return any(
@@ -53,8 +64,9 @@ def range_state(key, runs):
     if retired_by(runs):
         return "retired"
     if any(r["action"] == "destroy" for r in runs):
-        # Every destroy ended rc!=0: an incomplete teardown may have left non-terraform
-        # resources (red01) behind, so the board must show it rather than call it failed.
+        # Every destroy ended rc!=0: an incomplete teardown may have left resources the
+        # estate never owned (red01 and its LLM key), so the board must show it rather than
+        # call it failed.
         return "teardown_failed"
     return "failed"
 

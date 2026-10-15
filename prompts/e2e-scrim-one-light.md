@@ -57,7 +57,7 @@ For every step: submit through the dashboard, `watch_run` immediately, and never
 loop — stage and lifecycle events are pushed. After a disconnect, `get_run_events(run_id, since=<last seq>)`
 recovers in one call, and `get_run_log` reads by byte offset.
 
-1. `submit_run {"comp_id": "scrim-one-light", "action": "deploy", "engine_ref": "main", "teams": 1,
+1. `submit_run {"comp_id": "scrim-one-light", "action": "deploy", "engine_ref": "estate-v0.3.0", "teams": 1,
    "scoring_vmid": <free>, "nodes": [<catalog node>]}`.
    Assert, from the events and the API — these are the regressions this test exists for:
    - exactly 8 stage events, in order `phase 1/8 … 8/8`, each carrying `index`/`total`, no
@@ -81,7 +81,9 @@ recovers in one call, and `get_run_log` reads by byte offset.
 3. `submit_run {"action": "destroy", "comp_id": "scrim-one-light"}`.
    Assert: exactly one `teardown` stage (1/1); rc 0 and the driver's own "estate clean for this
    ownership set" verdict; `.teardown-journal.json` `done` lists every step INCLUDING `red01`;
-   `terraform/terraform.tfstate` lists no VM instances; the board card leaves and a one-line
+   the workspace's `estate-state.json` records no VM in `resources` (v0.3.0's inventory — the
+   teardown forgets each entry as the VM goes; a pre-v0.3 range's `terraform/terraform.tfstate`
+   is the fallback); the board card leaves and a one-line
    tombstone appears naming this destroy run; `GET /api/ranges` shows `state: "retired"`,
    `retired_by` = that run, `retired_at` set.
    Then re-submit `destroy` for the same comp: it must be REFUSED, naming the run that retired the
@@ -90,7 +92,7 @@ recovers in one call, and `get_run_log` reads by byte offset.
 
 ## Cycle B — one bounded agent scrim
 
-4. `submit_run {"comp_id": "scrim-one-light", "action": "scrim", "engine_ref": "main", "teams": 1,
+4. `submit_run {"comp_id": "scrim-one-light", "action": "scrim", "engine_ref": "estate-v0.3.0", "teams": 1,
    "params": {"duration_min": 30, "red_vmid": <free>, "red_ip": <free>, "red_model": <current>,
    "blue_model": <current>, "llm_base_url": <current>, "extra_args": [...]}}`.
    Extra harness flags ride in `params.extra_args` (anything `run-agent-scrim.py --help` lists that
@@ -133,7 +135,9 @@ Lead every judgement with these, in order:
 Root-cause from evidence before retrying; "flaky" means broken. No workarounds: no manual SSH
 repairs, hand-edited VMs, hand-cleared flags, `--force`, or ad-hoc destroy scripts — if a
 workaround feels necessary, the thing that made it necessary is the bug. For anything that fails,
-capture the run id, log tail, events, teardown journal and tfstate, classify it (product vs
+capture the run id, log tail, events, teardown journal and the workspace's state document
+(`estate-state.json`, or the legacy `.deploy_state.json` + tfstate for a v0.2 range), classify
+it (product vs
 dashboard vs estate), and file it where it belongs: dashboard/engine code gets fixed at the root
 with a regression test (architectural changes go to the user first); infrastructure findings go
 into the report and `docs/known-issues.md` where the engine owns them. Never re-dispatch an

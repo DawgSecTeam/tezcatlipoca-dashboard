@@ -2,8 +2,10 @@
 
 One thread per run. The engine stays standalone: a run gets a disposable worktree plus a
 workspace comp dir, and the driver is the same CLI a human would type. Stage progress is
-observed, never parsed out of the driver's stdout: .deploy_state.json last_phase for
-deploys, the scrim harness's run.json phases otherwise."""
+observed, never parsed out of the driver's stdout: the estate document's `last_phase` for
+deploys (via `dashboard.estate`, which mirrors the engine's `estate.state.load_flat` and
+still reads a pre-v0.3 `.deploy_state.json`), the scrim harness's run.json phases
+otherwise."""
 
 import json
 import os
@@ -17,7 +19,7 @@ import uuid
 import importlib.util
 from pathlib import Path
 
-from dashboard import config, nodes, ranges, workspaces
+from dashboard import config, estate, nodes, ranges, workspaces
 
 PHASE_NAMES = {
     1: "cleanup", 2: "engine_template", 3: "prepare_engine", 4: "golden_set",
@@ -33,8 +35,9 @@ SINGLE_STEP_STAGES = {"verify": "verify", "destroy": "teardown", "redeploy": "re
                       "start": "competition start", "freeze": "competition freeze",
                       "resume": "competition resume", "end": "competition end",
                       "delete_team": "team removal"}
-# Actions that act on the workspace an earlier run built (ownership, deploy state and the
-# terraform workdir all live there) instead of seeding their own.
+# Actions that act on the workspace an earlier run built (ownership and the estate document
+# — which carries the run id, the secrets and the VM inventory — live there) instead of
+# seeding their own.
 RANGE_ACTIONS = ("verify", "destroy", "redeploy", "start", "freeze", "resume", "end",
                  "delete_team")
 
@@ -164,8 +167,12 @@ class RunManager:
 
     # ---- lifecycle ----
 
-    def submit(self, comp_id, action, engine_ref="main", params=None):
+    def submit(self, comp_id, action, engine_ref=None, params=None):
         params = dict(params or {})
+        # No ref named -> the service's pinned default (config.default_engine_ref): v0.3.0
+        # is the estate release, and a worktree cut at an older revision reads a state
+        # shape this service no longer projects.
+        engine_ref = (engine_ref or "").strip() or config.default_engine_ref()
         # Only deploy/plan/scrim take a team COUNT; a redeploy's `teams` is a selector
         # ("team2", "2" or the subnet identifier "102"), so int() there would 500.
         if params.get("teams") and action in ("deploy", "plan", "scrim"):
@@ -193,18 +200,18 @@ class RunManager:
         run_dir.mkdir(parents=True, exist_ok=True)
         if action in RANGE_ACTIONS:
             # These act on the workspace that HOLDS the range: ownership (which VMs may be
-            # touched), the deploy state and the terraform workdir all live in the workspace a
-            # PRIOR run built, and a freshly seeded one has none — the teardown refused
-            # ("carries no run id, so ownership cannot be proven"), verify died inside
-            # `terraform output` (misreporting a missing workdir as a missing binary), and the
-            # queue could never clean up or verify what it deployed (2026-10-14). Resolve it at
-            # submit so a hopeless run is refused before a run record exists.
+            # touched) and the estate state document (run id, secrets, VM inventory) live in
+            # the workspace a PRIOR run built, and a freshly seeded one has none — the
+            # teardown refused ("carries no run id, so ownership cannot be proven"), the
+            # verify had nothing to read, and the queue could never clean up or verify what
+            # it deployed (2026-10-14). Resolve it at submit so a hopeless run is refused
+            # before a run record exists.
             target = self._range_workspace(comp_id, params, action)
             if target is None:
                 raise RunRefused(
-                    f"nothing to {action} for {comp_id}: no run workspace with a "
-                    f".deploy_state.json run id exists under {self.runs_dir} (a range deployed "
-                    f"by hand is {action}d from its own comp dir)")
+                    f"nothing to {action} for {comp_id}: no run workspace with an estate "
+                    f"run id exists under {self.runs_dir} (a range deployed by hand is "
+                    f"{action}d from its own comp dir)")
             params["_destroy_comp_dir"] = str(target)
         record = self.store.create_run(run_id, comp_id, action, engine_ref, params,
                                        run_dir, run_dir / "run.log")
@@ -221,7 +228,7 @@ class RunManager:
 
     def _range_workspace(self, comp_id, params, action):
         """The workspace holding this competition's range: an explicit `comp_dir`, else the
-        newest NON-retired run workspace OF THIS COMPETITION that carries a deploy run id
+        newest NON-retired run workspace OF THIS COMPETITION that carries an estate run id
         (the store is the ledger of which run dirs belong to which competition — matching by
         workspace name would let one competition's run reach another's range).
 
@@ -235,13 +242,9 @@ class RunManager:
         retired = []
         for run in self.store.list_runs(comp_id=comp_id):        # newest first
             ws = Path(run["run_dir"]) / "comp"
-            state = ws / ".deploy_state.json"
-            if not ((ws / "Compfile").exists() and state.exists()):
+            if not (ws / "Compfile").exists():
                 continue
-            try:
-                if not json.loads(state.read_text()).get("run_id"):
-                    continue
-            except (OSError, ValueError):
+            if not estate.load_flat(ws).get("run_id"):
                 continue
             rng = by_key.get(str(ws.resolve()))
             if rng and rng["state"] == "retired":
@@ -282,7 +285,7 @@ class RunManager:
         run_dir = Path(run["run_dir"])
         if not self._pause_hook(run, run_dir):
             raise RunRefused(
-                f"engine ref {run['engine_ref'] or 'main'} predates the boundary hook "
+                f"engine ref {run['engine_ref']} predates the boundary hook "
                 f"(deploy_lib/pause.py) — the driver would ignore the request")
         if self._deploy_phase(run_dir / "comp") >= 8:
             raise RunRefused("the deploy is past its last phase — no boundary left to hold at")
@@ -331,13 +334,14 @@ class RunManager:
     def _driver_env(self):
         """The environment a driver child gets.
 
-        PATH carries the user-space tool dirs (opencode, terraform, sshpass). The ssh key path is
-        forced ABSOLUTE to this service's own key file: the engine resolves a relative
-        `TF_VAR_ssh_private_key_path` against the CURRENT DIRECTORY — which for a run is the
-        throwaway worktree — and writes that resolved path into terraform.tfvars.json, i.e. into
-        the state. The worktree is deleted when the run ends, so a relative value left the range
-        un-destroyable: `terraform destroy` died parsing the config with
-        "no file exists at <worktree>/proxmox" (2026-10-14, run-3aaf37f1, four attempts).
+        PATH carries the user-space tool dirs (opencode, sshpass). The ssh key path is forced
+        ABSOLUTE to this service's own key file and exported under BOTH the canonical
+        `TEZ_SSH_PRIVATE_KEY_PATH` and the legacy `TF_VAR_ssh_private_key_path`: v0.3.0's
+        `estate/config.py` resolves a relative key path against the CURRENT DIRECTORY — which
+        for a run is the throwaway worktree — and the estate document records the result. The
+        worktree is deleted when the run ends, so a relative value leaves a range whose key
+        cannot be found at teardown (2026-10-14, run-3aaf37f1, four attempts). Both names are
+        exported because a run may still be cut at a pre-v0.3 engine that reads only TF_VAR_*.
         """
         env = {**os.environ, "PYTHONUNBUFFERED": "1", "PATH": config.driver_path()}
         # Catalog tokens ride the child env: the engine reads them by token_env name, so
@@ -347,13 +351,16 @@ class RunManager:
         if key and Path(key).is_file():
             key = Path(key).resolve()
             env["TF_VAR_ssh_private_key_path"] = str(key)
+            env["TEZ_SSH_PRIVATE_KEY_PATH"] = str(key)
             # bad-auto reads `<deploy.ssh_key>.pub` beside the private key, and a run host may
             # hold only the private half — the assume-breach red01 deploy then died on
             # FileNotFoundError AFTER the range itself was built (2026-10-14). The public half
-            # is in the engine env; materialize it so the two halves always travel together.
+            # is in the engine env under either its canonical or its legacy name; materialize
+            # it so the two halves always travel together.
             pub = key.with_name(key.name + ".pub")
-            if not pub.exists() and env.get("TF_VAR_ssh_public_key"):
-                pub.write_text(env["TF_VAR_ssh_public_key"].strip() + "\n")
+            public = env.get("TEZ_SSH_PUBLIC_KEY") or env.get("TF_VAR_ssh_public_key")
+            if not pub.exists() and public:
+                pub.write_text(public.strip() + "\n")
         return env
 
     def _run_nodes_file(self, params, run_dir):
@@ -463,13 +470,13 @@ class RunManager:
     def _resolve_ref(self, engine_ref):
         """The ref a run's worktree is actually cut at.
 
-        `engine_ref: main` used to mean the engine clone's LOCAL main, which nothing in this
+        A branch name used to mean the engine clone's LOCAL branch, which nothing in this
         service ever updates (ensure_repos only clones when missing, and only the competitions
-        clone gets pulled) — so every run executed whatever main was at clone time. Measured
-        2026-10-14: the clone sat 9 commits behind origin/main and three runs ran the stale
-        engine while reporting `engine_ref: main`. Prefer the freshly fetched remote-tracking
-        branch; SHAs and tags pass through unchanged (an unknown name still fails at `worktree
-        add` with git's own message).
+        clone gets pulled) — so every run executed whatever that branch was at clone time.
+        Measured 2026-10-14: the clone sat 9 commits behind origin/main and three runs ran the
+        stale engine while reporting `engine_ref: main`. Prefer the freshly fetched
+        remote-tracking branch; SHAs and tags pass through unchanged (an unknown name still
+        fails at `worktree add` with git's own message).
         """
         if not engine_ref:
             return engine_ref
@@ -490,9 +497,17 @@ class RunManager:
                              f"{proc.stderr.strip()[-200:]}")
         head = subprocess.run(["git", "-C", str(worktree), "rev-parse", "HEAD"],
                               capture_output=True, text=True).stdout.strip()
+        # Per-run configuration. A worktree is a fresh checkout and both config surfaces are
+        # gitignored, so the run carries its own: `.env` (legacy TF_VAR_* / TEZ_* names, which
+        # v0.3.0's estate/config.py still resolves through _SPEC) and, when the operator has
+        # one, the native `tezcatlipoca.toml` profile. Without at least one of them a v0.3.0
+        # driver starts with no endpoint, node or API token.
         env_file = config.engine_env_file()
         if env_file:
             shutil.copy2(env_file, worktree / ".env")
+        profile = config.engine_config_file()
+        if profile:
+            shutil.copy2(profile, worktree / "tezcatlipoca.toml")
         proxmox = config.engine_proxmox_file()
         if proxmox:
             shutil.copy2(proxmox, worktree / "proxmox")
@@ -520,7 +535,7 @@ class RunManager:
     def _track_stages(self, run_id, ws, proc, action):
         if action in SINGLE_STEP_STAGES:
             # No engine phase signal for these: one stage at start, then just wait. Polling
-            # .deploy_state.json here replayed the range's stale deploy phases under the
+            # the workspace's state here replayed the range's stale deploy phases under the
             # teardown's own run id.
             self._stage(run_id, SINGLE_STEP_STAGES[action], 1, 1)
             proc.wait()
@@ -548,7 +563,7 @@ class RunManager:
     def _reflect_pause(self, run_id, ws, held):
         """Mirror the driver's boundary hold into the run's state and event stream.
 
-        The driver writes the held phase to .deploy_state.json and never to stdout, so this
+        The driver writes the held phase to the estate document and never to stdout, so this
         poll is the observer's only signal — and the marker clearing again is the resume."""
         now = self._deploy_held(ws)
         if now == held:
@@ -564,9 +579,11 @@ class RunManager:
 
     @staticmethod
     def _deploy_held(ws):
+        # estate.state.load_flat's flat view (run section of a v0.3.0 document, or the legacy
+        # .deploy_state.json), so a pre-v0.3 hold still displays.
         try:
-            return json.loads((Path(ws) / ".deploy_state.json").read_text()).get("paused_after_phase")
-        except (OSError, ValueError):
+            return estate.load_flat(ws).get("paused_after_phase")
+        except Exception:      # a tracker poll must never kill the run it observes
             return None
 
     def _stage(self, run_id, stage, index=None, total=None):
@@ -576,9 +593,10 @@ class RunManager:
 
     @staticmethod
     def _deploy_phase(ws):
+        # The estate document's run.last_phase (v0.3.0), else the legacy .deploy_state.json.
         try:
-            return int(json.loads((Path(ws) / ".deploy_state.json").read_text()).get("last_phase") or 0)
-        except (OSError, ValueError):
+            return int(estate.load_flat(ws).get("last_phase") or 0)
+        except (TypeError, ValueError):
             return 0
 
     @staticmethod

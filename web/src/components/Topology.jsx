@@ -3,7 +3,7 @@ import { kindOf } from '../api'
 // Auto-drawn from boxes.json: every team gets the same /24 (192.168.<team>.0/24), so one
 // generic team is drawn. An in-path firewall (unmanaged + in_path, gateway .1) sits
 // between the engine and the team switch across a per-team transit /30
-// (172.31.<team>.0/30) — the wiring terraform builds and deploy phase 5 bootstraps
+// (172.31.<team>.0/30) — the wiring the estate builds and deploy phase 5 bootstraps
 // (docs/pfsense-inpath-2026-09-28.md, docs/architecture.md).
 const DOT = { windows: 'var(--win)', linux: 'var(--lin)', firewall: 'var(--fw)', engine: 'var(--eng)' }
 

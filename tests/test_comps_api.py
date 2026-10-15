@@ -175,6 +175,13 @@ class WebUIServerTest(unittest.TestCase):
         self.assertIn("HOSTS", entry["required_vars"])
         self.assertEqual(entry["identity_vars"], ["IP"])
 
+    def test_a_v030_document_counts_as_deployed(self):
+        """The chip that says 'has a deploy' must not look for the file v0.3.0 stopped writing."""
+        self.assertFalse(self.client.get("/api/comps/t1").json()["deployed"])
+        (self.comps / "t1" / "estate-state.json").write_text(
+            '{"identity": {"comp_name": "t1", "run_id": "run-1"}, "resources": []}')
+        self.assertTrue(self.client.get("/api/comps/t1").json()["deployed"])
+
 
 if __name__ == "__main__":
     unittest.main()

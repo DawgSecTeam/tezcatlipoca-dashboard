@@ -18,7 +18,7 @@ from typing import Any, Optional
 from fastapi import Body, FastAPI, HTTPException
 from pydantic import BaseModel
 
-from dashboard import config, nodes
+from dashboard import config, estate, nodes
 
 COMPS = config.competitions_checkout()
 NAKON_DIR = config.nakon_dir()
@@ -175,7 +175,7 @@ def get_comp(comp_id: str):
         "box_services": read_json(d / "box_services.json", {}),
         "box_vulns": read_json(d / "box_vulns.json", {}),
         "injectList": list_injects(d),
-        "deployed": (d / ".deploy_state.json").exists(),
+        "deployed": estate.has_state(d),
     }
 
 

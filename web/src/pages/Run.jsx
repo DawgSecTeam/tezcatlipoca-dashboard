@@ -280,7 +280,7 @@ export default function Run() {
   const teams = range?.teams ?? '—'
   const runFacts = [
     { label: 'Action', value: ACTION_LABEL[run.action] || run.action },
-    { label: 'Engine ref', value: run.engine_ref || 'main' },
+    { label: 'Engine ref', value: run.engine_ref || 'estate-v0.3.0' },
     { label: 'rc', value: run.returncode ?? '—' },
     { label: 'Created', value: agoMs(run.created_at) || '—' },
     { label: 'Started', value: agoMs(run.started_at || run.created_at) || '—' },
@@ -324,13 +324,13 @@ export default function Run() {
           <span className="chip shrink-0 bg-sunken px-2.5 py-1 font-mono text-muted">{ACTION_LABEL[run.action] || run.action}</span>
           <StatePill state={run.state} />
           {range?.state === 'teardown_failed' && (
-            <span className="chip shrink-0 bg-danger-soft px-2.5 py-1 text-danger" title="The range's terraform resources are gone, but a non-terraform VM survived">range teardown failed</span>
+            <span className="chip shrink-0 bg-danger-soft px-2.5 py-1 text-danger" title="The estate's own machines are gone, but a VM it never owned survived">range teardown failed</span>
           )}
         </div>
         {/* One row, clipped rather than wrapped: a raggedy header was the old page's worst tell. */}
         <div className="mt-2 flex min-w-0 items-center gap-x-3 overflow-hidden whitespace-nowrap font-mono text-xs text-faint">
           <span className="min-w-0 truncate" title={run.id}>{run.id}</span>
-          <span className="shrink-0" title="Engine ref">{run.engine_ref || 'main'}</span>
+          <span className="shrink-0" title="Engine ref">{run.engine_ref || 'estate-v0.3.0'}</span>
           <span className="shrink-0">rc {run.returncode ?? '—'}</span>
           <span className="shrink-0">started {agoMs(run.started_at || run.created_at) || '—'}</span>
           <span className="shrink-0">elapsed {fmtSpan(run.started_at || run.created_at, run.ended_at)}</span>
@@ -368,7 +368,7 @@ export default function Run() {
             <CopyPath path={run.run_dir} />
             {range?.state === 'teardown_failed' && (
               <div className="mt-4 rounded-2xl bg-danger-soft px-4 py-2.5 text-xs text-danger">
-                Range teardown failed: terraform's resources are gone but a VM survives
+                Range teardown failed: the estate's own machines are gone but a VM survives
                 {teardown?.red01_done === false && ' — red01 is still up, holding the LLM key'}.
                 {teardown?.run_id && <> The newest destroy run <Link className="underline" to={`/c/${run.comp_id}/runs/${teardown.run_id}`}>{teardown.run_id}</Link> has its log.</>}
               </div>
@@ -413,7 +413,7 @@ export default function Run() {
 
       <NewRunModal open={newRun} onClose={() => setNewRun(false)} comps={comps}
         initial={{
-          comp_id: run.comp_id, action: 'deploy', engine_ref: run.engine_ref || 'main',
+          comp_id: run.comp_id, action: 'deploy', engine_ref: run.engine_ref || 'estate-v0.3.0',
           teams: range?.teams ?? run.params?.teams ?? 2, scoring_vmid: run.params?.scoring_vmid ?? '',
         }}
         onSubmitted={reload} />

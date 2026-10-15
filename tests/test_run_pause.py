@@ -119,11 +119,14 @@ def test_pause_of_a_queued_run_is_refused_when_the_ref_has_no_hook(tmp_path, mon
         mgr.pause("run-1")
 
 
-def test_pause_refuses_a_deploy_past_its_last_phase(tmp_path):
+@pytest.mark.parametrize("state_name", ["estate-state.json", ".deploy_state.json"])
+def test_pause_refuses_a_deploy_past_its_last_phase(tmp_path, state_name):
     run = _run(tmp_path)
     _cut_worktree(run)
-    (Path(run["run_dir"]) / "comp" / ".deploy_state.json").write_text(
-        json.dumps({"last_phase": 8}))
+    state = Path(run["run_dir"]) / "comp" / state_name
+    state.write_text(json.dumps({"last_phase": 8}) if state_name == ".deploy_state.json"
+                     else json.dumps({"identity": {"run_id": "run-1"},
+                                      "run": {"last_phase": 8}}))
     mgr, _ = _manager(tmp_path, run)
     with pytest.raises(RunRefused, match="no boundary left"):
         mgr.pause("run-1")
@@ -160,18 +163,32 @@ def test_resume_refuses_a_run_that_is_not_held(tmp_path):
         mgr.resume("run-1")
 
 
-def test_the_tracker_mirrors_the_hold_and_the_resume(tmp_path):
+@pytest.mark.parametrize("state_name", ["estate-state.json", ".deploy_state.json"])
+def test_the_tracker_mirrors_the_hold_and_the_resume(tmp_path, state_name):
     run = _run(tmp_path)
     mgr, store = _manager(tmp_path, run)
     ws = Path(run["run_dir"]) / "comp"
-    state = ws / ".deploy_state.json"
-    state.write_text(json.dumps({"last_phase": 3, "paused_after_phase": 3}))
+    state = ws / state_name
+
+    def write(last_phase, held=None):
+        # v0.3.0's document (run section) or the legacy flat file.
+        if state_name == ".deploy_state.json":
+            body = {"last_phase": last_phase}
+            if held is not None:
+                body["paused_after_phase"] = held
+        else:
+            body = {"identity": {"run_id": "run-1"}, "run": {"last_phase": last_phase}}
+            if held is not None:
+                body["run"]["paused_after_phase"] = held
+        state.write_text(json.dumps(body))
+
+    write(3, 3)
     assert mgr._reflect_pause("run-1", ws, None) == 3
     assert store.run["state"] == "paused" and store.run["stage"] == "paused after phase 3/8"
     assert [e["state"] for e in store.events] == ["paused"]
     # The same marker seen again is not a second transition.
     assert mgr._reflect_pause("run-1", ws, 3) == 3
-    state.write_text(json.dumps({"last_phase": 3}))
+    write(3)
     assert mgr._reflect_pause("run-1", ws, 3) is None
     assert store.run["state"] == "running"
     assert [e["state"] for e in store.events] == ["paused", "running"]

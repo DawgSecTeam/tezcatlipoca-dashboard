@@ -35,10 +35,10 @@ function RangeCard({ range, comp }) {
   }, [run?.id])
 
   const started = run && (run.started_at || run.created_at)
-  const meta = run && [run.id, run.engine_ref || 'main', `started ${agoMs(started) || '—'}`, `elapsed ${fmtSpan(started, run.ended_at)}`]
+  const meta = run && [run.id, run.engine_ref || 'estate-v0.3.0', `started ${agoMs(started) || '—'}`, `elapsed ${fmtSpan(started, run.ended_at)}`]
   const why = run?.state === 'failed' && (run.error ? String(run.error) : `rc ${run.returncode ?? '—'}`)
-  // teardown_failed is the board's one card that needs a human: the range's terraform is gone
-  // but something survived the destroy, so it must not wear a healthy range's chip.
+  // teardown_failed is the board's one card that needs a human: the estate's own machines
+  // are gone but something survived the destroy, so it must not wear a healthy range's chip.
   const chip = range.state === 'live' ? 'bg-accent-soft text-accent'
     : range.state === 'teardown_failed' ? 'bg-danger-soft text-danger' : 'bg-sunken text-muted'
 

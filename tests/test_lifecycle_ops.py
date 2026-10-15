@@ -73,6 +73,18 @@ def test_lifecycle_actions_resolve_the_range_workspace(tmp_path, monkeypatch):
     assert team["action"] == "delete_team"
 
 
+def test_lifecycle_actions_resolve_a_document_workspace(tmp_path, monkeypatch):
+    """A v0.3.0 range has no .deploy_state.json: identity.run_id in the document is the proof."""
+    mgr, store = _manager(tmp_path, monkeypatch)
+    ws = tmp_path / "data" / "runs" / "run-deploy" / "comp"
+    (ws / ".deploy_state.json").unlink()
+    (ws / "estate-state.json").write_text(json.dumps(
+        {"identity": {"comp_name": "comp-a", "run_id": "run-deploy"}, "resources": []}))
+    run = mgr.submit("comp-a", "start", "estate-v0.3.0", {})
+    assert run["params"]["_destroy_comp_dir"].endswith("run-deploy/comp")
+    assert run["engine_ref"] == "estate-v0.3.0"
+
+
 def test_a_deploy_mints_the_range_ops_token(tmp_path, monkeypatch):
     mgr, store = _manager(tmp_path, monkeypatch)
     run = mgr.submit("comp-a", "deploy", "main", {"teams": 1})
@@ -217,3 +229,47 @@ def test_an_unreachable_engine_reads_the_state_markers(tmp_path, monkeypatch):
     rng = _ws(tmp_path, {"ended": True})
     view = competition.status_for_range(None, rng)
     assert view["state"] == "ended" and not view["reachable"]
+
+
+def test_the_engine_ip_comes_from_the_documents_identity(tmp_path):
+    """estate.engine_setup.engine_ctx's own read — terraform's output is gone in v0.3.0."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "estate-state.json").write_text(json.dumps(
+        {"identity": {"comp_name": "comp-a", "run_id": "run-1",
+                      "engine_mgmt_ip": "10.0.0.42"}, "resources": []}))
+    assert competition._engine_ip(ws) == "10.0.0.42"
+    # a DHCP engine records "" — the panel must see no address, not an empty one
+    (ws / "estate-state.json").write_text(json.dumps(
+        {"identity": {"comp_name": "comp-a", "run_id": "run-1", "engine_mgmt_ip": ""},
+         "resources": []}))
+    assert competition._engine_ip(ws) is None
+
+
+def test_a_migrated_workspace_prefers_terraforms_recorded_engine_ip(tmp_path):
+    """migrate takes the engine IP from the ambient env, which may be a default; the
+    range's own terraform output is the answer until v0.3.0 records resources."""
+    ws = tmp_path / "ws"
+    (ws / "terraform").mkdir(parents=True)
+    (ws / "terraform" / "terraform.tfstate").write_text(json.dumps(
+        {"outputs": {"agent_context": {"value": json.dumps(
+            {"scoring_engine_ip": "10.0.0.9"})}}}))
+    (ws / "estate-state.json").write_text(json.dumps(
+        {"identity": {"comp_name": "comp-a", "run_id": "run-1",
+                      "engine_mgmt_ip": "10.0.0.250"}, "resources": []}))
+    assert competition._engine_ip(ws) == "10.0.0.9"
+
+
+def test_status_for_range_reads_the_document(tmp_path, monkeypatch):
+    monkeypatch.setattr(competition, "engine_status", lambda ws, state: None)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "estate-state.json").write_text(json.dumps({
+        "identity": {"comp_name": "comp-a", "run_id": "run-1", "engine_mgmt_ip": "10.0.0.42"},
+        "secrets": {"admin_password": "a", "scoring_password": "s"},
+        "run": {"hold_start": True, "ended": True, "seeded": True}}))
+    rng = {"key": str(ws), "comp_id": "comp-a", "deploy_run_id": "run-d", "state": "live"}
+    view = competition.status_for_range(None, rng)
+    assert view["state"] == "ended" and not view["reachable"]
+    assert view["hold_start"] and view["seeded"] and view["ended"]
+    assert view["creds"]["admin"] == {"user": "admin", "password": "a"}

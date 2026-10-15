@@ -30,7 +30,7 @@ function Footprint({ comp, teams }) {
 
 export default function DeployPanel({ comp }) {
   const [nodes, setNodes] = useState(null)
-  const [form, setForm] = useState({ engine_ref: 'main', teams: 2, scoring_vmid: '', engine_node: '', team_node: '', nodes: [], start_after_deploy: false })
+  const [form, setForm] = useState({ engine_ref: 'estate-v0.3.0', teams: 2, scoring_vmid: '', engine_node: '', team_node: '', nodes: [], start_after_deploy: false })
   const [runs, setRuns] = useState([])
   const [viewing, setViewing] = useState(null)
   const [confirm, setConfirm] = useState(false)
@@ -86,7 +86,7 @@ export default function DeployPanel({ comp }) {
       const run = await api.submitRun({
         comp_id: comp.id,
         action,
-        engine_ref: form.engine_ref || 'main',
+        engine_ref: form.engine_ref,
         teams: Number(form.teams) || 0,
         scoring_vmid: form.scoring_vmid ? Number(form.scoring_vmid) : null,
         engine_node: form.engine_node,
@@ -104,7 +104,7 @@ export default function DeployPanel({ comp }) {
     <Card className="rise rise-2 p-6">
       <div className="mb-5 flex items-center justify-between">
         <h2 className="display text-2xl">Deploy</h2>
-        {comp.deployed && <span className="chip bg-accent-soft px-2.5 py-1 text-accent" title=".deploy_state.json exists for this competition"><span className="mr-1.5 h-1.5 w-1.5 rounded-full bg-accent" />has a deploy</span>}
+        {comp.deployed && <span className="chip bg-accent-soft px-2.5 py-1 text-accent" title="An estate state document exists for this competition"><span className="mr-1.5 h-1.5 w-1.5 rounded-full bg-accent" />has a deploy</span>}
       </div>
       <ErrorBanner error={err} onClose={() => setErr(null)} />
       <div className="space-y-5">
@@ -121,8 +121,8 @@ export default function DeployPanel({ comp }) {
             </div>
           ) : null
         })()}
-        <Field label="Engine ref" hint="The tezcatlipoca ref the run pins (branch, SHA or tag)">
-          <input className={`${inputCls} font-mono`} value={form.engine_ref} onChange={set('engine_ref')} placeholder="main" />
+        <Field label="Engine ref" hint="The tezcatlipoca ref the run pins (branch, SHA or tag). Empty uses the service's own pin — estate-v0.3.0, the estate release with no terraform.">
+          <input className={`${inputCls} font-mono`} value={form.engine_ref} onChange={set('engine_ref')} placeholder="estate-v0.3.0" />
         </Field>
         <Field label="Teams"><Stepper value={form.teams} onChange={(v) => setForm({ ...form, teams: v })} /></Field>
         <Field label="Competition start" hint="Off (default): the deploy leaves the engine paused and the clock unstarted — start it from the run page when the range is ready. On: the old one-shot deploy that starts scoring immediately.">

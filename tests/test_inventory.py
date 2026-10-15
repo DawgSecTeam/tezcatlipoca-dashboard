@@ -216,3 +216,174 @@ def test_inventory_route_404_for_unknown_run(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     from dashboard.app import create_app
     assert TestClient(create_app()).get("/api/runs/run-nope/inventory").status_code == 404
+
+
+# ── v0.3.0: the estate document is the inventory ────────────────────────────────────────
+
+DOCUMENT = {
+    "schema_version": 1,
+    "identity": {"comp_name": "comp-a", "name": "comp-a", "run_id": "run-1",
+                 "scoring_vm_id": 1000, "engine_mgmt_ip": "10.0.0.252",
+                 "engine_mgmt_gw": "10.0.0.1", "endpoint": "https://10.0.0.150:8006",
+                 "node": "pve", "datastore": "local-lvm"},
+    "secrets": {"admin_password": "SUPERSECRET-admin", "box_password": "SUPERSECRET-box",
+                "box_creds": {"lead": "SUPERSECRET-cred"},
+                "domain_creds": {"support": "SUPERSECRET-domain"},
+                "inject_password": "SUPERSECRET-inject",
+                "postgres_password": "SUPERSECRET-pg",
+                "redis_password": "SUPERSECRET-redis",
+                "scoring_password": "SUPERSECRET-scoring",
+                "teams": {"team1": {"identifier": "113", "password": "SUPERSECRET-team"}}},
+    "roster": {"boxes": [{"name": "dc01", "last_octet": 2}, {"name": "web01", "last_octet": 4}]},
+    "placement": None,
+    "templates": {"engine": {"hash": "h", "vmid": 1140}, "engine_template_vmid": 1140,
+                  "engine_template_hash": "h", "golden": {"web01": {"vmid": 1150, "hash": "h"}},
+                  "golden_template_ids": {"web01": 1150}, "golden_ids_by_slot": {"0": {"web01": 1150}},
+                  "golden_hashes": {"web01": "h"}, "golden_planted": {}, "frozen": None},
+    "resources": [
+        {"kind": "bridge", "node": "pve", "name": "vmbr113", "vmid": None, "bridge": None,
+         "tags": [], "at": "t"},
+        {"kind": "bridge", "node": "pve", "name": "vmbrW113", "vmid": None, "bridge": None,
+         "tags": [], "at": "t"},
+        {"kind": "engine", "node": "pve", "name": "quotient-engine", "vmid": 1000,
+         "bridge": None, "tags": ["tezcatlipoca", "comp-comp-a"], "at": "t"},
+        {"kind": "team_box", "node": "pve", "name": "team1-web01", "vmid": 1332,
+         "bridge": None, "tags": ["tezcatlipoca"], "at": "t"},
+        # a non-team1 box is named "<identifier>-<box>", exactly like terraform's index_key
+        {"kind": "team_box", "node": "pve", "name": "113-dc01", "vmid": 1331,
+         "bridge": None, "tags": [], "at": "t"},
+        {"kind": "golden", "node": "pve", "name": "golden-web01", "vmid": 1150,
+         "bridge": None, "tags": [], "at": "t"},
+        {"kind": "engine_template", "node": "pve", "name": "engine-template", "vmid": 1140,
+         "bridge": None, "tags": [], "at": "t"},
+    ],
+    "run": {"last_phase": 8, "pipeline_version": 2, "seeded": True, "multi_node": False,
+            "deployed_endpoint": "https://10.0.0.150:8006",
+            "degradations": [{"step": "repair", "detail": "box web01 lagged"}],
+            "assume_breach": {"ok": True, "vmid": 1471, "red_ip": "10.0.0.199"}},
+    "external": {"headscale": {}, "portal": {"up": False, "url": ""}, "red01": {}},
+    "teardown": {"run_id": "run-down", "done": {"red01": {"at": "t"}}, "updated_at": "t"},
+    "updated_at": "t",
+}
+
+
+def _doc_workspace(tmp_path):
+    """A v0.3.0 run workspace: the document plus the engine's own side files, no terraform."""
+    ws = tmp_path / "data" / "runs" / "run-1" / "comp"
+    ws.mkdir(parents=True)
+    (ws / "estate-state.json").write_text(json.dumps(DOCUMENT))
+    (ws / ".badauto-config.yaml").write_text(BADAUTO_CONFIG)
+    (ws / "teams.json").write_text(json.dumps(
+        {"team1": {"identifier": "113", "password": "SUPERSECRET-teamsjson"}}))
+    (ws / "targets.json").write_text(json.dumps(
+        {"box_order": ["dc01", "web01"],
+         "targets": {"team1-web01": {"vmid": 1332, "ip": "192.168.113.4"},
+                     "113-dc01": {"vmid": 1331, "ip": "192.168.113.2"}}}))
+    (ws / "credentials.txt").write_text("SUPERSECRET-credfile\n")
+    return ws
+
+
+def _doc_inventory(tmp_path, monkeypatch):
+    ws = _doc_workspace(tmp_path)
+    _comp(tmp_path, monkeypatch)
+    # web01 carries no last_octet, so its address can only come from targets.json — which
+    # is what proves the frozen target row outranks the engine's arithmetic fallback.
+    (comps_api.COMPS / "comp-a" / "boxes.json").write_text(json.dumps(
+        [{"name": "dc01", "last_octet": 2}, {"name": "web01"}]))
+    run = _run(tmp_path, ws)
+    run["engine_ref"] = "estate-v0.3.0"
+    return build_inventory(FakeStore([run]), run)
+
+
+def test_document_teams_boxes_and_networks(tmp_path, monkeypatch):
+    payload = _doc_inventory(tmp_path, monkeypatch)
+    assert payload["counts"] == {"teams": 1, "boxes": 2, "networks": 2}
+    team = payload["teams"][0]
+    assert (team["key"], team["identifier"], team["subnet"], team["engine_ip"]) == \
+        ("team1", "113", "192.168.113.0/24", "192.168.113.1")
+    boxes = {b["name"]: b for b in team["boxes"]}
+    # team1-web01 maps by team key; 113-dc01 maps by the subnet identifier (the roster)
+    assert boxes["web01"] == {"name": "web01", "vmid": 1332, "ip": "192.168.113.4",
+                              "node": "pve", "started": None,
+                              "tags": ["tezcatlipoca"]}
+    assert boxes["dc01"] == {"name": "dc01", "vmid": 1331, "ip": "192.168.113.2",
+                             "node": "pve", "started": None, "tags": []}
+    assert {(n["name"], n["kind"]) for n in payload["networks"]} == \
+        {("vmbr113", "team"), ("vmbrW113", "transit")}
+    assert payload["networks"][0]["teams"] == ["team1"]
+
+
+def test_document_machines_and_deploy_facts(tmp_path, monkeypatch):
+    payload = _doc_inventory(tmp_path, monkeypatch)
+    machines = payload["machines"]
+    assert machines["scoring_engine"] == {
+        "name": "quotient-engine", "vmid": 1000, "node": "pve",
+        "mgmt_ip": "10.0.0.252", "team_ips": ["192.168.113.1"]}
+    # the bad-auto config still wins over the document's assume-breach record
+    assert machines["red01"] == {"vmid": 1470, "ip": "10.0.0.198"}
+    assert machines["engine_template"] == {"vmid": 1140, "node": "pve"}
+    assert machines["goldens"] == [{"name": "web01", "vmid": 1150}]
+    assert payload["deploy"] == {
+        "last_phase": 8, "endpoint": "https://10.0.0.150:8006", "seeded": True,
+        "multi_node": False, "degradations": [{"step": "repair", "detail": "box web01 lagged"}]}
+    assert payload["range"]["comp_id"] == "comp-a"
+
+
+def test_document_teardown_section_is_the_journals_fallback(tmp_path, monkeypatch):
+    payload = _doc_inventory(tmp_path, monkeypatch)
+    assert payload["teardown"] == {"run_id": "run-down", "done": ["red01"], "red01_done": True}
+
+
+def test_a_document_with_nothing_recorded_projects_empty(tmp_path, monkeypatch):
+    """A v0.3.0 document has no terraform state beside it: a deploy that has built nothing
+    projects empty sections rather than raising."""
+    ws = tmp_path / "data" / "runs" / "run-1" / "comp"
+    ws.mkdir(parents=True)
+    (ws / "estate-state.json").write_text(json.dumps(
+        {"identity": {"comp_name": "comp-a", "run_id": "run-1"}, "resources": []}))
+    _comp(tmp_path, monkeypatch)
+    run = _run(tmp_path, ws)
+    payload = build_inventory(FakeStore([run]), run)
+    assert payload["teams"] == [] and payload["networks"] == [] and payload["machines"] == {}
+
+
+def test_a_migrated_workspace_projects_from_its_terraform_state(tmp_path, monkeypatch):
+    """`estate.state.migrate` folds a pre-v0.3 range into a document with NO resources list.
+    Its terraform state is still the only inventory, so the run page must not go blank."""
+    ws = tmp_path / "data" / "runs" / "run-1" / "comp"
+    (ws / "terraform").mkdir(parents=True)
+    (ws / "terraform" / "terraform.tfstate").write_text(json.dumps(TFSTATE))
+    (ws / "estate-state.json").write_text(json.dumps(
+        {"schema_version": 1, "identity": {"comp_name": "comp-a", "run_id": "run-1",
+                                           "engine_mgmt_ip": "10.0.0.252"},
+         "secrets": {"teams": {"team1": {"identifier": "113", "password": "SUPERSECRET-team"}},
+                     "admin_password": "SUPERSECRET-admin"},
+         "roster": {"boxes": [{"name": "web01", "last_octet": 4},
+                              {"name": "dc01", "last_octet": 2}],
+                    "targets": {"team1-web01": {"vmid": 1332, "ip": "192.168.113.4"}}},
+         "templates": {"engine_template_vmid": 1140, "golden_template_ids": {"web01": 1150}},
+         "resources": [], "run": {"last_phase": 8, "seeded": True, "multi_node": False,
+                                  "deployed_endpoint": "https://10.0.0.150:8006"},
+         "teardown": {}}))
+    _comp(tmp_path, monkeypatch)
+    run = _run(tmp_path, ws)
+    payload = build_inventory(FakeStore([run]), run)
+    # the pre-v0.3 projection, with the deploy facts still read from the document
+    assert payload["counts"] == {"teams": 1, "boxes": 2, "networks": 2}
+    assert payload["machines"]["scoring_engine"]["vmid"] == 1000
+    assert payload["deploy"]["last_phase"] == 8
+    assert "SUPERSECRET-admin" not in json.dumps(payload)
+
+
+def test_no_document_password_leaves_the_workspace(tmp_path, monkeypatch):
+    payload = _doc_inventory(tmp_path, monkeypatch)
+    blob = json.dumps(payload)
+    for secret in SECRETS:
+        assert secret not in blob, secret
+    forbidden = {"admin_password", "box_password", "box_creds", "domain_creds",
+                 "inject_password", "postgres_password", "redis_password",
+                 "scoring_password", "packet_pw", "packet_credlists"}
+    leaked = [k for k in _keys(payload) if k in forbidden or k.endswith("_password")]
+    assert leaked == []
+    # the raw section names never ride along either
+    assert "secrets" not in blob and "teams.json" not in blob and "tfvars.json" not in blob

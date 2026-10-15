@@ -40,6 +40,19 @@ def _range_of(*runs):
     return built[0]
 
 
+def _doc_workspace(tmp_path, rid, vms=True):
+    """A v0.3.0 workspace: the estate document, no terraform state at all."""
+    ws = tmp_path / rid / "comp"
+    ws.mkdir(parents=True)
+    (ws / "Compfile").write_text("name c\n")
+    resources = ([{"kind": "engine", "node": "pve", "name": "quotient-engine", "vmid": 1000,
+                   "bridge": None, "tags": ["tezcatlipoca"], "at": "t"}]
+                 if vms else [])
+    (ws / "estate-state.json").write_text(json.dumps(
+        {"identity": {"comp_name": "c", "run_id": rid}, "resources": resources}))
+    return ws
+
+
 def test_state_building(tmp_path):
     ws = _workspace(tmp_path, "run-b")
     rng = _range_of(_rec("run-b", "deploy", state="running", rc=None, created=1,
@@ -175,3 +188,82 @@ def test_ranges_route(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     from dashboard.app import create_app
     assert TestClient(create_app()).get("/api/ranges").json() == []
+
+
+# ── v0.3.0: the estate document is the liveness authority ───────────────────────────────
+
+def test_state_live_from_the_estate_documents_vms(tmp_path):
+    ws = _doc_workspace(tmp_path, "run-doc", vms=True)
+    rng = _range_of(_rec("run-doc", "deploy", created=1, run_dir=tmp_path / "run-doc"))
+    assert (rng["state"], rng["live"]) == ("live", True)
+    assert ranges.has_vms(str(ws)) is True
+
+
+def test_a_document_without_vms_is_not_live(tmp_path):
+    """v0.3.0's destroy forgets each resource as the VM goes, so an empty list IS 'gone'."""
+    ws = _doc_workspace(tmp_path, "run-doc", vms=False)
+    rng = _range_of(_rec("run-doc", "deploy", created=1, run_dir=tmp_path / "run-doc"))
+    assert (rng["state"], rng["live"]) == ("failed", False)
+    assert ranges.has_vms(str(ws)) is False
+
+
+def test_a_document_with_only_bridges_is_not_live(tmp_path):
+    """Bridges carry no vmid: they are networks, not the range's VMs."""
+    ws = tmp_path / "run-b" / "comp"
+    ws.mkdir(parents=True)
+    (ws / "estate-state.json").write_text(json.dumps({
+        "identity": {"run_id": "run-b"},
+        "resources": [{"kind": "bridge", "node": "pve", "name": "vmbr113", "vmid": None,
+                       "bridge": None, "tags": [], "at": "t"}]}))
+    assert ranges.has_vms(str(ws)) is False
+
+
+def test_a_retired_document_retires(tmp_path):
+    _doc_workspace(tmp_path, "run-doc", vms=False)
+    rng = _range_of(
+        _rec("run-doc", "deploy", created=1, run_dir=tmp_path / "run-doc"),
+        _rec("run-down", "destroy", created=2, run_dir=tmp_path / "run-down",
+             params={"_destroy_comp_dir": str(tmp_path / "run-doc" / "comp")}))
+    assert (rng["state"], rng["live"]) == ("retired", False)
+
+
+def test_a_failed_teardown_that_still_records_a_vm_stays_live(tmp_path):
+    """A refusal leaves its resource recorded, so the board must keep showing the range."""
+    _doc_workspace(tmp_path, "run-doc", vms=True)
+    rng = _range_of(
+        _rec("run-doc", "deploy", state="failed", rc=1, created=1, run_dir=tmp_path / "run-doc"),
+        _rec("run-down", "destroy", state="failed", rc=1, created=2,
+             run_dir=tmp_path / "run-down",
+             params={"_destroy_comp_dir": str(tmp_path / "run-doc" / "comp")}))
+    assert (rng["state"], rng["live"]) == ("live", True)
+
+
+def test_a_migrated_workspace_reads_liveness_from_its_terraform_state(tmp_path):
+    """A document with an empty resources list (estate.state.migrate builds none) must not
+    hide a live pre-v0.3 range: terraform's state is still its VM inventory."""
+    ws = tmp_path / "run-m" / "comp"
+    ws.mkdir(parents=True)
+    (ws / "Compfile").write_text("name c\n")
+    (ws / "estate-state.json").write_text(json.dumps(
+        {"identity": {"comp_name": "c", "run_id": "run-m"}, "resources": []}))
+    (ws / "terraform").mkdir()
+    (ws / "terraform" / "terraform.tfstate").write_text(json.dumps({"resources": [
+        {"type": "proxmox_virtual_environment_vm", "name": "team_box",
+         "instances": [{"index_key": "team1-web01", "attributes": {"vm_id": 1332}}]}]}))
+    assert ranges.has_vms(str(ws)) is True
+    rng = _range_of(_rec("run-m", "deploy", created=1, run_dir=tmp_path / "run-m"))
+    assert (rng["state"], rng["live"]) == ("live", True)
+    # and once the v0.3.0 estate's teardown has emptied it, nothing stands in for the VMs
+    (ws / "terraform" / "terraform.tfstate").write_text(json.dumps({"resources": []}))
+    assert ranges.has_vms(str(ws)) is False
+
+
+def test_a_teardown_that_empties_the_document_and_fails_is_teardown_failed(tmp_path):
+    """The resources are gone but the destroy ended non-zero: red01 may still be out there."""
+    _doc_workspace(tmp_path, "run-doc", vms=False)
+    rng = _range_of(
+        _rec("run-doc", "deploy", created=1, run_dir=tmp_path / "run-doc"),
+        _rec("run-down", "destroy", state="failed", rc=1, created=2,
+             run_dir=tmp_path / "run-down",
+             params={"_destroy_comp_dir": str(tmp_path / "run-doc" / "comp")}))
+    assert (rng["state"], rng["live"]) == ("teardown_failed", True)

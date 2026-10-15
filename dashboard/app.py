@@ -25,7 +25,9 @@ from dashboard.store import Store
 class RunBody(BaseModel):
     comp_id: str
     action: str
-    engine_ref: str = "main"
+    # Empty means "the service's pinned engine ref" (config.default_engine_ref) — the API
+    # carries a default, not a hardcoded branch, so a run's revision is one service setting.
+    engine_ref: str = ""
     teams: int = 2
     scoring_vmid: Optional[int] = None
     team_identifiers: Optional[str] = None
@@ -73,7 +75,7 @@ def create_app():
                          ("nodes", body.nodes)):
             params.setdefault(key, val)
         try:
-            return manager.submit(body.comp_id, body.action, body.engine_ref or "main", params)
+            return manager.submit(body.comp_id, body.action, body.engine_ref, params)
         except RunRefused as e:
             raise HTTPException(409, str(e))
 
@@ -217,7 +219,7 @@ def create_app():
         if req["status"] == "approved":
             raise HTTPException(409, "this request is already being executed")
         try:
-            run = manager.submit(req["comp_id"], "redeploy", "main",
+            run = manager.submit(req["comp_id"], "redeploy", config.default_engine_ref(),
                                  {"mode": "reset", "boxes": req["box"],
                                   "comp_dir": req["range_key"]})
         except RunRefused as e:

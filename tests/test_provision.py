@@ -14,6 +14,7 @@ def test_nakon_symlink_replaces_submodule_slot(tmp_path, monkeypatch):
     nakon.mkdir()
     monkeypatch.setattr(config, "nakon_path", lambda: nakon)
     monkeypatch.setattr(config, "engine_env_file", lambda: None)
+    monkeypatch.setattr(config, "engine_config_file", lambda: None)
     monkeypatch.setattr(config, "engine_proxmox_file", lambda: None)
     monkeypatch.setattr(config, "badauto_path", lambda: None)
     monkeypatch.setattr("dashboard.runner.subprocess.run",
@@ -24,6 +25,31 @@ def test_nakon_symlink_replaces_submodule_slot(tmp_path, monkeypatch):
 
     slot = worktree / "vendor" / "nakon"
     assert slot.is_symlink() and slot.resolve() == nakon.resolve()
+
+
+def test_provision_worktree_carries_the_config_surfaces(tmp_path, monkeypatch):
+    """v0.3.0 reads its config from the worktree: `.env` (legacy names resolve) and, when the
+    operator has one, the native `tezcatlipoca.toml` profile. Both are gitignored, so a fresh
+    checkout has neither — the run would start with no endpoint, node or API token."""
+    worktree = tmp_path / "engine"
+    worktree.mkdir()
+    env_file = tmp_path / "tez-engine.env"
+    env_file.write_text("TF_VAR_proxmox_node=pve\n")
+    profile = tmp_path / "tezcatlipoca.toml"
+    profile.write_text("[proxmox]\nnode = 'pve'\n")
+    monkeypatch.setattr(config, "nakon_path", lambda: None)
+    monkeypatch.setattr(config, "engine_env_file", lambda: env_file)
+    monkeypatch.setattr(config, "engine_config_file", lambda: profile)
+    monkeypatch.setattr(config, "engine_proxmox_file", lambda: None)
+    monkeypatch.setattr(config, "badauto_path", lambda: None)
+    monkeypatch.setattr("dashboard.runner.subprocess.run",
+                        lambda *a, **k: SimpleNamespace(returncode=0, stderr="", stdout=""))
+
+    RunManager(store=None, bus=None)._provision_worktree(worktree, "estate-v0.3.0",
+                                                         tmp_path / "run")
+
+    assert (worktree / ".env").read_text() == "TF_VAR_proxmox_node=pve\n"
+    assert (worktree / "tezcatlipoca.toml").read_text() == "[proxmox]\nnode = 'pve'\n"
 
 
 def test_engine_ref_prefers_the_fetched_remote_branch(tmp_path, monkeypatch):
@@ -70,15 +96,18 @@ def test_seed_workspace_carries_the_pfsense_seed(tmp_path):
     (src / ".automated-tests").mkdir()
     (src / ".automated-tests" / "old.json").write_text("{}")
     (src / ".deploy_state.json").write_text('{"run_id": "run-old"}')
+    (src / "estate-state.json").write_text('{"identity": {"run_id": "run-old"}}')
     (src / "terraform").mkdir()
     (src / "terraform" / "terraform.tfstate").write_text("{}")
     ws = seed_workspace(src, tmp_path / "ws")
     assert (ws / "pfsense" / "pfsense-config-orig.xml").exists()
     assert (ws / "vyos" / "config-team120.cmds").exists()
     assert (ws / "Compfile").exists()
-    # per-run state still stays behind
+    # per-run state still stays behind — the estate document above all (it carries every
+    # password and the run id a fresh deploy must NOT adopt)
     assert not (ws / ".automated-tests").exists()
     assert not (ws / ".deploy_state.json").exists()
+    assert not (ws / "estate-state.json").exists()
     assert not (ws / "terraform").exists()
 
 
@@ -109,3 +138,59 @@ def test_destroy_runs_against_the_workspace_holding_the_state(tmp_path, monkeypa
     assert mgr._range_workspace("scrim-one", {"comp_dir": str(other)}, "destroy") == other
     # and nothing state-bearing means nothing to act on
     assert mgr._range_workspace("no-such-comp", {}, "destroy") is None
+
+
+def test_a_v030_document_is_the_range_workspace(tmp_path, monkeypatch):
+    """A v0.3.0 range has no .deploy_state.json at all: the document's identity.run_id is
+    the ownership proof the submit resolves against."""
+    import json as _json
+    from dashboard.runner import RunManager
+    from dashboard.store import Store
+    monkeypatch.setenv("TEZ_DASHBOARD_DATA", str(tmp_path / "data"))
+    runs = tmp_path / "data" / "runs"
+    run_dir = runs / "run-doc"
+    ws = run_dir / "comp"
+    ws.mkdir(parents=True)
+    (ws / "Compfile").write_text("name scrim-one\n")
+    (ws / "estate-state.json").write_text(_json.dumps(
+        {"identity": {"comp_name": "scrim-one", "run_id": "run-engineid"}, "resources": []}))
+    store = Store(tmp_path / "db.sqlite3")
+    store.create_run("run-doc", "scrim-one", "deploy", "estate-v0.3.0", {}, run_dir,
+                     run_dir / "run.log")
+    mgr = RunManager(store, None)
+    mgr.runs_dir = runs
+    assert mgr._range_workspace("scrim-one", {}, "destroy") == ws
+    # a document without a run id is not a range (a bare seeded worktree)
+    (ws / "estate-state.json").write_text(_json.dumps({"identity": {}, "resources": []}))
+    assert mgr._range_workspace("scrim-one", {}, "destroy") is None
+
+
+def test_submit_defaults_to_the_services_pinned_engine_ref(tmp_path, monkeypatch):
+    """v0.3.0 is the estate release, so a submit that names no ref must pin it — not the
+    engine clone's local `main`, which nothing in this service ever updates."""
+    from dashboard.runner import RunManager
+    from dashboard.store import Store
+
+    class _Bus:
+        def publish(self, run_id, event):
+            pass
+
+    monkeypatch.setenv("TEZ_DASHBOARD_DATA", str(tmp_path / "data"))
+    monkeypatch.delenv("TEZ_ENGINE_REF", raising=False)
+    comp = tmp_path / "data" / "competitions" / "mini"
+    comp.mkdir(parents=True)
+    (comp / "Compfile").write_text("name mini\n")
+    mgr = RunManager(Store(tmp_path / "db.sqlite3"), _Bus())
+    monkeypatch.setattr(RunManager, "ensure_repos", lambda self: None)
+    monkeypatch.setattr(RunManager, "refresh_comps", lambda self: None)
+    monkeypatch.setattr(RunManager, "_run", lambda self, *a, **k: None)
+
+    assert config.default_engine_ref() == "estate-v0.3.0"
+    assert mgr.submit("mini", "deploy", None, {"teams": 1})["engine_ref"] == "estate-v0.3.0"
+    assert mgr.submit("mini", "deploy", "", {"teams": 1})["engine_ref"] == "estate-v0.3.0"
+    # an explicit ref always wins, and TEZ_ENGINE_REF moves the service's pin (a SHA is the
+    # right pin for an event; the eventual merge commit lands here)
+    monkeypatch.setenv("TEZ_ENGINE_REF", "0" * 40)
+    assert config.default_engine_ref() == "0" * 40
+    assert mgr.submit("mini", "deploy", None, {"teams": 1})["engine_ref"] == "0" * 40
+    assert mgr.submit("mini", "deploy", "v0.2.0", {"teams": 1})["engine_ref"] == "v0.2.0"
