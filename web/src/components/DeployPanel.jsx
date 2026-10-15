@@ -30,7 +30,7 @@ function Footprint({ comp, teams }) {
 
 export default function DeployPanel({ comp }) {
   const [nodes, setNodes] = useState(null)
-  const [form, setForm] = useState({ engine_ref: 'estate-v0.3.0', teams: 2, scoring_vmid: '', engine_node: '', team_node: '', nodes: [], start_after_deploy: false })
+  const [form, setForm] = useState({ engine_ref: '', teams: 2, scoring_vmid: '', engine_node: '', team_node: '', nodes: [], start_after_deploy: false })
   const [runs, setRuns] = useState([])
   const [viewing, setViewing] = useState(null)
   const [confirm, setConfirm] = useState(false)
@@ -121,8 +121,8 @@ export default function DeployPanel({ comp }) {
             </div>
           ) : null
         })()}
-        <Field label="Engine ref" hint="The tezcatlipoca ref the run pins (branch, SHA or tag). Empty uses the service's own pin — estate-v0.3.0, the estate release with no terraform.">
-          <input className={`${inputCls} font-mono`} value={form.engine_ref} onChange={set('engine_ref')} placeholder="estate-v0.3.0" />
+        <Field label="Engine ref" hint="The tezcatlipoca ref the run pins (branch, SHA or tag). Empty uses the service's own pin — main, the integration branch.">
+          <input className={`${inputCls} font-mono`} value={form.engine_ref} onChange={set('engine_ref')} placeholder="main" />
         </Field>
         <Field label="Teams"><Stepper value={form.teams} onChange={(v) => setForm({ ...form, teams: v })} /></Field>
         <Field label="Competition start" hint="Off (default): the deploy leaves the engine paused and the clock unstarted — start it from the run page when the range is ready. On: the old one-shot deploy that starts scoring immediately.">

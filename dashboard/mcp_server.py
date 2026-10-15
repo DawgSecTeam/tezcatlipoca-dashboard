@@ -72,7 +72,7 @@ def build_mcp(manager):
         """Queue a run: action is deploy|plan|verify|destroy|scrim|redeploy, or one of the
         competition-lifecycle kinds start|freeze|resume|end|delete_team (which act on the
         range's workspace). engine_ref pins the tezcatlipoca revision (branch/SHA/tag);
-        empty means the service's own pin (estate-v0.3.0 unless TEZ_ENGINE_REF overrides).
+        empty means the service's own pin (main unless TEZ_ENGINE_REF overrides).
         `nodes` names the catalog nodes this run may deploy to (the engine gets them as its
         node list, not the .env); `engine_node`/`team_node` then pin within that list.
         `team_identifiers` ("130,131") and `engine_mgmt_ip` give THIS run its own team vmid

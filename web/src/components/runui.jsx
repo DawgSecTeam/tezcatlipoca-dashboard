@@ -541,13 +541,13 @@ export function NewRunModal({ open, onClose, comps, initial = {}, onSubmitted, a
 }
 
 function DeployRangeModal({ open, onClose, comps, initial = {}, onSubmitted }) {
-  const [form, setForm] = useState({ comp_id: '', engine_ref: 'estate-v0.3.0', teams: 2, scoring_vmid: '', start_after_deploy: false, engine_node: '', team_node: '', nodes: [] })
+  const [form, setForm] = useState({ comp_id: '', engine_ref: '', teams: 2, scoring_vmid: '', start_after_deploy: false, engine_node: '', team_node: '', nodes: [] })
   const [catalog, setCatalog] = useState([])
   const [detail, setDetail] = useState(null)
   const [err, setErr] = useState(null)
   useEffect(() => {
     if (!open) return
-    setForm({ comp_id: '', engine_ref: 'estate-v0.3.0', teams: 2, scoring_vmid: '', start_after_deploy: false,
+    setForm({ comp_id: '', engine_ref: '', teams: 2, scoring_vmid: '', start_after_deploy: false,
       engine_node: '', team_node: '', nodes: [], ...initial, action: undefined })
     setErr(null); setDetail(null)
     api.nodes().then((c) => {
@@ -617,8 +617,8 @@ function DeployRangeModal({ open, onClose, comps, initial = {}, onSubmitted }) {
             <details className="rounded-xl border border-line px-3 py-2 text-sm">
               <summary className="cursor-pointer text-xs font-semibold text-muted hover:text-accent">Advanced options</summary>
               <div className="mt-3 space-y-4">
-                <Field label="Engine ref" hint="Branch, SHA or tag. Leave as-is to use the service's own pin — estate-v0.3.0, the estate release with no terraform.">
-                  <input className={`${inputCls} font-mono`} value={form.engine_ref} placeholder="estate-v0.3.0"
+                <Field label="Engine ref" hint="Branch, SHA or tag. Leave empty to use the service's own pin — main, the integration branch.">
+                  <input className={`${inputCls} font-mono`} value={form.engine_ref} placeholder="main"
                     onChange={(e) => setForm({ ...form, engine_ref: e.target.value })} />
                 </Field>
                 <Field label="Engine VM ID" hint="Free Proxmox VMID; preflight refuses collisions.">
@@ -668,11 +668,11 @@ function DeployRangeModal({ open, onClose, comps, initial = {}, onSubmitted }) {
 // The generic run picker, kept for callers that offer more than deploy. Lifecycle and
 // team-removal kinds need fields this form does not carry — they belong on the range page.
 function GenericRunModal({ open, onClose, comps, initial = {}, onSubmitted, allowedActions }) {
-  const [form, setForm] = useState({ comp_id: '', action: 'deploy', engine_ref: 'estate-v0.3.0', teams: 2, scoring_vmid: '' })
+  const [form, setForm] = useState({ comp_id: '', action: 'deploy', engine_ref: '', teams: 2, scoring_vmid: '' })
   const [err, setErr] = useState(null)
   useEffect(() => {
     if (open) {
-      setForm({ comp_id: '', engine_ref: 'estate-v0.3.0', teams: 2, scoring_vmid: '', ...initial,
+      setForm({ comp_id: '', engine_ref: '', teams: 2, scoring_vmid: '', ...initial,
         action: allowedActions.includes(initial.action) ? initial.action : allowedActions[0] || 'deploy',
       })
       setErr(null)
@@ -710,7 +710,7 @@ function GenericRunModal({ open, onClose, comps, initial = {}, onSubmitted, allo
         </Field>
         <div className="grid grid-cols-3 gap-4">
           <Field label="Engine ref" hint="Branch, SHA or tag; empty uses the service's own pin">
-            <input className={`${inputCls} font-mono`} value={form.engine_ref} onChange={set('engine_ref')} placeholder="estate-v0.3.0" />
+            <input className={`${inputCls} font-mono`} value={form.engine_ref} onChange={set('engine_ref')} placeholder="main" />
           </Field>
           <Field label="Teams"><Stepper value={form.teams} onChange={(v) => setForm({ ...form, teams: v })} /></Field>
           <Field label="Engine VMID" hint="Free Proxmox VMID">

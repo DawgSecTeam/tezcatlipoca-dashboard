@@ -187,9 +187,9 @@ def test_submit_defaults_to_the_services_pinned_engine_ref(tmp_path, monkeypatch
     monkeypatch.setattr(RunManager, "refresh_comps", lambda self: None)
     monkeypatch.setattr(RunManager, "_run", lambda self, *a, **k: None)
 
-    assert config.default_engine_ref() == "estate-v0.3.0"
-    assert mgr.submit("mini", "deploy", None, {"teams": 1})["engine_ref"] == "estate-v0.3.0"
-    assert mgr.submit("mini", "deploy", "", {"teams": 1})["engine_ref"] == "estate-v0.3.0"
+    assert config.default_engine_ref() == "main"
+    assert mgr.submit("mini", "deploy", None, {"teams": 1})["engine_ref"] == "main"
+    assert mgr.submit("mini", "deploy", "", {"teams": 1})["engine_ref"] == "main"
     # an explicit ref always wins, and TEZ_ENGINE_REF moves the service's pin (a SHA is the
     # right pin for an event; the eventual merge commit lands here)
     monkeypatch.setenv("TEZ_ENGINE_REF", "0" * 40)

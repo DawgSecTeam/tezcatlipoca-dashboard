@@ -62,12 +62,10 @@ def engine_config_file():
 def default_engine_ref():
     """The tezcatlipoca revision a run pins when the submit names no ref.
 
-    v0.3.0 is the estate release: terraform is gone from it and a range's state is
-    `estate-state.json`, so this dashboard's readers are written against it. A run cut at an
-    older ref still deploys (the legacy readers are kept for pre-v0.3 ranges), but a service
-    that defaults to `main` runs whatever the clone happened to fetch — pin the branch, or a
-    SHA for an event, with TEZ_ENGINE_REF."""
-    return os.environ.get("TEZ_ENGINE_REF") or "estate-v0.3.0"
+    `main` is the integration branch: the v0.3.0 estate release is fully contained in it
+    (terraform is gone, a range's state is `estate-state.json`) and the fixes landed since
+    are not. Pin a SHA for an event, or another branch, with TEZ_ENGINE_REF."""
+    return os.environ.get("TEZ_ENGINE_REF") or "main"
 
 
 def tokens():

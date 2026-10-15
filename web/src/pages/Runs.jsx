@@ -125,7 +125,7 @@ function Drawer({ runId, onClose }) {
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-faint">
               <span>{runId}</span>
-              {run && <span title="Engine ref">{run.engine_ref || 'estate-v0.3.0'}</span>}
+              {run && <span title="Engine ref">{run.engine_ref || 'main'}</span>}
               {run && <span>rc {run.returncode ?? '—'}</span>}
             </div>
           </div>

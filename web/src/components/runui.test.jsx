@@ -85,7 +85,7 @@ describe('range-scoped run actions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Deploy 2 teams' }))
     await waitFor(() => expect(submitted).toHaveBeenCalledWith(created))
     expect(api.submitRun).toHaveBeenCalledWith({
-      comp_id: 'comp-a', action: 'deploy', engine_ref: 'estate-v0.3.0', teams: 2,
+      comp_id: 'comp-a', action: 'deploy', engine_ref: '', teams: 2,
       scoring_vmid: null, engine_node: '', team_node: '', nodes: ['node-a'],
     })
   })
