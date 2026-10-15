@@ -4,8 +4,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { marked } from 'marked'
 import { api, streamRunEvents } from '../api'
+import { rangeActionBody } from '../rangeModel'
 import { Button, ErrorBanner, Field, Modal, Spinner, inputCls } from './ui'
-import { Icon, Stepper, fmtDur, toMs, useConfirm, useTick, useToast } from './kit'
+import { Icon, Stepper, fmtDur, fmtMem, toMs, useConfirm, useTick, useToast } from './kit'
 import { LogView as LogViewImpl, prettyStage, stripEsc } from './logtex'
 
 export { prettyStage } from './logtex'
@@ -80,23 +81,38 @@ export function StatePill({ state }) {
 
 // ── run actions: submit a follow-up run, teardown, cancel ──────────────────────────────────
 
-// The shared action logic for the Live card menu and the scrim page's action row.
-export function useRunActions(run, onChanged) {
+// Inventory is authoritative; synthetic runs may carry an explicit workspace themselves.
+function actionRange(run, range) {
+  return {
+    ...range,
+    key: range?.key || run?.params?.comp_dir || run?.params?._destroy_comp_dir
+      || (run?.run_dir ? `${run.run_dir.replace(/\/$/, '')}/comp` : ''),
+    comp_id: range?.comp_id || run?.comp_id,
+    runs: range?.runs?.length ? range.runs : run ? [run] : [],
+  }
+}
+
+// Existing callers can omit range; range pages should pass the resolved inventory range.
+export function useRunActions(run, onChanged, range) {
   const toast = useToast()
   const ask = useConfirm()
   const submit = async (body) => {
     try {
-      await api.submitRun({ comp_id: run.comp_id, engine_ref: run.engine_ref, ...body })
-      toast('Run submitted')
-      onChanged()
+      const created = await api.submitRun({
+        ...body,
+        ...rangeActionBody(actionRange(run, range), body.action, body.params),
+      })
+      toast(`${ACTION_LABEL[body.action] || body.action} submitted · ${created.id}`)
+      onChanged?.(created)
+      return created
     } catch (e) { toast(e.message, 'error') }
   }
   const destroy = async () => {
     const ok = await ask({
-      title: `Teardown ${run.comp_id}?`, danger: true, confirm: 'Destroy',
-      body: <>Runs <span className="font-mono">destroy-competition.py</span> against this run's ownership set — the VMs it created are removed.</>,
+      title: `Teardown ${range?.comp_id || run?.comp_id}?`, danger: true, confirm: 'Destroy',
+      body: <>Runs <span className="font-mono">destroy-competition.py</span> against this range's explicit workspace — the VMs it created are removed.</>,
     })
-    if (ok) submit({ action: 'destroy' })
+    if (ok) return submit({ action: 'destroy' })
   }
   const cancel = async () => {
     const ok = await ask({
@@ -248,12 +264,13 @@ export function StageStrip({ action, stage, state, endedAt, stageEvents = [] }) 
 export function useRunLog(runId) {
   const [log, setLog] = useState({ text: '', running: true, returncode: null })
   useEffect(() => {
+    setLog({ text: '', running: !!runId, returncode: null })
     if (!runId) return
     let stop = false, timer, offset = 0
-    setLog({ text: '', running: true, returncode: null })
     const tick = async () => {
       try {
         const r = await api.runLog(runId, offset)
+        if (stop) return
         offset = r.offset
         setLog((l) => ({ text: l.text + (r.text || ''), running: !!r.running, returncode: r.returncode }))
         if (!r.running && !r.text) return
@@ -295,44 +312,90 @@ export function useRunEvents(runId, onEvent, enabled = true) {
   const cb = useRef(onEvent)
   cb.current = onEvent
   useEffect(() => {
+    setUpdated(null); setLive(false)
     if (!runId || !enabled) return
-    let stop = false, ctrl, timer
-    let seq = 0
+    let stop = false, ctrl, timer, wake, polling
+    // SSE is live-only: its `since` parameter is not a durable replay cursor. Keep the
+    // cursor advanced ONLY by /events responses, even when a newer SSE event arrives.
+    let cursor = 0
+    const seen = new Set()
     const take = (ev) => {
-      if (ev?.seq != null) seq = Math.max(seq, ev.seq)
+      if (stop || !ev) return
+      if (ev.seq != null) {
+        const seq = Number(ev.seq)
+        if (seen.has(seq)) return
+        seen.add(seq)
+      }
       setUpdated(Date.now())
       cb.current?.(ev)
     }
-    const poll = async () => {
-      try {
-        const r = await api.runEvents(runId, seq)
-        seq = Math.max(seq, r.next || 0)
-        r.events?.forEach(take)
-        if (!r.events?.length) setUpdated(Date.now())
-      } catch { /* transient */ }
+    const poll = () => {
+      if (stop) return Promise.resolve()
+      if (polling) return polling
+      polling = (async () => {
+        try {
+          const r = await api.runEvents(runId, cursor)
+          if (stop) return
+          r.events?.forEach(take)
+          cursor = Math.max(cursor, Number(r.next) || 0)
+          setUpdated(Date.now())
+        } catch { /* transient; retain the durable cursor for the next recovery */ }
+      })().finally(() => { polling = null })
+      return polling
     }
     const loop = async () => {
       while (!stop) {
         ctrl = new AbortController()
         try {
-          setLive(true)
-          // The server sends a keepalive comment every 15s; the stream can otherwise sit
-          // silent for minutes between phase changes, and "updated" must not read as dead.
-          await streamRunEvents(runId, take, { since: seq, signal: ctrl.signal, onKeepalive: () => setUpdated(Date.now()) })
-        } catch { /* stream refused or dropped; fall back to polling */ }
-        setLive(false)
+          // Open before recovering, and keep polling while connected to cover the
+          // subscribe/replay race and a silently lost push. take() deduplicates both.
+          const stream = streamRunEvents(runId, (ev) => {
+            if (!stop) setLive(true)
+            take(ev)
+          }, {
+            since: cursor, signal: ctrl.signal,
+            onKeepalive: () => { if (!stop) { setLive(true); setUpdated(Date.now()) } },
+          })
+          void poll()
+          await stream
+        } catch { /* stream refused or dropped; recover from the durable endpoint */ }
         if (stop) return
+        setLive(false)
         await poll()
-        await new Promise((r) => { timer = setTimeout(r, 3000) })
+        if (stop) return
+        await new Promise((resolve) => { wake = resolve; timer = setTimeout(resolve, 3000) })
       }
     }
-    loop()
-    return () => { stop = true; ctrl?.abort(); clearTimeout(timer) }
+    const recovery = setInterval(poll, 5000)
+    void loop()
+    return () => {
+      stop = true
+      ctrl?.abort()
+      clearInterval(recovery); clearTimeout(timer); wake?.()
+    }
   }, [runId, enabled])
   return { updated, live }
 }
 
 // ── events + artifacts ─────────────────────────────────────────────────────────────────────
+
+// Current events flatten payload fields at the top level; accept old nested records too.
+export function eventText(ev) {
+  const data = ev?.data
+  const fields = { ...(data && typeof data === 'object' ? data : {}), ...ev }
+  const text = fields.error || fields.message || fields.text
+    || (Array.isArray(fields.cmd) ? fields.cmd.join(' ') : fields.cmd)
+    || (typeof data === 'string' ? data : '')
+  if (text) return typeof text === 'string' ? text : JSON.stringify(text)
+  return [
+    fields.state,
+    fields.returncode != null ? `rc ${fields.returncode}` : '',
+    fields.request != null ? `request ${fields.request}` : '',
+    fields.team ? `team ${fields.team}` : '',
+    fields.box ? `box ${fields.box}` : '',
+    fields.resumed ? 'resumed' : '',
+  ].filter(Boolean).join(' · ')
+}
 
 export function EventList({ events }) {
   if (!events?.length) return <p className="text-xs text-faint">No events yet.</p>
@@ -344,7 +407,7 @@ export function EventList({ events }) {
           <span className={`chip shrink-0 px-1.5 py-0 ${ev.kind === 'stage' ? 'bg-accent-soft text-accent' : 'bg-sunken text-faint'}`}>{ev.kind}</span>
           <span className="min-w-0 truncate text-muted">
             {ev.stage && <b className="font-semibold text-fg">{ev.stage} </b>}
-            {typeof ev.data === 'string' ? ev.data : ev.data?.text || ev.data?.message || (ev.data ? JSON.stringify(ev.data) : '')}
+            {eventText(ev)}
           </span>
         </li>
       ))}
@@ -402,9 +465,9 @@ export function ArtifactsList({ runId }) {
               <span className="min-w-0 truncate font-mono text-muted">{r.path}</span>
               {(r.bytes ?? r.size) != null && <span className="shrink-0 tabular-nums text-faint">{r.bytes ?? r.size}</span>}
             </button>
-            <button onClick={() => grab(r.path)} title={`Download ${r.path}`}
-              className="shrink-0 rounded-lg px-1.5 py-0.5 text-[11px] text-faint opacity-0 transition hover:text-accent group-hover:opacity-100">
-              ↓
+            <button onClick={() => grab(r.path)} title={`Download ${r.path}`} aria-label={`Download ${r.path}`}
+              className="shrink-0 rounded-lg px-2 py-1 text-[11px] text-muted transition hover:bg-sunken hover:text-accent focus-visible:outline focus-visible:outline-accent">
+              Download
             </button>
           </li>
         ))}
@@ -469,13 +532,149 @@ export function ArtifactPreview({ runId, file, onClose, onDownload }) {
 
 // ── submit forms ───────────────────────────────────────────────────────────────────────────
 
-// The run submit form: comp picker, action, engine ref, teams, scoring vmid.
-export function NewRunModal({ open, onClose, comps, initial = {}, onSubmitted }) {
+// "Deploy range": the competition page's deploy panel condensed into a modal — placement,
+// start-after-deploy and a footprint, so the board's primary action is never a lesser form.
+export function NewRunModal({ open, onClose, comps, initial = {}, onSubmitted, allowedActions = RUN_ACTIONS }) {
+  if (allowedActions.length === 1 && allowedActions[0] === 'deploy')
+    return <DeployRangeModal open={open} onClose={onClose} comps={comps} initial={initial} onSubmitted={onSubmitted} />
+  return <GenericRunModal open={open} onClose={onClose} comps={comps} initial={initial} onSubmitted={onSubmitted} allowedActions={allowedActions} />
+}
+
+function DeployRangeModal({ open, onClose, comps, initial = {}, onSubmitted }) {
+  const [form, setForm] = useState({ comp_id: '', engine_ref: 'estate-v0.3.0', teams: 2, scoring_vmid: '', start_after_deploy: false, engine_node: '', team_node: '', nodes: [] })
+  const [catalog, setCatalog] = useState([])
+  const [detail, setDetail] = useState(null)
+  const [err, setErr] = useState(null)
+  useEffect(() => {
+    if (!open) return
+    setForm({ comp_id: '', engine_ref: 'estate-v0.3.0', teams: 2, scoring_vmid: '', start_after_deploy: false,
+      engine_node: '', team_node: '', nodes: [], ...initial, action: undefined })
+    setErr(null); setDetail(null)
+    api.nodes().then((c) => {
+      setCatalog(c.nodes || [])
+      setForm((f) => ({ ...f, nodes: (c.nodes || []).map((n) => n.name) }))
+    }).catch(() => {})
+  }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
+  // The chosen competition's own definition drives the footprint and the no-boxes guard;
+  // a summary entry only carries counts, so pull the detail once per selection.
+  useEffect(() => {
+    if (!open || !form.comp_id) { setDetail(null); return }
+    let active = true
+    api.comp(form.comp_id).then((c) => { if (active) setDetail(c) }).catch(() => { if (active) setDetail(null) })
+    return () => { active = false }
+  }, [open, form.comp_id])
+  const teams = Number(form.teams) || 0
+  const boxes = detail?.boxes || []
+  const sum = (key) => boxes.reduce((total, box) => total + (Number(box[key]) || 0), 0)
+  const selected = catalog.filter((n) => form.nodes.includes(n.name))
+  const toggleNode = (name) => setForm((f) => ({
+    ...f, nodes: f.nodes.includes(name) ? f.nodes.filter((x) => x !== name) : [...f.nodes, name],
+    engine_node: f.engine_node === name && !f.nodes.includes(name) ? '' : f.engine_node,
+  }))
+  const submit = async (e) => {
+    e.preventDefault()
+    try {
+      const run = await api.submitRun({
+        comp_id: form.comp_id, action: 'deploy', engine_ref: form.engine_ref, teams,
+        scoring_vmid: form.scoring_vmid ? Number(form.scoring_vmid) : null,
+        engine_node: form.engine_node, team_node: form.team_node, nodes: form.nodes,
+        // deploy and start are separate steps; the checkbox buys the one-shot back
+        ...(form.start_after_deploy ? { params: { start_after_deploy: true } } : {}),
+      })
+      onSubmitted?.(run)
+      onClose()
+    } catch (e2) { setErr(e2) }
+  }
+  return (
+    <Modal wide open={open} onClose={onClose} title="Deploy range">
+      <form onSubmit={submit} className="space-y-4">
+        <ErrorBanner error={err} />
+        <div className="grid gap-5 sm:grid-cols-2">
+          <div className="space-y-4">
+            <Field label="Competition">
+              <select className={inputCls} value={form.comp_id} required autoFocus
+                onChange={(e) => setForm({ ...form, comp_id: e.target.value })}>
+                <option value="" disabled>Choose a competition…</option>
+                {(comps || []).map((c) => <option key={c.id} value={c.id}>{c.name} ({c.id})</option>)}
+              </select>
+            </Field>
+            {detail && <p className="-mt-2 text-xs text-muted">{boxes.length} boxes per team — {boxes.map((b) => b.name).join(', ')}</p>}
+            <Field label="Teams"><Stepper value={form.teams} onChange={(v) => setForm({ ...form, teams: v })} /></Field>
+            <label className="flex items-start gap-3 rounded-xl bg-sunken px-3 py-2.5 text-sm shadow-inset">
+              <input type="checkbox" className="mt-0.5" checked={form.start_after_deploy}
+                onChange={(e) => setForm({ ...form, start_after_deploy: e.target.checked })} />
+              <span>Start scoring right after the deploy
+                <span className="block text-xs text-faint">Off (default) leaves the clock unstarted — start it from the range page when ready.</span>
+              </span>
+            </label>
+            {detail && (
+              <div className="grid grid-cols-3 gap-2 rounded-2xl bg-sunken p-3 text-center shadow-inset">
+                <div title={`${teams} × ${boxes.length} boxes, + engine`}><div className="text-lg font-semibold tabular-nums">{teams * boxes.length}</div><div className="text-[10px] font-semibold uppercase tracking-wider text-faint">VMs</div></div>
+                <div title="Team boxes only"><div className="text-lg font-semibold tabular-nums">{fmtMem(teams * sum('memory_mb'))}</div><div className="text-[10px] font-semibold uppercase tracking-wider text-faint">RAM</div></div>
+                <div><div className="text-lg font-semibold tabular-nums">{teams * sum('cpu')}</div><div className="text-[10px] font-semibold uppercase tracking-wider text-faint">vCPU</div></div>
+              </div>
+            )}
+            <details className="rounded-xl border border-line px-3 py-2 text-sm">
+              <summary className="cursor-pointer text-xs font-semibold text-muted hover:text-accent">Advanced options</summary>
+              <div className="mt-3 space-y-4">
+                <Field label="Engine ref" hint="Branch, SHA or tag. Leave as-is to use the service's own pin — estate-v0.3.0, the estate release with no terraform.">
+                  <input className={`${inputCls} font-mono`} value={form.engine_ref} placeholder="estate-v0.3.0"
+                    onChange={(e) => setForm({ ...form, engine_ref: e.target.value })} />
+                </Field>
+                <Field label="Engine VM ID" hint="Free Proxmox VMID; preflight refuses collisions.">
+                  <input inputMode="numeric" className={`${inputCls} font-mono`} value={form.scoring_vmid} placeholder="auto"
+                    onChange={(e) => setForm({ ...form, scoring_vmid: e.target.value.replace(/\D/g, '') })} />
+                </Field>
+                <Field label="Team pin" hint="Pin one team to one node as number=node, e.g. 130=node-a. Teams without a pin fill the selected nodes in order.">
+                  <input className={`${inputCls} font-mono`} placeholder="e.g. 130=node-a" value={form.team_node}
+                    onChange={(e) => setForm({ ...form, team_node: e.target.value })} />
+                </Field>
+              </div>
+            </details>
+          </div>
+          <div>
+            <span className="label">Proxmox placement</span>
+            <div className="space-y-2">
+              {!catalog.length && <p className="text-xs text-faint">The node catalog is empty — add hosts on a competition page; this deploy then uses the service .env node.</p>}
+              {catalog.map((n) => (
+                <label key={n.name} className="flex items-center gap-3 rounded-xl bg-sunken px-3 py-2 text-sm shadow-inset">
+                  <input type="checkbox" checked={form.nodes.includes(n.name)} onChange={() => toggleNode(n.name)} />
+                  <span className="font-mono">{n.name}</span>
+                  {!n.has_token && <span className="chip bg-danger-soft px-2 py-0.5 text-danger">no token</span>}
+                  <span className="ml-auto font-mono text-[11px] text-faint">{n.node}/{n.datastore}</span>
+                </label>
+              ))}
+              {!!selected.length && <>
+                <Field label="Engine node"><select className={inputCls} value={form.engine_node} onChange={(e) => setForm({ ...form, engine_node: e.target.value })}>
+                  <option value="">Auto — node hosting the most teams</option>
+                  {selected.map((n) => <option key={n.name} value={n.name}>{n.name}</option>)}
+                </select></Field>
+              </>}
+            </div>
+            <span className="mt-1 block text-xs text-faint">{selected.length ? 'The engine node hosts the scoring engine; teams fill the selected nodes in order.' : 'Nothing selected — the run falls back to the service .env (single node).'}</span>
+          </div>
+        </div>
+        <div className="flex justify-end gap-3 pt-1">
+          <Button type="button" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" disabled={!form.comp_id || (!!detail && !boxes.length)}>
+            <Icon name="rocket" />Deploy {teams} team{teams === 1 ? '' : 's'}
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
+// The generic run picker, kept for callers that offer more than deploy. Lifecycle and
+// team-removal kinds need fields this form does not carry — they belong on the range page.
+function GenericRunModal({ open, onClose, comps, initial = {}, onSubmitted, allowedActions }) {
   const [form, setForm] = useState({ comp_id: '', action: 'deploy', engine_ref: 'estate-v0.3.0', teams: 2, scoring_vmid: '' })
   const [err, setErr] = useState(null)
   useEffect(() => {
     if (open) {
-      setForm({ comp_id: '', action: 'deploy', engine_ref: 'estate-v0.3.0', teams: 2, scoring_vmid: '', ...initial })
+      setForm({ comp_id: '', engine_ref: 'estate-v0.3.0', teams: 2, scoring_vmid: '', ...initial,
+        action: allowedActions.includes(initial.action) ? initial.action : allowedActions[0] || 'deploy',
+      })
       setErr(null)
     }
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -506,7 +705,7 @@ export function NewRunModal({ open, onClose, comps, initial = {}, onSubmitted })
         </Field>
         <Field label="Action" hint="Scrim, redeploy and teardown options (teams to target, per-box modes) live on the competition and run pages.">
           <select className={inputCls} value={form.action} onChange={set('action')}>
-            {RUN_ACTIONS.map((a) => <option key={a} value={a}>{ACTION_LABEL[a]}</option>)}
+            {allowedActions.map((a) => <option key={a} value={a}>{ACTION_LABEL[a]}</option>)}
           </select>
         </Field>
         <div className="grid grid-cols-3 gap-4">
@@ -550,16 +749,24 @@ function teamChoices(run, inventoryTeams) {
   return n > 0 ? Array.from({ length: n }, (_, i) => ({ value: String(i + 1), label: `team ${i + 1}` })) : []
 }
 
-export function ResetBoxModal({ open, onClose, run, initial = {}, teams, onSubmitted }) {
+export function ResetBoxModal({ open, onClose, run, range, initial = {}, teams, onSubmitted }) {
   const [form, setForm] = useState({ box: '', team: '', mode: 'reset' })
   const [boxes, setBoxes] = useState([])
   const [err, setErr] = useState(null)
+  const toast = useToast()
+  const compId = range?.comp_id || run?.comp_id
   useEffect(() => {
-    if (!open || !run) return
+    if (!open) return
+    let active = true
     setForm({ box: '', team: '', mode: 'reset', ...initial })
-    setErr(null)
-    api.comp(run.comp_id).then((c) => setBoxes(c.boxes || [])).catch(() => setBoxes([]))
-  }, [open, run]) // eslint-disable-line react-hooks/exhaustive-deps
+    setErr(null); setBoxes([])
+    const recorded = [...new Set((teams || []).flatMap((team) => (team.boxes || []).map((box) => box.name)))].map((name) => ({ name }))
+    if (teams) setBoxes(recorded)
+    else if (compId) api.comp(compId)
+      .then((c) => { if (active) setBoxes(c.boxes || []) })
+      .catch((e) => { if (active) setErr(e) })
+    return () => { active = false }
+  }, [open, compId]) // eslint-disable-line react-hooks/exhaustive-deps
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value })
   const toggle = (k, v) => {
     const cur = form[k] ? form[k].split(',').filter(Boolean) : []
@@ -570,14 +777,13 @@ export function ResetBoxModal({ open, onClose, run, initial = {}, teams, onSubmi
   const submit = async (e) => {
     e.preventDefault()
     try {
-      const r = await api.submitRun({
-        comp_id: run.comp_id,
-        action: 'redeploy',
-        engine_ref: run.engine_ref,
-        params: { boxes: form.box, teams: form.team, mode: form.mode },
-      })
+      const r = await api.submitRun(rangeActionBody(actionRange(run, range), 'redeploy', {
+        boxes: form.box, teams: form.team, mode: form.mode,
+      }))
+      toast(`Redeploy submitted · ${r.id}`)
       onSubmitted?.(r)
       onClose()
+      return r
     } catch (e2) { setErr(e2) }
   }
   const boxNames = boxes.map((b) => b.name)
@@ -595,7 +801,7 @@ export function ResetBoxModal({ open, onClose, run, initial = {}, teams, onSubmi
         <Field label="Boxes" hint={picked('box').length ? `--boxes ${form.box}` : 'None picked — every box of the selected teams is reset.'}>
           <div className="flex flex-wrap gap-2 rounded-2xl bg-sunken p-3 shadow-inset">
             {boxNames.map((n) => <Chip key={n} k="box" v={n} />)}
-            {!boxNames.length && <span className="text-xs text-faint">The competition defines no boxes.</span>}
+            {!boxNames.length && <span className="text-xs text-faint">No boxes available in this inventory.</span>}
           </div>
         </Field>
         <Field label="Teams" hint={picked('team').length ? `--teams ${form.team}` : 'None picked — the redeploy covers the whole range.'}>

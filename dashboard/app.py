@@ -17,7 +17,7 @@ from dashboard.competition import status_for_range
 from dashboard.events import EventBus
 from dashboard.inventory import build_inventory
 from dashboard.mcp_server import build_mcp
-from dashboard.ranges import build_ranges
+from dashboard.ranges import build_range_board, build_ranges, origin_run, range_detail
 from dashboard.runner import RunManager, RunRefused, artifacts_root
 from dashboard.store import Store
 
@@ -82,6 +82,18 @@ def create_app():
     @app.get("/api/ranges")
     def ranges_list():
         return build_ranges(store)
+
+    # Static route first: "board" must never be interpreted as an opaque range id.
+    @app.get("/api/ranges/board")
+    def ranges_board():
+        return build_range_board(store)
+
+    @app.get("/api/ranges/{range_id}")
+    def get_range(range_id: str):
+        rng = next((rng for rng in build_ranges(store) if rng["id"] == range_id), None)
+        if rng is None:
+            raise HTTPException(404, f"no such range: {range_id}")
+        return range_detail(store, rng)
 
     @app.get("/api/runs")
     def runs(state: str = "", comp_id: str = ""):
@@ -218,10 +230,17 @@ def create_app():
             raise HTTPException(404, f"no such request: {req_id}")
         if req["status"] == "approved":
             raise HTTPException(409, "this request is already being executed")
+        if not req["team"] or not req["box"]:
+            raise HTTPException(409, "a reset request needs a team and box target")
+        key = str(Path(req["range_key"]).resolve())
+        rng = next((rng for rng in build_ranges(store)
+                    if rng["key"] == key and rng["comp_id"] == req["comp_id"]), None)
+        origin = origin_run(rng) if rng else None
+        engine_ref = (origin or {}).get("engine_ref") or config.default_engine_ref()
         try:
-            run = manager.submit(req["comp_id"], "redeploy", config.default_engine_ref(),
-                                 {"mode": "reset", "boxes": req["box"],
-                                  "comp_dir": req["range_key"]})
+            run = manager.submit(req["comp_id"], "redeploy", engine_ref,
+                                 {"mode": "reset", "boxes": req["box"], "teams": req["team"],
+                                  "comp_dir": key})
         except RunRefused as e:
             raise HTTPException(409, str(e))
         store.set_request_status(req_id, "approved", approved_run=run["id"])

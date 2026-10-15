@@ -1,142 +1,221 @@
-// The range's competition lifecycle, on the run page of a deploy: what the scoring engine
-// reports right now, Start/Pause/Resume/End, and the operator's way into the Quotient
-// admin pages (announcements, injects) with the logins that work there.
-//
-// The payload comes from GET /api/competition?range=<workspace>, which reads the
-// workspace's estate state document (the legacy .deploy_state.json for a pre-v0.3 range)
-// and polls the engine's API as the `scoring` automation
-// account — so a Start here can never evict the operator's `admin` browser session.
-import { useEffect, useState } from 'react'
+// Range-scoped competition lifecycle and access. A parent may supply the polled view;
+// legacy callers can continue passing rangeKey alone and this panel owns polling.
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../api'
-import { Button, Card, ErrorBanner } from './ui'
+import { Button, Card, ErrorBanner, Spinner } from './ui'
 import { Icon, useConfirm, useToast } from './kit'
 
 const STATE_CLS = {
-  ready: 'bg-accent-soft text-accent',
-  running: 'bg-accent-soft text-accent',
-  paused: 'bg-sunken text-muted',
-  ended: 'bg-sunken text-faint',
-  unknown: 'bg-danger-soft text-danger',
+  ready: 'bg-accent-soft text-accent', running: 'bg-accent-soft text-accent',
+  paused: 'bg-sunken text-muted', ended: 'bg-sunken text-faint', unknown: 'bg-danger-soft text-danger',
 }
 const STATE_TEXT = {
-  ready: 'deployed — not started',
-  running: 'scoring',
-  paused: 'frozen',
-  ended: 'ended',
-  unknown: 'engine unreachable',
+  ready: 'ready — not started', running: 'scoring', paused: 'paused', ended: 'ended', unknown: 'engine unreachable',
 }
+const LINK_TEXT = { admin: 'Admin', announcements: 'Announcements', injects: 'Injects', portal: 'Team portal', scoreboard: 'Scoreboard' }
+const ACTION_TEXT = { start: 'Start', freeze: 'Pause', resume: 'Resume', end: 'End' }
 
 function Cred({ user, password, label }) {
+  const [revealed, setRevealed] = useState(false)
   const toast = useToast()
   if (!password) return null
   return (
-    <div className="flex items-center gap-2 font-mono text-xs">
+    <div className="flex flex-wrap items-center gap-2 rounded-xl bg-sunken px-3 py-2 text-xs">
       <span className="text-[10px] font-semibold uppercase tracking-wider text-faint">{label}</span>
-      <span className="text-muted">{user}</span>
-      <span className="text-muted">/ {password}</span>
-      <button className="text-faint transition hover:text-accent" title="Copy password"
+      <span className="font-mono text-muted">{user}</span>
+      <span className="break-all font-mono text-muted" aria-label={revealed ? undefined : `${label} password hidden`}>{revealed ? password : '••••••••••••'}</span>
+      <button type="button" className="rounded px-1 py-0.5 text-accent hover:underline" aria-label={`${revealed ? 'Hide' : 'Reveal'} ${label} password`}
+        aria-pressed={revealed} onClick={() => setRevealed((value) => !value)}>{revealed ? 'Hide' : 'Reveal'}</button>
+      <button type="button" className="rounded px-1 py-0.5 text-accent hover:underline" aria-label={`Copy ${label} password`}
         onClick={async () => {
           try { await navigator.clipboard.writeText(password); toast('Password copied') }
-          catch { toast('Copy failed', 'error') }
-        }}>copy</button>
+          catch { toast('Could not copy password. Reveal it to copy manually.', 'error') }
+        }}>Copy</button>
     </div>
   )
 }
 
-// One lifecycle action is a run: the runner provisions a worktree at the engine ref the
-// deploy used — logging, events and cancel come free, and competition-ops.py is the exact
-// command line an operator would type.
+// Keying the body prevents credentials, pending results or stale responses from a previous
+// workspace appearing after navigation. Controlled view=null explicitly means no data yet.
+export default function CompetitionPanel(props) {
+  if (props.show === false || !props.rangeKey) return null
+  return <CompetitionBody key={props.rangeKey} {...props} />
+}
 
-export default function CompetitionPanel({ rangeKey, show = true }) {
-  const [view, setView] = useState(null)
-  const [err, setErr] = useState(null)
+// section: 'all' (default), 'lifecycle' (state + start/pause/end) or 'access' (links +
+// logins). A range page renders the two separately from one controlled view.
+function CompetitionBody({ rangeKey, rangeId, compId, engineRef, onSubmitted, disabled = false, section = 'all',
+  view: suppliedView, loading: suppliedLoading, error: suppliedError, onRefresh }) {
+  const controlled = suppliedView !== undefined
+  const [polledView, setPolledView] = useState(null)
+  const [pollError, setPollError] = useState(null)
+  const [pollLoading, setPollLoading] = useState(!controlled)
+  const [refreshError, setRefreshError] = useState(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const [identity, setIdentity] = useState(null)
+  const [pending, setPending] = useState(null)
+  const [submitError, setSubmitError] = useState(null)
+  const [submitted, setSubmitted] = useState(null)
+  const busy = useRef(false)
+  const alive = useRef(true)
+  const poll = useRef(null)
   const confirm = useConfirm()
   const toast = useToast()
-  const reload = () => api.competition(rangeKey).then((v) => { setView(v); setErr(null) })
-    .catch((e) => { if (e.status === 404) setView(false); else setErr(e) })
   useEffect(() => {
-    if (!rangeKey || !show) return undefined
-    reload()
-    const t = setInterval(reload, 10000)
-    return () => clearInterval(t)
-  }, [rangeKey, show]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  if (!show || !rangeKey || view === false || (!view && !err)) return null
-  const lifecycle = (action) => async () => {
+    alive.current = true
+    return () => { alive.current = false }
+  }, [])
+  useEffect(() => {
+    if (controlled) return undefined
+    let stopped = false, timer
+    const load = async () => {
+      if (!stopped) setPollLoading(true)
+      try {
+        const next = await api.competition(rangeKey)
+        if (!stopped) { setPolledView(next); setPollError(null) }
+      } catch (error) { if (!stopped) setPollError(error) }
+      finally { if (!stopped) setPollLoading(false) }
+    }
+    poll.current = load
+    const tick = async () => {
+      await load()
+      if (!stopped) timer = setTimeout(tick, 10000)
+    }
+    tick()
+    return () => { stopped = true; clearTimeout(timer); poll.current = null }
+  }, [controlled, rangeKey])
+  const rawView = controlled ? suppliedView : polledView
+  // Reject a stale controlled payload for a different workspace rather than exposing its
+  // credentials or accidentally enabling actions against the newly selected workspace.
+  const mismatched = !!rawView?.range && rawView.range !== rangeKey
+  const view = mismatched ? null : rawView
+  const error = mismatched ? new Error('Competition data belongs to another workspace. Refresh this range.') : suppliedError || pollError || refreshError
+  const loading = suppliedLoading ?? pollLoading
+  useEffect(() => {
+    // Legacy callers supply neither compId nor engineRef. Resolve the originating ref from
+    // this exact workspace's range record; never use a competing range's latest operation.
+    if ((compId || view?.comp_id) && (engineRef || view?.engine_ref)) return undefined
+    let stopped = false
+    api.ranges().then((records) => {
+      const range = records.find((record) => record.key === rangeKey)
+      if (stopped || !range) return
+      const origin = (range.runs || []).find((run) => run.id === range.deploy_run_id)
+        || (range.runs || []).find((run) => run.action === 'deploy' || run.action === 'scrim')
+      setIdentity({ comp_id: range.comp_id, engine_ref: range.engine_ref || origin?.engine_ref, state: range.state })
+    }).catch(() => { /* Missing identity is explained beside the disabled actions. */ })
+    return () => { stopped = true }
+  }, [rangeKey, compId, engineRef, view?.comp_id, view?.engine_ref])
+  const actionCompId = compId || view?.comp_id || identity?.comp_id
+  const actionEngineRef = engineRef || view?.engine_ref || identity?.engine_ref
+  const identityMismatch = !!compId && !!view?.comp_id && compId !== view.comp_id
+  const retired = view?.range_state === 'retired' || identity?.state === 'retired'
+  const missingIdentity = !actionCompId || !actionEngineRef || identityMismatch
+  const blocked = disabled || retired || missingIdentity || !!error || !!pending
+  const refresh = useCallback(async () => {
+    setRefreshError(null); setRefreshing(true)
+    try { if (controlled) await onRefresh?.(); else await poll.current?.() }
+    catch (nextError) { if (alive.current) setRefreshError(nextError) }
+    finally { if (alive.current) setRefreshing(false) }
+  }, [controlled, onRefresh])
+  const submit = async (action) => {
+    if (blocked || busy.current) return
+    busy.current = true; setPending(action); setSubmitError(null); setSubmitted(null)
+    let created
     try {
-      await api.submitRun({ action, params: { comp_dir: rangeKey } })
-      toast(`${action[0].toUpperCase()}${action.slice(1)} submitted`)
-      reload()
-    } catch (e) { toast(e.message, 'error') }
+      created = await api.submitRun({
+        comp_id: actionCompId, engine_ref: actionEngineRef, action,
+        params: { comp_dir: rangeKey },
+      })
+    } catch (nextError) {
+      if (alive.current) setSubmitError(nextError)
+      busy.current = false
+      if (alive.current) setPending(null)
+      return
+    }
+    if (alive.current) {
+      setSubmitted(created)
+      toast(`${ACTION_TEXT[action]} operation submitted`)
+    }
+    try { await onSubmitted?.(created) }
+    catch (nextError) { if (alive.current) setSubmitError(new Error(`Operation submitted, but refresh failed: ${nextError.message || nextError}`)) }
+    if (alive.current) { setPending(null); refresh() }
+    busy.current = false
   }
   const end = async () => {
+    if (blocked || busy.current) return
     const ok = await confirm({
-      title: 'End the competition?',
-      body: 'Captures the final scoreboard + inject state into the range\'s evidence dir, then freezes scoring. This is terminal — starting again afterwards needs a deliberate reset-event.',
+      title: 'End this range’s competition?',
+      body: <><p>Captures the final scoreboard and inject state into this workspace's evidence directory, then freezes scoring. This is terminal; starting again requires a deliberate reset-event.</p><p className="mt-3 break-all font-mono text-xs">{rangeKey}</p></>,
       confirm: 'End the competition', danger: true,
     })
-    if (ok) lifecycle('end')()
+    if (ok && alive.current) await submit('end')
   }
-
+  const lifecycle = section !== 'access'
+  const access = section !== 'lifecycle'
+  const operationHref = (run) => rangeId
+    ? `/ranges/${rangeId}/activity?operation=${encodeURIComponent(run.id || run.run_id)}`
+    : `/c/${encodeURIComponent(run.comp_id || actionCompId)}/runs/${encodeURIComponent(run.id || run.run_id)}`
+  const links = Object.entries(view?.links || {})
+  const creds = [view?.creds?.admin && ['admin', view.creds.admin], view?.creds?.inject && ['inject', view.creds.inject]].filter(Boolean)
+  if (!lifecycle) {
+    return (
+      <Card className="p-5">
+        <h2 className="mb-3 text-base font-semibold">Access</h2>
+        {mismatched && <ErrorBanner error={error} />}
+        {!view && !mismatched && <p className="text-sm text-muted">{loading ? 'Loading access details…' : 'No access details are available for this workspace.'}</p>}
+        {view && <>
+          {links.length ? <ul className="space-y-1.5 text-sm">{links.map(([name, url]) => (
+            <li key={name}><a className="flex items-center gap-1.5 text-accent hover:underline" href={url} target="_blank" rel="noopener noreferrer">
+              <Icon name={name === 'portal' ? 'boxes' : 'overview'} className="h-3.5 w-3.5" />
+              {LINK_TEXT[name] || name}<span className="ml-auto truncate font-mono text-[11px] text-faint">{url.replace(/^https?:\/\//, '')}</span>
+            </a></li>
+          ))}</ul> : <p className="text-sm text-muted">No engine address is recorded.</p>}
+          {!!creds.length && <div className="mt-4 space-y-2">{creds.map(([label, cred]) => <Cred key={`${label}-${cred.password}`} label={label} {...cred} />)}</div>}
+        </>}
+      </Card>
+    )
+  }
   return (
-    <Card className="p-6">
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <h2 className="label !mb-0">Competition</h2>
-        {view
-          ? <span className={`chip px-2.5 py-1 ${STATE_CLS[view.state]}`}>
-              {view.state === 'running' && <span className="mr-1.5 h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />}
-              {STATE_TEXT[view.state]}
-            </span>
-          : <ErrorBanner error={err} onRetry={reload} />}
-        {view?.engine?.last_round != null && (
-          <span className="font-mono text-xs text-faint" title="The scoring engine's last completed round">
-            round {view.engine.last_round}
-          </span>
-        )}
+    <Card className="p-5">
+      <div className="mb-3 flex flex-wrap items-center gap-3">
+        <h2 className={access ? 'label !mb-0' : 'text-base font-semibold'}>{access ? 'Competition & access' : 'Competition'}</h2>
+        {view && <span className={`chip px-2.5 py-1 ${STATE_CLS[view.state] || STATE_CLS.unknown}`}>{STATE_TEXT[view.state] || view.state || 'unknown'}</span>}
+        {(loading || refreshing) && <span role="status" aria-label="Refreshing competition"><Spinner /></span>}
+        {view?.engine?.last_round != null && <span className="font-mono text-xs text-faint">round {view.engine.last_round}</span>}
+        {(!controlled || onRefresh) && <Button variant="ghost" className="ml-auto !py-1 text-xs" disabled={refreshing || loading} onClick={refresh}>Refresh</Button>}
       </div>
-
-      {view && (
-        <>
-          <div className="flex flex-wrap gap-2">
-            {view.state === 'ready' && (
-              <Button variant="primary" onClick={lifecycle('start')}><Icon name="play" />Start the competition</Button>
-            )}
-            {view.state === 'running' && (
-              <Button onClick={lifecycle('freeze')}><Icon name="pause" />Pause scoring</Button>
-            )}
-            {view.state === 'paused' && (
-              <Button variant="primary" onClick={lifecycle('resume')}><Icon name="play" />Resume scoring</Button>
-            )}
-            {(view.state === 'running' || view.state === 'paused') && (
-              <Button variant="danger" onClick={end}><Icon name="warn" />End</Button>
-            )}
-            {view.state === 'ended' && (
-              <p className="text-sm text-faint">The event is over — the final scoreboard is in the range's evidence dir. Tear the range down with Destroy when done.</p>
-            )}
-          </div>
-
-          <div className="mt-5 flex flex-wrap gap-x-5 gap-y-2 text-sm">
-            {Object.entries(view.links || {}).map(([name, url]) => (
-              <a key={name} className="flex items-center gap-1.5 text-accent hover:underline"
-                href={url} target="_blank" rel="noopener noreferrer">
+      {error && <><ErrorBanner error={error} onRetry={!controlled || onRefresh ? refresh : undefined} />
+        {view && <p className="mb-3 text-xs text-muted">Refresh failed. The information below may be stale; lifecycle actions are disabled until a successful refresh.</p>}</>}
+      <ErrorBanner error={submitError} onClose={() => setSubmitError(null)} />
+      {pending && <p className="mb-3 text-sm text-accent" role="status">Submitting {ACTION_TEXT[pending].toLowerCase()} operation…</p>}
+      {submitted && <p className="mb-3 text-sm text-muted" role="status">Operation submitted{(submitted.id || submitted.run_id) && <> · <Link className="font-mono text-accent hover:underline" to={operationHref(submitted)}>{submitted.id || submitted.run_id}</Link></>}. Submission does not mean scoring has changed yet.</p>}
+      {!view && !loading && !error && <p className="text-sm text-muted">No competition or access details are available for this workspace.</p>}
+      {view && <>
+        <div className="flex flex-wrap gap-2">
+          {view.state === 'ready' && <Button variant="primary" disabled={blocked} onClick={() => submit('start')}><Icon name="play" />Start the competition</Button>}
+          {view.state === 'running' && <Button disabled={blocked} onClick={() => submit('freeze')}><Icon name="pause" />Pause scoring</Button>}
+          {view.state === 'paused' && <Button variant="primary" disabled={blocked} onClick={() => submit('resume')}><Icon name="play" />Resume scoring</Button>}
+          {(view.state === 'running' || view.state === 'paused') && <Button variant="danger" disabled={blocked} onClick={end}><Icon name="warn" />End</Button>}
+          {view.state === 'ended' && <p className="text-sm text-muted">The event has ended. Its final scoreboard is recorded in the workspace evidence directory.</p>}
+        </div>
+        {retired ? <p className="mt-2 text-xs text-muted">This range is retired; lifecycle actions are disabled.</p>
+          : missingIdentity && <p className="mt-2 text-xs text-danger">Lifecycle actions require the range's competition identity and originating engine ref. Refresh the range details before submitting.</p>}
+        {access && <>
+          <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-sm">
+            {links.map(([name, url]) => (
+              <a key={name} className="flex items-center gap-1.5 text-accent hover:underline" href={url} target="_blank" rel="noopener noreferrer">
                 <Icon name={name === 'portal' ? 'boxes' : 'overview'} className="h-3.5 w-3.5" />
-                {name === 'admin' ? 'Admin' : name === 'announcements' ? 'Announcements'
-                  : name === 'injects' ? 'Injects' : name === 'portal' ? 'Team portal' : 'Scoreboard'}
+                {LINK_TEXT[name] || name}
               </a>
             ))}
           </div>
-          <div className="mt-4 flex flex-wrap gap-x-6 gap-y-1.5">
-            {view.creds?.admin && <Cred label="admin" {...view.creds.admin} />}
-            {view.creds?.inject && <Cred label="inject" {...view.creds.inject} />}
+          <div className="mt-4 flex flex-wrap gap-2">
+            {creds.map(([label, cred]) => <Cred key={`${label}-${cred.password}`} label={label} {...cred} />)}
           </div>
-          {!view.reachable && view.state !== 'ended' && (
-            <p className="mt-3 text-xs text-faint">
-              The engine is not answering right now — the state above falls back to this range's
-              deploy state; the buttons still work.
-            </p>
-          )}
-        </>
-      )}
+        </>}
+        {!view.reachable && view.state !== 'ended' && <p className="mt-3 text-xs text-muted">The engine is not answering. Any available workspace details are recorded state, not a current engine observation.</p>}
+      </>}
     </Card>
   )
 }

@@ -1,12 +1,12 @@
-// Infrastructure tab of the run page: what the range actually deployed — networks, boxes,
-// engine, red01, goldens, and the deploy's own facts. Props: run (run record),
+// Infrastructure tab: what the range recorded beyond its teams — teardown journal, deploy
+// facts, shared machines and networks. Team boxes live on the Teams tab. Props: run (run record),
 // comp (competition detail), inventory (GET /api/runs/{id}/inventory payload, or null while
 // loading).
 import { Link } from 'react-router-dom'
-import { kindOf } from '../api'
-import { Card, PlatformBadge } from './ui'
+import { Card } from './ui'
 import { EmptyState, Icon } from './kit'
 import { DEPLOY_STAGES } from './runui'
+import MachineInventory from './MachineInventory'
 
 const NET_KIND = { team: 'Team', transit: 'Transit', satellite: 'Satellite' }
 
@@ -14,17 +14,6 @@ const NET_KIND = { team: 'Team', transit: 'Transit', satellite: 'Satellite' }
 const phaseName = (n) => {
   const i = Number(n)
   return Number.isInteger(i) && i >= 1 && i <= DEPLOY_STAGES.length ? `${i}/8 · ${DEPLOY_STAGES[i - 1]}` : String(n ?? '—')
-}
-
-// The range's state, not the run's: a live range outlives the deploy run that built it.
-// teardown_failed means the estate's records are gone but a VM survived (ranges.py) — a
-// state that must not read as calm.
-const RANGE_STATE = {
-  live: 'bg-accent-soft text-accent',
-  building: 'bg-sunken text-muted',
-  retired: 'bg-sunken text-faint',
-  failed: 'bg-danger-soft text-danger',
-  teardown_failed: 'bg-danger-soft text-danger',
 }
 
 const TH = ({ children }) => <th className="px-4 py-2">{children}</th>
@@ -70,7 +59,7 @@ function DeployFacts({ deploy }) {
           {degradations.map((d, i) => (
             <div key={i} className="flex items-start gap-2 rounded-2xl bg-danger-soft px-4 py-2.5 text-xs text-danger">
               <Icon name="warn" className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>{typeof d === 'string' ? d : JSON.stringify(d)}</span>
+              <span>{typeof d === 'string' ? d : d.message || d.reason || d.detail || JSON.stringify(d)}</span>
             </div>
           ))}
         </div>
@@ -83,7 +72,7 @@ function Networks({ networks }) {
   return (
     <Card className="overflow-hidden">
       <h3 className="px-5 pt-4 pb-3 text-sm font-semibold">Networks <span className="font-normal text-faint">{networks.length}</span></h3>
-      <table className="w-full text-left">
+      <div className="overflow-x-auto"><table className="w-full text-left">
         <thead>
           <tr className="border-t-2 border-line text-[11px] font-semibold uppercase tracking-wider text-faint">
             <TH>Name</TH><TH>Kind</TH><TH>Node</TH><TH>Teams</TH><TH>Comment</TH>
@@ -100,95 +89,46 @@ function Networks({ networks }) {
             </tr>
           ))}
         </tbody>
-      </table>
+      </table></div>
     </Card>
   )
 }
 
-function Boxes({ teams, specs }) {
-  const rows = teams.flatMap((t) => (t.boxes || []).map((b) => ({ ...b, team: t.key })))
+const TEARDOWN_STEP = {
+  terraform: 'Terraform-managed resources', red01: 'Red box (red01)',
+  engine: 'Scoring engine', scoring_engine: 'Scoring engine',
+  team_boxes: 'Team boxes', networks: 'Networks', goldens: 'Golden images',
+  engine_template: 'Engine template',
+}
+
+function TeardownJournal({ teardown, opHref }) {
+  const done = Array.isArray(teardown?.done) ? teardown.done : Object.keys(teardown?.done || {})
+  const recorded = !!teardown?.run_id || !!done.length
   return (
-    <Card className="overflow-hidden">
-      <h3 className="px-5 pt-4 pb-3 text-sm font-semibold">Boxes <span className="font-normal text-faint">{rows.length}</span></h3>
-      <table className="w-full text-left">
-        <thead>
-          <tr className="border-t-2 border-line text-[11px] font-semibold uppercase tracking-wider text-faint">
-            <TH>Team</TH><TH>Box</TH><TH>Platform / template</TH><TH>VMID</TH><TH>IP</TH><TH>Node</TH>
-          </tr>
-        </thead>
-        <tbody className="divide-y-2 divide-line">
-          {rows.map((b, i) => {
-            const spec = specs.get(b.name)
-            return (
-              <tr key={`${b.team}-${b.name}-${i}`} className="text-sm">
-                <td className="px-4 py-2 font-mono text-xs text-muted">{b.team}</td>
-                <td className="px-4 py-2 font-mono">{b.name}</td>
-                <td className="px-4 py-2">
-                  <span className="flex flex-wrap items-center gap-2">
-                    {spec ? <PlatformBadge platform={kindOf(spec)} /> : <span className="text-faint">—</span>}
-                    <span className="font-mono text-xs text-muted">{spec?.template || '—'}</span>
-                  </span>
-                </td>
-                <td className="px-4 py-2 font-mono text-xs tabular-nums text-muted">{b.vmid ?? '—'}</td>
-                <td className="px-4 py-2 font-mono text-xs text-muted">{b.ip || '—'}</td>
-                <td className="px-4 py-2 font-mono text-xs text-muted">{b.node || '—'}</td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
+    <Card className="p-5">
+      <h3 className="text-sm font-semibold">Teardown journal</h3>
+      {!recorded ? <p className="mt-2 text-xs text-muted">No teardown steps have been recorded for this workspace.</p> : <>
+        {teardown.run_id && <p className="mt-2 text-xs text-muted">Operation · {opHref
+          ? <Link to={opHref(teardown.run_id)} className="font-mono text-accent hover:underline">{teardown.run_id}</Link>
+          : <span className="font-mono">{teardown.run_id}</span>}</p>}
+        {done.length > 0 ? <ul className="mt-3 flex flex-wrap gap-2">{done.map((step) => (
+          <li key={step} className="chip gap-1.5 bg-sunken px-2.5 py-1 text-xs text-muted" title={step}><Icon name="check" className="h-3.5 w-3.5" />{TEARDOWN_STEP[step] || step.replace(/[_-]+/g, ' ')} · completed</li>
+        ))}</ul> : <p className="mt-2 text-xs text-muted">No completed steps recorded.</p>}
+        <p className={`mt-3 text-xs ${teardown.red01_done ? 'text-muted' : 'text-danger'}`}>
+          {teardown.red01_done ? 'Red box teardown is recorded as complete.' : 'Red box teardown has not been recorded as complete. Check the operation log before assuming it or its credentials are gone.'}
+        </p>
+        <p className="mt-2 text-xs text-faint">A journal records completed steps, not a live scan or a guarantee that every resource was removed.</p>
+      </>}
     </Card>
   )
 }
 
-function Machines({ machines }) {
-  const eng = machines?.scoring_engine
-  const red = machines?.red01
-  const tpl = machines?.engine_template
-  const rows = [
-    eng && { role: 'Scoring engine', name: eng.name, vmid: eng.vmid, node: eng.node, ips: [eng.mgmt_ip, ...(eng.team_ips || [])].filter(Boolean) },
-    red && { role: 'red01', vmid: red.vmid, node: red.node, ips: [red.ip].filter(Boolean) },
-    tpl && { role: 'Engine template', vmid: tpl.vmid, node: tpl.node, ips: [] },
-    ...(machines?.goldens || []).map((g) => ({ role: 'Golden', name: g.name, vmid: g.vmid, node: g.node, ips: [] })),
-  ].filter(Boolean)
-  if (!rows.length) return null
-  // Columns the inventory actually knows about — a projection without node/address facts
-  // otherwise renders a wall of "—".
-  const showNode = rows.some((r) => r.node)
-  const showIps = rows.some((r) => r.ips.length)
-  return (
-    <Card className="overflow-hidden">
-      <h3 className="px-5 pt-4 pb-3 text-sm font-semibold">Machines <span className="font-normal text-faint">outside the teams</span></h3>
-      <table className="w-full text-left">
-        <thead>
-          <tr className="border-t-2 border-line text-[11px] font-semibold uppercase tracking-wider text-faint">
-            <TH>Role</TH><TH>Name</TH><TH>VMID</TH>
-            {showNode && <TH>Node</TH>}
-            {showIps && <TH>Addresses</TH>}
-          </tr>
-        </thead>
-        <tbody className="divide-y-2 divide-line">
-          {rows.map((r, i) => (
-            <tr key={`${r.role}-${r.vmid}-${i}`} className="text-sm">
-              <td className="px-4 py-2 text-muted">{r.role}</td>
-              <td className="px-4 py-2 font-mono">{r.name || '—'}</td>
-              <td className="px-4 py-2 font-mono text-xs tabular-nums text-muted">{r.vmid ?? '—'}</td>
-              {showNode && <td className="px-4 py-2 font-mono text-xs text-muted">{r.node || '—'}</td>}
-              {showIps && <td className="px-4 py-2 font-mono text-xs text-muted">{r.ips.join(', ') || '—'}</td>}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </Card>
-  )
-}
-
-export default function RunInfra({ comp, inventory }) {
+export default function RunInfra({ run, comp, inventory }) {
   if (!inventory) {
     return (
       <Card className="p-2">
         <EmptyState icon="boxes" title="No deployment inventory">
-          Nothing to list yet — the inventory appears once the run has a workspace, and a range deployed by hand has none.
+          No workspace inventory is available. Competition definitions are not a substitute for recorded deployment inventory.
         </EmptyState>
       </Card>
     )
@@ -198,57 +138,60 @@ export default function RunInfra({ comp, inventory }) {
   const teams = inventory.teams || []
   const networks = inventory.networks || []
   const counts = inventory.counts || {}
-  const specs = new Map((comp?.boxes || []).map((b) => [b.name, b]))
   const boxCount = teams.reduce((n, t) => n + (t.boxes || []).length, 0)
   const retired = range?.state === 'retired'
   const failed = range?.state === 'teardown_failed'
   const empty = !teams.length && !networks.length && !boxCount
+  const compId = range?.comp_id || run?.comp_id
+  const opHref = (id) => (range?.id
+    ? `/ranges/${range.id}/activity?operation=${encodeURIComponent(id)}`
+    : compId ? `/c/${encodeURIComponent(compId)}/runs/${encodeURIComponent(id)}` : null)
+  const teardown = inventory.teardown
+  const journal = !!teardown?.run_id || !!(Array.isArray(teardown?.done) ? teardown.done.length : Object.keys(teardown?.done || {}).length)
 
   return (
     <div className="space-y-5">
-      <Card className="flex flex-wrap items-center gap-x-6 gap-y-3 p-5">
-        <Fact k="Range">
-          <span className="flex items-center gap-2">
-            <span className={`chip ${RANGE_STATE[range?.state] || 'bg-sunken text-muted'}`}>{range?.state || 'unknown'}</span>
-            {range?.key && <span className="font-mono text-xs text-faint">{range.key}</span>}
-          </span>
-        </Fact>
-        {range?.deploy_run_id && (
-          <Fact k="Deployed by">
-            <Link to={`/c/${range.comp_id}/runs/${range.deploy_run_id}`} className="font-mono text-sm text-accent hover:underline">{range.deploy_run_id}</Link>
-          </Fact>
-        )}
-        <div className="ml-auto flex gap-3">
-          <Stat k="Teams" v={counts.teams ?? teams.length} />
-          <Stat k="Boxes" v={counts.boxes ?? boxCount} />
-          <Stat k="Networks" v={counts.networks ?? networks.length} />
-        </div>
-      </Card>
-
       {empty ? (
         <Card className="p-2">
           <EmptyState icon={failed ? 'warn' : retired ? 'trash' : 'boxes'}
             title={failed ? "The range's teardown failed" : retired ? 'This range has been retired' : 'The inventory is empty'}>
             {failed
-              ? 'Terraform no longer tracks this range, but a machine survived the teardown — anything listed below is still out there.'
+              ? 'The last teardown did not complete successfully. Empty team and network records do not prove that every machine was removed; inspect the journal and operation log.'
               : retired
-                ? <>Its machines were torn down{range?.retired_by ? <> by <Link to={`/c/${range.comp_id}/runs/${range.retired_by}`} className="font-mono underline">{range.retired_by}</Link></> : null}.</>
-                : 'This run owns no deployed teams, boxes or networks — nothing is on the range.'}
+                ? <>A successful teardown was recorded{range?.retired_by ? <> by <Link to={opHref(range.retired_by)} className="font-mono underline">{range.retired_by}</Link></> : null}. Shared machine records below may be historical.</>
+                : 'No teams, boxes or networks are recorded. A partial deployment or teardown can leave incomplete records; absence here is not a live observation.'}
           </EmptyState>
         </Card>
       ) : (retired || failed) && (
         <div className="flex items-start gap-2 rounded-2xl bg-danger-soft px-4 py-2.5 text-sm text-danger">
           <Icon name={failed ? 'warn' : 'trash'} className="mt-0.5 h-4 w-4 shrink-0" />
           {failed
-            ? <span>This range's teardown failed — the estate's own machines are gone but something survived it.</span>
-            : <span>This range has been retired{range?.retired_by ? <> by run <Link to={`/c/${range.comp_id}/runs/${range.retired_by}`} className="font-mono underline">{range.retired_by}</Link></> : null} — below is its last known state.</span>}
+            ? <span>The last teardown did not complete successfully. Review the journal and operation log; the records below do not establish which resources remain.</span>
+            : <span>This range has been retired{range?.retired_by ? <> by run <Link to={opHref(range.retired_by)} className="font-mono underline">{range.retired_by}</Link></> : null} — below is its last known state.</span>}
         </div>
       )}
 
+      {(journal || retired || failed) && <TeardownJournal teardown={teardown} opHref={opHref} />}
       <DeployFacts deploy={inventory.deploy} />
+      <MachineInventory machines={inventory.machines} />
       {networks.length > 0 && <Networks networks={networks} />}
-      {boxCount > 0 && <Boxes teams={teams} specs={specs} />}
-      {inventory.machines && <Machines machines={inventory.machines} />}
+
+      <Card className="p-5">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+          <div className="min-w-0 flex-1">
+            <div className="label !mb-1">Workspace</div>
+            <p className="break-all font-mono text-xs text-muted">{range?.key || 'Unknown workspace'}</p>
+          </div>
+          <div className="flex gap-3">
+            <Stat k="Teams" v={counts.teams ?? teams.length} />
+            <Stat k="Boxes" v={counts.boxes ?? boxCount} />
+            <Stat k="Networks" v={counts.networks ?? networks.length} />
+          </div>
+        </div>
+        {boxCount > 0 && range?.id && <p className="mt-3 text-xs"><Link to={`/ranges/${range.id}/teams`} className="text-accent hover:underline">Team boxes, addresses and recovery are on the Teams tab</Link></p>}
+        {!journal && !retired && !failed && <p className="mt-3 text-xs text-muted">No teardown steps have been recorded for this workspace.</p>}
+        <p className="mt-2 text-xs text-faint">Counts and addresses come from recorded workspace state, not a live hypervisor scan. Power and reachability are not checked; leftover records may survive teardown.</p>
+      </Card>
     </div>
   )
 }

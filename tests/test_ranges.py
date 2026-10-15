@@ -1,6 +1,9 @@
 """The range model: one range per workspace, liveness from the workspace's own state."""
 
+import hashlib
 import json
+
+import pytest
 
 from dashboard import config, ranges
 from dashboard.runner import RunManager, RunRefused
@@ -267,3 +270,152 @@ def test_a_teardown_that_empties_the_document_and_fails_is_teardown_failed(tmp_p
              run_dir=tmp_path / "run-down",
              params={"_destroy_comp_dir": str(tmp_path / "run-doc" / "comp")}))
     assert (rng["state"], rng["live"]) == ("teardown_failed", True)
+
+
+def test_range_id_is_opaque_stable_and_uses_the_resolved_workspace(tmp_path):
+    ws = _workspace(tmp_path, "run-origin")
+    alias = tmp_path / "alias"
+    alias.symlink_to(ws, target_is_directory=True)
+    expected = "range-" + hashlib.sha256(str(ws.resolve()).encode()).hexdigest()[:16]
+    assert ranges.range_id(alias) == ranges.range_id(ws) == expected
+    deploy = _rec("run-origin", "deploy", created=1, run_dir=ws.parent)
+    followup = _rec("run-check", "verify", created=2, run_dir=tmp_path / "run-check",
+                    params={"_destroy_comp_dir": str(alias)})
+    assert _range_of(deploy, followup)["id"] == expected
+    assert ranges.range_id(tmp_path / "other" / "comp") != expected
+
+
+def test_explicit_scrim_joins_range_without_replacing_origin(tmp_path):
+    ws = _workspace(tmp_path, "run-origin", vms=True)
+    rng = _range_of(
+        _rec("run-origin", "deploy", created=1, run_dir=ws.parent, params={"teams": 1}),
+        _rec("run-scrim", "scrim", created=2, run_dir=tmp_path / "run-scrim",
+             params={"comp_dir": str(ws), "skip_deploy": True, "teams": 2}))
+    assert rng["deploy_run_id"] == "run-origin" and rng["teams"] == 1
+
+
+@pytest.mark.parametrize("action", ["verify", "destroy", "redeploy", "start", "freeze",
+                                    "resume", "end", "delete_team", "scrim"])
+def test_explicit_scope_rejects_other_comp_unknown_and_retired(tmp_path, action):
+    ws = _workspace(tmp_path, "run-owned")
+    origin = _rec("run-owned", "deploy", created=1, run_dir=ws.parent)
+    mgr = RunManager(FakeStore([origin]), None)
+    assert mgr._range_workspace("c", {"comp_dir": str(ws)}, action) == ws
+    with pytest.raises(RunRefused, match="does not belong"):
+        mgr._range_workspace("other-comp", {"comp_dir": str(ws)}, action)
+    with pytest.raises(RunRefused, match="does not belong"):
+        mgr._range_workspace("c", {"comp_dir": str(tmp_path / "untracked")}, action)
+    mgr.store = FakeStore([origin, _rec("run-down", "destroy", created=2,
+        run_dir=tmp_path / "run-down", params={"_destroy_comp_dir": str(ws)})])
+    with pytest.raises(RunRefused, match="was torn down by run-down"):
+        mgr._range_workspace("c", {"comp_dir": str(ws)}, action)
+
+
+def test_explicit_scope_can_retry_a_failed_teardown(tmp_path):
+    ws = _workspace(tmp_path, "run-owned")
+    mgr = RunManager(FakeStore([
+        _rec("run-owned", "deploy", created=1, run_dir=ws.parent),
+        _rec("run-down", "destroy", state="failed", rc=1, created=2,
+             run_dir=tmp_path / "run-down", params={"_destroy_comp_dir": str(ws)})]), None)
+    assert mgr._range_workspace("c", {"comp_dir": str(ws)}, "destroy") == ws
+
+
+def test_board_and_detail_are_local_non_secret_and_workspace_scoped(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from dashboard import competition
+    from dashboard.app import create_app
+    from dashboard.store import Store
+
+    data = tmp_path / "data"
+    monkeypatch.setenv("TEZ_DASHBOARD_DATA", str(data))
+    store = Store(data / "dashboard.sqlite3")
+    ws = _doc_workspace(tmp_path, "run-origin")
+    (ws / "Compfile").write_text("name Original range\nadmin_password RANGE-SECRET\n")
+    (ws / "estate-state.json").write_text(json.dumps({
+        "identity": {"run_id": "run-origin", "engine_mgmt_ip": "10.0.0.42"},
+        "secrets": {"admin_password": "RANGE-SECRET",
+                    "teams": {"team1": {"identifier": "113", "password": "RANGE-SECRET"}}},
+        "roster": {"boxes": [{"name": "web01", "last_octet": 4}]},
+        "run": {"degradations": [{"step": "repair", "detail": "web01 lagged"}]},
+        "resources": [
+            {"kind": "engine", "name": "engine", "node": "pve", "vmid": 1000},
+            {"kind": "bridge", "name": "vmbr113", "node": "pve"},
+            {"kind": "team_box", "name": "team1-web01", "node": "sat", "vmid": 1001},
+            {"kind": "golden", "name": "golden-web01", "node": "templates", "vmid": 1002}]}))
+    other = _doc_workspace(tmp_path, "run-other", vms=False)
+    for rid, action, workspace, params, state, rc, created, ref in [
+        ("run-origin", "deploy", ws, {"teams": 1, "password": "RANGE-SECRET",
+         "extra_args": ["--password", "RANGE-SECRET"]}, "failed", 1, 1, "origin-ref"),
+        ("run-down", "destroy", ws, {"_destroy_comp_dir": str(ws)}, "failed", 1, 2, "new-ref"),
+        ("run-check", "verify", ws, {"_destroy_comp_dir": str(ws)}, "paused", None, 3, "new-ref"),
+        ("run-other", "deploy", other, {"teams": 2}, "succeeded", 0, 4, "other-ref"),
+    ]:
+        run_dir = workspace.parent if action == "deploy" else tmp_path / rid
+        store.create_run(rid, "c", action, ref, params, run_dir, run_dir / "run.log")
+        store.update_run(rid, state=state, returncode=rc, error="RANGE-SECRET")
+        # Explicit ordering makes this test independent of wall-clock resolution.
+        with store._lock:
+            store._db.execute("UPDATE runs SET created_at = ? WHERE id = ?", (created, rid))
+            store._db.commit()
+    for workspace in (ws, other):
+        store.upsert_requests(str(workspace), "c", [
+            {"id": 1, "team": "team1", "box": "web01"},
+            {"id": 2, "team": "team2", "box": "web01"}])
+    own_req = next(req for req in store.list_requests()
+                   if req["range_key"] == str(ws) and req["portal_id"] == "2")
+    store.set_request_status(own_req["id"], "denied")
+    token = store.mint_range_token(str(ws), "c")
+
+    def no_poll(*args, **kwargs):
+        raise AssertionError("range endpoints must not poll the engine or expose credentials")
+
+    monkeypatch.setattr(competition, "engine_status", no_poll)
+    monkeypatch.setattr(competition, "status_for_range", no_poll)
+    http = TestClient(create_app())
+    original = ranges.build_ranges
+    calls = []
+
+    def counted(store):
+        calls.append(1)
+        return original(store)
+
+    monkeypatch.setattr(ranges, "build_ranges", counted)
+    response = http.get("/api/ranges/board")
+    assert response.status_code == 200 and len(calls) == 1
+    board = response.json()
+    assert len(board) == 2 and board[0]["id"] != board[1]["id"]
+    summary = next(row for row in board if row["key"] == str(ws))
+    assert summary["name"] == "Original range"
+    assert summary["state"] == "building" and summary["live"] and summary["has_recorded_vms"]
+    assert summary["counts"] == {"teams": 1, "boxes": 1, "networks": 1}
+    assert summary["nodes"] == ["pve", "sat", "templates"]
+    assert summary["engine_ip"] == "10.0.0.42" and summary["engine_ref"] == "origin-ref"
+    assert summary["pending_requests"] == 1
+    assert summary["latest_run"]["id"] == "run-check"
+    assert summary["latest_destroy"]["id"] == "run-down"
+    assert [run["id"] for run in summary["active_runs"]] == ["run-check"]
+    assert summary["degradations"] == [{"step": "repair", "detail": "web01 lagged"}]
+    assert summary["deployed_at"] == 1
+    assert set(summary["event"]) == {"seeded", "hold_start", "ended"}
+    assert summary["links"]["scoreboard"] == "http://10.0.0.42"
+    assert not {"runs", "inventory", "requests", "params", "creds"}.intersection(summary)
+    detail_response = http.get(f"/api/ranges/{summary['id']}")
+    assert detail_response.status_code == 200
+    detail = detail_response.json()
+    assert detail["id"] == summary["id"] and detail["teams"] == 1
+    assert detail["name"] == "Original range" and detail["has_recorded_vms"]
+    assert detail["engine_ref"] == detail["inventory"]["range"]["engine_ref"] == "origin-ref"
+    assert [run["id"] for run in detail["runs"]] == ["run-check", "run-down", "run-origin"]
+    assert detail["runs"][-1]["params"] == {"teams": 1}
+    assert len(detail["requests"]) == 2
+    assert all(req["range_key"] == str(ws) for req in detail["requests"])
+    assert detail["inventory"]["range"]["id"] == summary["id"]
+    assert "competition" not in detail and "creds" not in detail
+    for payload in (board, detail):
+        blob = json.dumps(payload)
+        assert "RANGE-SECRET" not in blob and token not in blob
+        assert "extra_args" not in blob and "admin_password" not in blob
+    assert http.get("/api/ranges/range-missing").status_code == 404
+    compatible = http.get("/api/ranges").json()
+    assert {row["id"] for row in compatible} == {row["id"] for row in board}
+    assert all("runs" in row for row in compatible)

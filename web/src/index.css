@@ -118,5 +118,25 @@ body { transition: background-color .2s, color .2s; }
   background-image: repeating-linear-gradient(135deg, var(--accent-soft) 0 7px, transparent 7px 14px);
 }
 
+/* Range pages use a single document scroll so diagnostics do not trap navigation. */
+.range-container { width: min(100%, 1320px); margin-inline: auto; padding: 2rem 2rem 4rem; }
+.range-container > .rise:first-child { margin-bottom: 2.5rem; }
+.range-row, .range-row-head { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.6fr) 9rem 11rem; gap: 2rem; }
+.range-row { display: grid; align-items: start; padding: 1.25rem 1.5rem; }
+/* Overview: primary column plus a facts/access rail. */
+.range-overview { display: grid; grid-template-columns: minmax(0, 1fr) 22rem; gap: 1.5rem; align-items: start; }
+@media (max-width: 1100px) { .range-overview { grid-template-columns: minmax(0, 1fr); } }
+.range-row + .range-row { border-top: 1px solid var(--line); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+@media (max-width: 1023px) {
+  .range-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1.25rem; }
+}
+@media (max-width: 639px) {
+  .range-container { padding: 1.25rem 1rem 3rem; }
+  .range-container > .rise:first-child > div { flex-wrap: wrap; gap: 1rem; }
+  .range-container > .rise:first-child { margin-bottom: 2rem; }
+  .range-row { grid-template-columns: minmax(0, 1fr); padding: 1.25rem; gap: 1rem; }
+}
+
 /* Scrollbars that don't fight the soft look. */
 * { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }

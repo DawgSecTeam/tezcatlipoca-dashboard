@@ -132,9 +132,11 @@ def test_destroy_runs_against_the_workspace_holding_the_state(tmp_path, monkeypa
     mgr.runs_dir = runs
     # destroy, verify and redeploy all act on the range's own workspace
     assert mgr._range_workspace("scrim-one", {}, "destroy") == ws
-    # an explicit comp_dir wins
-    other = tmp_path / "elsewhere"
-    other.mkdir()
+    # An explicit, recorded same-comp workspace wins even before it has deploy state.
+    other = tmp_path / "elsewhere" / "comp"
+    other.mkdir(parents=True)
+    store.create_run("run-explicit", "scrim-one", "deploy", "main", {}, other.parent,
+                     other.parent / "run.log")
     assert mgr._range_workspace("scrim-one", {"comp_dir": str(other)}, "destroy") == other
     # and nothing state-bearing means nothing to act on
     assert mgr._range_workspace("no-such-comp", {}, "destroy") is None

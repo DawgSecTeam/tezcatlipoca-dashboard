@@ -30,16 +30,17 @@ _BRIDGE_TYPE = "proxmox_network_linux_bridge"
 _BRIDGE_KIND = "bridge"
 
 
-def build_inventory(store, run):
-    """Everything the run page knows about the range a run belongs to."""
-    key = ranges.range_key(run)
+def build_inventory(store, run, rng=None):
+    """Project local inventory; an already-resolved range avoids rebuilding the ledger."""
+    key = rng["key"] if rng is not None else ranges.range_key(run)
     ws = Path(key)
-    rng = next((r for r in ranges.build_ranges(store) if r["key"] == key), None)
+    if rng is None:
+        rng = next((r for r in ranges.build_ranges(store) if r["key"] == key), None)
     # The flat view is the deploy facts (last_phase, endpoint, seeded, …); load_flat reads
     # the v0.3.0 document with the legacy file as its read-only fallback.
     state = estate.load_flat(ws)
-    boxes = _comp_boxes(run["comp_id"])
     document = estate.document(ws)
+    boxes = _snapshot_boxes(ws, document, run["comp_id"])
     resources = estate.resources(ws)
     # A document always wins for the flat deploy facts; the INVENTORY is different. A
     # workspace folded into a document by `estate.state.migrate` has a document and an empty
@@ -82,11 +83,24 @@ def _json(path, default):
         return default
 
 
+def _snapshot_boxes(ws, document, comp_id):
+    """Frozen deploy roster, then workspace snapshot, never today's edited definition first."""
+    roster = document.get("roster")
+    boxes = roster.get("boxes") if isinstance(roster, dict) else None
+    if isinstance(boxes, list):
+        return [box for box in boxes if isinstance(box, dict)]
+    boxes = _json(ws / "boxes.json", None)
+    if isinstance(boxes, list):
+        return [box for box in boxes if isinstance(box, dict)]
+    return _comp_boxes(comp_id)
+
+
 def _comp_boxes(comp_id):
-    """The competition's box definitions, via the comps checkout's own reader."""
+    """Legacy fallback when the range has no snapshot of its box definitions."""
     try:
-        return comps_api.read_json(comps_api.comp_dir(comp_id) / "boxes.json", [])
-    except HTTPException:
+        boxes = comps_api.read_json(comps_api.comp_dir(comp_id) / "boxes.json", [])
+        return [box for box in boxes if isinstance(box, dict)] if isinstance(boxes, list) else []
+    except (HTTPException, OSError, ValueError):
         return []
 
 

@@ -3,6 +3,7 @@ import { Link, NavLink, Outlet, useMatch, useNavigate, useParams } from 'react-r
 import { api, kindOf } from '../api'
 import { ErrorBanner, Spinner } from '../components/ui'
 import { Icon, Logo } from '../components/kit'
+import Bell from '../components/Bell'
 
 const CompCtx = createContext(null)
 export const useComp = () => useContext(CompCtx)
@@ -52,11 +53,14 @@ function Sidebar({ comp }) {
         <span className="text-[13px] font-semibold tracking-tight">tezcatlipoca</span>
         <span className="ml-auto text-[11px] text-faint opacity-0 transition group-hover:opacity-100">live</span>
       </Link>
-      <nav className="flex gap-1 px-1 text-xs" aria-label="Sections">
-        <NavLink to="/" end className={miniCls}>Live</NavLink>
-        <NavLink to="/runs" className={miniCls}>Runs</NavLink>
-        <NavLink to="/comps" className={miniCls}>Comps</NavLink>
-      </nav>
+      <div className="flex items-center gap-1 px-1">
+        <nav className="flex flex-1 gap-1 text-xs" aria-label="Sections">
+          <NavLink to="/" end className={miniCls}>Live</NavLink>
+          <NavLink to="/runs" className={miniCls}>Runs</NavLink>
+          <NavLink to="/comps" className={miniCls}>Comps</NavLink>
+        </nav>
+        <Bell />
+      </div>
       <CompSwitcher current={comp.id} />
       {boxName ? (
         <nav className="space-y-1" aria-label="Box">

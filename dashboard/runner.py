@@ -169,6 +169,8 @@ class RunManager:
 
     def submit(self, comp_id, action, engine_ref=None, params=None):
         params = dict(params or {})
+        # Internal workspace targeting is manager-owned, not a caller-supplied override.
+        params.pop("_destroy_comp_dir", None)
         # No ref named -> the service's pinned default (config.default_engine_ref): v0.3.0
         # is the estate release, and a worktree cut at an older revision reads a state
         # shape this service no longer projects.
@@ -198,7 +200,7 @@ class RunManager:
         run_id = "run-" + uuid.uuid4().hex[:8]
         run_dir = self.runs_dir / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
-        if action in RANGE_ACTIONS:
+        if action in RANGE_ACTIONS or params.get("comp_dir"):
             # These act on the workspace that HOLDS the range: ownership (which VMs may be
             # touched) and the estate state document (run id, secrets, VM inventory) live in
             # the workspace a PRIOR run built, and a freshly seeded one has none — the
@@ -213,6 +215,8 @@ class RunManager:
                     f"run id exists under {self.runs_dir} (a range deployed by hand is "
                     f"{action}d from its own comp dir)")
             params["_destroy_comp_dir"] = str(target)
+            if params.get("comp_dir"):
+                params["comp_dir"] = str(target)
         record = self.store.create_run(run_id, comp_id, action, engine_ref, params,
                                        run_dir, run_dir / "run.log")
         if action == "deploy":
@@ -236,9 +240,19 @@ class RunManager:
         that is already gone; teardown is idempotent, so a range whose teardown merely FAILED
         stays resolvable and retryable."""
         explicit = (params or {}).get("comp_dir")
-        if explicit:
-            return Path(explicit)
         by_key = {r["key"]: r for r in ranges.build_ranges(self.store)}
+        if explicit:
+            ws = Path(explicit).resolve()
+            rng = by_key.get(str(ws))
+            # Check every record, not just the group's newest comp_id: an old malformed
+            # cross-comp follow-up must not grant access to the original range.
+            if rng is None or any(run["comp_id"] != comp_id for run in rng["runs"]):
+                raise RunRefused(f"workspace {ws} does not belong to competition {comp_id}")
+            if rng["state"] == "retired":
+                raise RunRefused(
+                    f"the range in {rng['deploy_run_id']} was torn down by {rng['retired_by']} — "
+                    f"nothing to {action} (a fresh deploy builds a new range)")
+            return ws
         retired = []
         for run in self.store.list_runs(comp_id=comp_id):        # newest first
             ws = Path(run["run_dir"]) / "comp"

@@ -387,3 +387,56 @@ def test_no_document_password_leaves_the_workspace(tmp_path, monkeypatch):
     assert leaked == []
     # the raw section names never ride along either
     assert "secrets" not in blob and "teams.json" not in blob and "tfvars.json" not in blob
+
+
+def test_legacy_inventory_prefers_workspace_boxes_to_edited_definition(tmp_path, monkeypatch):
+    ws = _workspace(tmp_path)
+    _comp(tmp_path, monkeypatch)
+    (ws / "boxes.json").write_text(json.dumps([
+        {"name": "dc01", "last_octet": 19}, {"name": "web01", "last_octet": 20}]))
+    (comps_api.COMPS / "comp-a" / "boxes.json").write_text(json.dumps([
+        {"name": "dc01", "last_octet": 99}]))
+    run = _run(tmp_path, ws)
+    payload = build_inventory(FakeStore([run]), run)
+    boxes = {box["name"]: box for box in payload["teams"][0]["boxes"]}
+    assert boxes["dc01"]["ip"] == "192.168.113.19"
+    # A recorded address still outranks all definitions.
+    assert boxes["web01"]["ip"] == "192.168.113.4"
+
+
+def test_document_roster_outranks_workspace_and_current_boxes(tmp_path, monkeypatch):
+    ws = _doc_workspace(tmp_path)
+    _comp(tmp_path, monkeypatch)
+    (ws / "targets.json").unlink()
+    (ws / "boxes.json").write_text(json.dumps([
+        {"name": "dc01", "last_octet": 88}, {"name": "web01", "last_octet": 89}]))
+    (comps_api.COMPS / "comp-a" / "boxes.json").write_text(json.dumps([
+        {"name": "dc01", "last_octet": 98}, {"name": "web01", "last_octet": 99}]))
+    run = _run(tmp_path, ws)
+    payload = build_inventory(FakeStore([run]), run)
+    boxes = {box["name"]: box for box in payload["teams"][0]["boxes"]}
+    assert boxes["dc01"]["ip"] == "192.168.113.2"
+    assert boxes["web01"]["ip"] == "192.168.113.4"
+
+
+def test_snapshot_inventory_survives_a_missing_current_definition(tmp_path, monkeypatch):
+    ws = _doc_workspace(tmp_path)
+    (ws / "targets.json").unlink()
+    monkeypatch.setattr(comps_api, "COMPS", tmp_path / "no-definitions")
+    run = _run(tmp_path, ws)
+    run["engine_ref"] = "origin-ref"
+    payload = build_inventory(FakeStore([run]), run)
+    assert payload["counts"] == {"teams": 1, "boxes": 2, "networks": 2}
+    assert payload["range"]["engine_ref"] == "origin-ref"
+    boxes = {box["name"]: box for box in payload["teams"][0]["boxes"]}
+    assert boxes["dc01"]["ip"] == "192.168.113.2"
+
+
+def test_empty_snapshot_does_not_fall_through_to_current_definition(tmp_path, monkeypatch):
+    ws = _workspace(tmp_path)
+    _comp(tmp_path, monkeypatch)
+    (ws / "boxes.json").write_text("[]")
+    run = _run(tmp_path, ws)
+    payload = build_inventory(FakeStore([run]), run)
+    boxes = {box["name"]: box for box in payload["teams"][0]["boxes"]}
+    assert boxes["dc01"]["ip"] is None

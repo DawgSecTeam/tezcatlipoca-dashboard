@@ -1,169 +1,125 @@
-// The operator's home: one card per RANGE — the unit is the infrastructure, not the run
-// attempt. A range boards while it builds or is up and leaves the moment a destroy of it
-// succeeds; the destroy is its tombstone line in the retired strip. Dead attempts (a build
-// that never came up, an old failed scrim) are history and live on /runs.
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 import TopNav from '../components/Nav'
-import { Button, Card, ErrorBanner } from '../components/ui'
-import { EmptyState, Icon, PageHeader, agoMs, fmtSpan, toMs, useTick } from '../components/kit'
-import { ACTION_LABEL, NewRunModal, StageStrip, useRunEvents } from '../components/runui'
+import { Button, Card, ErrorBanner, SearchInput } from '../components/ui'
+import { EmptyState, Icon, agoMs, useSlashFocus, useTick } from '../components/kit'
+import { ACTION_LABEL, NewRunModal } from '../components/runui'
+import { filterCounts, filterRanges, rangeIssues, rangeStatus, rangeTitle, shortRangeId } from '../rangeView'
 
-// ── one range card ─────────────────────────────────────────────────────────────────────────
+const TONE = { danger: 'text-danger', active: 'text-accent', ok: 'text-fg', muted: 'text-muted' }
+const DOT = { danger: 'bg-danger', active: 'animate-pulse bg-accent', ok: 'bg-accent', muted: 'bg-line' }
+const LINK_LABEL = { scoreboard: 'Scoreboard', admin: 'Admin', portal: 'Team portal' }
 
-function RangeCard({ range, comp }) {
-  const run = range.runs?.[0] // the store returns newest first
-  const running = !!run && ['running', 'queued', 'pausing', 'paused'].includes(run.state)
-  // Only a live run's clock moves; a finished card needs a nudge just for its relative times.
-  useTick(running ? 1000 : 60000)
-  const [stageEvents, setStageEvents] = useState([])
-  // No stream for a terminal run: its history is already in the store, so SSE would cost a
-  // connection and a render per second per long-dead card.
-  useRunEvents(run?.id, (ev) => {
-    if (ev.kind === 'stage') setStageEvents((s) => (s.some((x) => x.seq === ev.seq) ? s : [...s, ev]))
-  }, running)
-
-  // Past stage events (for per-stage elapsed) come from the cursor endpoint; the live ones
-  // arrive over SSE.
-  useEffect(() => {
-    if (!run) return
-    setStageEvents([])
-    api.runEvents(run.id, 0)
-      .then((r) => setStageEvents((r.events || []).filter((e) => e.kind === 'stage')))
-      .catch(() => {})
-  }, [run?.id])
-
-  const started = run && (run.started_at || run.created_at)
-  const meta = run && [run.id, run.engine_ref || 'estate-v0.3.0', `started ${agoMs(started) || '—'}`, `elapsed ${fmtSpan(started, run.ended_at)}`]
-  const why = run?.state === 'failed' && (run.error ? String(run.error) : `rc ${run.returncode ?? '—'}`)
-  // teardown_failed is the board's one card that needs a human: the estate's own machines
-  // are gone but something survived the destroy, so it must not wear a healthy range's chip.
-  const chip = range.state === 'live' ? 'bg-accent-soft text-accent'
-    : range.state === 'teardown_failed' ? 'bg-danger-soft text-danger' : 'bg-sunken text-muted'
-
+function RangeRow({ range }) {
+  const status = rangeStatus(range)
+  // The status line already names the problem it came from; list only the others.
+  const issues = rangeIssues(range).filter((issue) => issue.message !== status.issue?.message && !(status.kind === 'requests' && issue.kind === 'requests'))
+  const others = (range.active_runs || []).slice(1)
+  const latest = range.latest_run
+  const links = Object.entries(range.links || {}).filter(([name]) => LINK_LABEL[name])
   return (
-    <Card className="rise flex h-full flex-col p-7">
+    <article className="range-row">
       <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2.5">
-          <Link to={`/c/${range.comp_id}`} className="min-w-0 truncate text-lg font-semibold transition hover:text-accent">
-            {comp?.name || range.comp_id}
-          </Link>
-          <span className={`chip px-2.5 py-1 ${chip}`}>{range.state.replace('_', ' ')}</span>
-          <span className="chip bg-sunken px-2.5 py-1 font-mono text-muted">
-            {ACTION_LABEL[run?.action] || run?.action || '—'}
-          </span>
+        <Link to={`/ranges/${range.id}`} className="text-lg font-semibold tracking-tight hover:text-accent">{rangeTitle(range)}</Link>
+        <div className="mt-1 flex flex-wrap gap-x-3 text-xs text-faint">
+          {range.name && range.name !== range.comp_id && <span className="font-mono">{range.comp_id}</span>}
+          <span>{range.deployed_at ? `deployed ${agoMs(range.deployed_at)}` : 'deploy time not recorded'}</span>
         </div>
-        {meta && <div className="mt-1 truncate font-mono text-xs text-faint" title={meta.join(' · ')}>{meta.join(' · ')}</div>}
       </div>
-
-      {/* A fixed floor makes a live run's expanded strip and a finished run's collapsed bar
-          the same height, so every card in the grid matches. */}
-      <div className="mt-5 min-h-[5.5rem]">
-        {run
-          ? <StageStrip action={run.action} stage={run.stage} state={run.state} endedAt={run.ended_at}
-              stageEvents={stageEvents} />
-          : <div className="text-xs text-faint">No runs recorded for this range</div>}
-        {why && <div className="mt-1 truncate text-xs text-danger" title={why}>{why}</div>}
-      </div>
-
-      {/* teams comes from the range's own deploy params, not the latest run's form defaults —
-          a destroy's params carry no teams and would read as "—". */}
-      <div className="mb-5 mt-4 flex items-center gap-4 text-xs text-muted">
-        <span className="flex items-center gap-1.5">
-          <Icon name="boxes" className="h-3.5 w-3.5 text-faint" />
-          <b className="font-semibold tabular-nums">{range.teams ?? '—'}</b> team{Number(range.teams) === 1 ? '' : 's'}
-          {' · '}<b className="font-semibold tabular-nums">{comp?.boxes ?? '—'}</b> boxes
-          {' · '}<b className="font-semibold tabular-nums">{comp?.services ?? '—'}</b> services
-        </span>
-        {running && <span className="ml-auto h-2 w-2 shrink-0 animate-pulse rounded-full bg-accent" title="The latest run is running" />}
-      </div>
-
-      {run && (
-        <Link to={`/c/${range.comp_id}/runs/${run.id}`}
-          className={`btn mt-auto w-full ${range.state === 'teardown_failed' ? 'btn-danger' : 'btn-primary'}`}>
-          <Icon name="overview" />Open run
+      <div className="min-w-0">
+        <Link to={status.to} className={`inline-flex items-center gap-2 text-sm font-semibold hover:underline ${TONE[status.tone]}`}>
+          <span className={`h-2 w-2 shrink-0 rounded-full ${DOT[status.tone]}`} />{status.label}
         </Link>
-      )}
-    </Card>
+        <div className="pl-4">
+          {(status.detail || status.issue?.message) && <p className="mt-0.5 break-words text-xs text-muted">{status.detail || status.issue.message}</p>}
+          {!!issues.length && <ul className="mt-1 space-y-0.5 text-xs text-danger">{issues.map((issue, index) => <li key={`${issue.kind}-${index}`}>{issue.message}</li>)}</ul>}
+          {others.map((run) => <p key={run.id} className="mt-0.5 text-xs text-muted">Also: {ACTION_LABEL[run.action] || run.action} · {run.state}</p>)}
+          {!range.active_runs?.length && latest && status.tone !== 'danger' && (
+            <p className="mt-0.5 text-xs text-faint">Last: {ACTION_LABEL[latest.action] || latest.action} {latest.state} · {agoMs(latest.ended_at || latest.created_at)}</p>
+          )}
+        </div>
+      </div>
+      <div className="flex gap-5 text-sm">
+        <span><b className="tabular-nums">{range.counts?.teams ?? '—'}</b> <span className="text-muted">teams</span></span>
+        <span><b className="tabular-nums">{range.counts?.boxes ?? '—'}</b> <span className="text-muted">boxes</span></span>
+      </div>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs lg:justify-end">
+        {links.length ? links.map(([name, url]) => (
+          <a key={name} href={url} target="_blank" rel="noopener noreferrer" className="font-medium text-accent hover:underline">{LINK_LABEL[name]} ↗</a>
+        )) : <span className="text-faint">No engine address recorded</span>}
+      </div>
+    </article>
   )
 }
 
-// ── page ───────────────────────────────────────────────────────────────────────────────────
-
 export default function Live() {
   const [ranges, setRanges] = useState(null)
-  const [comps, setComps] = useState(null)
-  const [err, setErr] = useState(null)
-  const [newRun, setNewRun] = useState(false)
-  const refresh = useCallback(async () => {
-    try { setRanges(await api.ranges()); setErr(null) } catch (e) { setErr(e) }
-  }, [])
+  const [comps, setComps] = useState([])
+  const [error, setError] = useState(null)
+  const [updated, setUpdated] = useState(null)
+  const [attempt, setAttempt] = useState(0)
+  const [query, setQuery] = useState('')
+  const [filter, setFilter] = useState('all')
+  const [deploy, setDeploy] = useState(false)
+  const search = useRef(null)
+  useSlashFocus(search)
+  useTick(10000)
   useEffect(() => {
+    let active = true
+    let busy = false
+    const refresh = async () => {
+      if (busy) return
+      busy = true
+      try {
+        const data = await api.rangeBoard()
+        if (active) { setRanges(data); setError(null); setUpdated(Date.now()) }
+      } catch (err) { if (active) setError(err) }
+      finally { busy = false }
+    }
     refresh()
-    const t = setInterval(refresh, 10000)
-    return () => clearInterval(t)
-  }, [refresh])
-  // Names and specs don't change while the board is open — one fetch, not one per poll.
+    const timer = setInterval(refresh, 10000)
+    return () => { active = false; clearInterval(timer) }
+  }, [attempt])
   useEffect(() => { api.comps().then(setComps).catch(() => {}) }, [])
-
-  const compMap = Object.fromEntries((comps || []).map((c) => [c.id, c]))
-  // An incomplete teardown is the one card that needs a human, so it floats above the healthy
-  // ones; the API's newest-activity order holds within each group (Array.sort is stable).
-  const cards = (ranges || []).filter((r) => r.live)
-    .sort((a, b) => (b.state === 'teardown_failed') - (a.state === 'teardown_failed'))
-  const retired = (ranges || []).filter((r) => r.state === 'retired')
-    .sort((a, b) => (toMs(b.retired_at) || 0) - (toMs(a.retired_at) || 0))
-  const up = cards.filter((r) => r.state === 'live').length
-  const building = cards.filter((r) => r.state === 'building').length
-  const dirty = cards.filter((r) => r.state === 'teardown_failed').length
-  // A failed teardown is not "up" — it is counted on its own so the header never reads as
-  // health. Zero counts drop out: "2 building" beats "0 ranges up · 2 building" when the
-  // board below shows exactly those two building cards.
-  const parts = [
-    up ? `${up} range${up === 1 ? '' : 's'} up` : '',
-    building ? `${building} building` : '',
-    dirty ? `${dirty} teardown${dirty === 1 ? '' : 's'} failed` : '',
-  ].filter(Boolean)
-  const sub = parts.join(' · ') || 'nothing on the board'
+  useEffect(() => { document.title = 'Active ranges · tezcatlipoca' }, [])
+  const counts = filterCounts(ranges || [])
+  const visible = filterRanges(ranges || [], query, filter)
+  const retired = (ranges || []).filter((range) => range.state === 'retired')
 
   return (
-    <div className="mx-auto max-w-6xl px-8 py-10">
+    <main className="range-container">
       <TopNav />
-      <PageHeader title="Active ranges"
-        sub={ranges ? sub : undefined}
-        actions={<Button variant="primary" onClick={() => setNewRun(true)}><Icon name="plus" />New run</Button>} />
-      <ErrorBanner error={err} />
-      {!ranges && !err && <div className="grid auto-rows-fr grid-cols-1 gap-6 xl:grid-cols-2">{[0, 1].map((i) => <div key={i} className="panel h-72 animate-pulse opacity-60" />)}</div>}
-      {ranges && !cards.length && (
-        <EmptyState icon="rocket" title="No active ranges"
-          action={<Button variant="primary" onClick={() => setNewRun(true)}><Icon name="plus" />New run</Button>}>
-          A range boards here while it builds and while it is up, and leaves when a destroy of it succeeds.
-        </EmptyState>
-      )}
-      <div className="grid auto-rows-fr grid-cols-1 gap-6 xl:grid-cols-2">
-        {cards.map((r) => <RangeCard key={r.key} range={r} comp={compMap[r.comp_id]} />)}
-      </div>
-      {!!retired.length && (
-        <div className="mt-10">
-          <h2 className="label">Recently retired</h2>
-          <ul className="space-y-1.5">
-            {retired.slice(0, 5).map((r) => (
-              <li key={r.key}>
-                <Link to={r.retired_by ? `/c/${r.comp_id}/runs/${r.retired_by}` : `/c/${r.comp_id}`}
-                  className="flex items-baseline gap-3 text-xs text-faint transition hover:text-accent">
-                  <span className="w-64 min-w-0 shrink truncate">{compMap[r.comp_id]?.name || r.comp_id}</span>
-                  <span className="shrink-0 font-mono">{r.retired_by || '—'}</span>
-                  <span className="shrink-0">{agoMs(r.retired_at) || '—'}</span>
-                </Link>
-              </li>
-            ))}
-          </ul>
-          {retired.length > 5 && <div className="mt-1.5 text-xs text-faint">+{retired.length - 5} more</div>}
+      <header className="mb-6 flex flex-wrap items-end justify-between gap-5">
+        <div>
+          <h1 className="display text-4xl sm:text-5xl">Active ranges</h1>
+          <p className="mt-2 text-sm text-muted">Problems first, then ranges with operations in progress.</p>
         </div>
-      )}
-      <NewRunModal open={newRun} onClose={() => setNewRun(false)} comps={comps}
-        onSubmitted={() => { setErr(null); refresh() }} />
-    </div>
+        <Button variant="primary" onClick={() => setDeploy(true)}><Icon name="plus" />Deploy range</Button>
+      </header>
+      <ErrorBanner error={error} onRetry={() => setAttempt((n) => n + 1)} />
+      <Card className="overflow-hidden !rounded-3xl">
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-line p-4 sm:px-6">
+          <div className="flex flex-wrap gap-1" aria-label="Filter ranges">{[['all', 'All active'], ['attention', 'Needs attention'], ['operating', 'Operating']].map(([value, label]) => (
+            <button key={value} onClick={() => setFilter(value)} aria-pressed={filter === value} aria-label={label}
+              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-xs font-semibold ${filter === value ? 'bg-accent-soft text-accent' : 'text-muted hover:bg-sunken'}`}>
+              {label}
+              {ranges && <span className={`tabular-nums ${value === 'attention' && counts.attention ? 'text-danger' : 'text-faint'}`}>{counts[value]}</span>}
+            </button>
+          ))}</div>
+          <SearchInput value={query} onChange={setQuery} inputRef={search} placeholder="Search ranges, nodes, addresses…" hotkey="/" className="w-full sm:w-80" />
+        </div>
+        <div className="range-row-head hidden border-b border-line px-6 py-3 text-[10px] font-semibold uppercase tracking-widest text-faint lg:grid"><span>Range</span><span>Status</span><span>Recorded size</span><span className="text-right">Open</span></div>
+        {!ranges && !error && <div className="p-10 text-sm text-muted" role="status">Loading ranges…</div>}
+        {ranges && !visible.length && <EmptyState icon="boxes" title={counts.all ? 'No matching ranges' : 'No active ranges'}>{counts.all ? 'Try a different search or filter.' : 'Deploy a range to begin. Past operations remain available in Runs.'}</EmptyState>}
+        {visible.map((range) => <RangeRow key={range.id} range={range} />)}
+      </Card>
+      <p className="mt-4 text-xs text-faint">{error && updated ? 'Refresh failed. Showing saved results. ' : ''}{updated ? `Fetched ${agoMs(updated)}. ` : ''}Status and counts are recorded workspace state; open a range for live scoring status.</p>
+      {!!retired.length && <details className="mt-9">
+        <summary className="cursor-pointer text-sm font-medium text-muted">Retired ranges <span className="ml-2 text-faint">{retired.length}</span></summary>
+        <div className="mt-3 divide-y divide-line">{retired.map((range) => <Link key={range.id} to={`/ranges/${range.id}`} className="flex flex-wrap items-center gap-x-5 gap-y-1 py-3 text-sm hover:text-accent"><span>{rangeTitle(range)}</span><span className="font-mono text-xs text-faint">{shortRangeId(range)}</span><span className="ml-auto text-xs text-faint">{agoMs(range.latest_run?.ended_at)}</span></Link>)}</div>
+      </details>}
+      <NewRunModal open={deploy} onClose={() => setDeploy(false)} comps={comps} allowedActions={['deploy']} initial={{ action: 'deploy' }} onSubmitted={() => setAttempt((n) => n + 1)} />
+    </main>
   )
 }

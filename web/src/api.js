@@ -25,7 +25,9 @@ async function request(method, path, body) {
     if (res.status === 401) window.dispatchEvent(new CustomEvent('tez-unauthorized'))
     const d = data?.detail
     const msg = Array.isArray(d) ? d.map((e) => `${(e.loc || []).join('.')}: ${e.msg}`).join('\n') : d
-    throw new Error(msg ? String(msg) : `${res.status} ${res.statusText}`)
+    const error = new Error(msg ? String(msg) : `${res.status} ${res.statusText}`)
+    error.status = res.status
+    throw error
   }
   return data
 }
@@ -59,6 +61,8 @@ export const api = {
 
   // Ranges: one entry per range workspace, live while its infrastructure is up.
   ranges: () => request('GET', '/ranges'),
+  rangeBoard: () => request('GET', '/ranges/board'),
+  range: (id) => request('GET', `/ranges/${enc(id)}`),
   // One range's competition lifecycle (the management panel's payload).
   competition: (rangeKey) => request('GET', `/competition?range=${enc(rangeKey)}`),
 

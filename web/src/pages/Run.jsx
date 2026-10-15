@@ -1,13 +1,13 @@
 // One run's page, mounted under the competition shell (/c/:id/runs/:run): identity header,
 // a sourced "General" panel (phase display, facts, actions), this run's own timeline and
 // log, its teams and infrastructure, and the evidence it produced. /scrims/:id redirects here.
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, Navigate, useParams } from 'react-router-dom'
 import { api } from '../api'
 import { Button, Card, ErrorBanner, SearchInput, Spinner } from '../components/ui'
 import { Crumbs, Icon, agoMs, fmtSpan, toMs, useTick, useToast } from '../components/kit'
 import {
-  ACTION_LABEL, ArtifactPreview, LogView, NewRunModal, ResetBoxModal, StageStrip, StatePill,
+  ACTION_LABEL, ArtifactPreview, LogView, NewRunModal, ResetBoxModal, StageStrip, StatePill, eventText,
   useRunActions, useRunEvents, useRunLog,
 } from '../components/runui'
 import RunTeams from '../components/RunTeams'
@@ -66,19 +66,17 @@ function CopyPath({ path }) {
 
 // Lifecycle + stage events as a rail — the raw event dump read as a sequence, each entry
 // stamped with its offset from the run's start.
-function Timeline({ events, start }) {
+export function Timeline({ events = [], start }) {
   if (!events.length) return <p className="text-xs text-faint">Waiting for the run's first event.</p>
   return (
     <ol className="relative space-y-3 border-l-2 border-line pl-4">
       {events.map((ev) => {
-        const d = ev.data
-        const text = typeof d === 'string' ? d
-          : d?.error || d?.message || d?.text || (Array.isArray(d?.cmd) ? d.cmd.join(' ') : '')
+        const text = eventText(ev)
         return (
           <li key={ev.seq} className="relative">
             <span className={`absolute -left-[21px] top-1.5 h-2 w-2 rounded-full ${ev.kind === 'stage' ? 'bg-accent' : 'bg-line'}`} />
             <div className="flex items-baseline gap-2 text-xs">
-              <span className="min-w-0 truncate font-semibold text-fg" title={ev.stage}>{ev.stage || d?.state || ev.kind}</span>
+              <span className="min-w-0 truncate font-semibold text-fg" title={ev.stage}>{ev.stage || ev.state || ev.data?.state || ev.kind}</span>
               <span className="ml-auto shrink-0 font-mono tabular-nums text-faint">{start && ev.ts ? `+${fmtSpan(start, ev.ts)}` : ''}</span>
             </div>
             <div className="font-mono text-[10px] text-faint">
@@ -94,8 +92,8 @@ function Timeline({ events, start }) {
 
 // The engine log renders through the shared LogView (ANSI colors, folded repeats, log
 // search, exact phase jumps); this wrapper only carries the panel caption.
-function Output({ log }) {
-  return <LogView log={log} height="50vh" showPhases />
+export function Output({ log, height = '50vh', showPhases = true }) {
+  return <LogView log={log} height={height} showPhases={showPhases} />
 }
 
 const fmtBytes = (n) => (n == null ? '' : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`)
@@ -132,8 +130,9 @@ function FileGroups({ rows, group, onPreview, onDownload }) {
                   <span className="ml-auto shrink-0 tabular-nums text-faint">{fmtBytes(r.bytes)}</span>
                 </button>
                 <button onClick={() => onDownload(r.path, base(r.path))} title={`Download ${rel(r.path)}`}
-                  className="shrink-0 rounded-lg px-1.5 py-0.5 text-[11px] text-faint opacity-0 transition hover:text-accent group-hover:opacity-100">
-                  ↓
+                  aria-label={`Download ${r.path}`}
+                  className="shrink-0 rounded-lg px-2 py-1 text-[11px] text-muted transition hover:bg-sunken hover:text-accent focus-visible:outline focus-visible:outline-accent">
+                  Download
                 </button>
               </li>
             ))}
@@ -144,33 +143,57 @@ function FileGroups({ rows, group, onPreview, onDownload }) {
   )
 }
 
-function Evidence({ runId }) {
+// runId selects the API workspace; range opts into the whole range's evidence tree.
+// Directory names are descriptive labels, never assumed to be valid dashboard run IDs.
+export function Evidence({ runId, range }) {
   const [rows, setRows] = useState(null)
   const [err, setErr] = useState(null)
   const [q, setQ] = useState('')
   const [preview, setPreview] = useState(null)
+  const [attempt, setAttempt] = useState(0)
   useEffect(() => {
-    setRows(null); setErr(null)
-    api.runArtifacts(runId).then(setRows).catch(setErr)
-  }, [runId])
-  if (err) return <ErrorBanner error={err} />
-  if (!rows) return <div className="flex justify-center p-10"><Spinner /></div>
-  // The evidence root belongs to the whole workspace, so a path's first segment is the run
-  // that produced it — a run page must never present another run's files as its own.
+    let active = true, pending = false
+    setRows(null); setErr(null); setPreview(null)
+    if (!runId) return () => { active = false }
+    const load = async () => {
+      if (pending) return
+      pending = true
+      try {
+        const files = await api.runArtifacts(runId)
+        if (active) { setRows(files); setErr(null) }
+      } catch (e) { if (active) setErr(e) }
+      finally { pending = false }
+    }
+    void load()
+    const timer = setInterval(load, 10000)
+    return () => { active = false; clearInterval(timer) }
+  }, [runId, attempt])
+  if (!runId) return <p className="text-sm text-faint">No run is available to read this workspace's evidence.</p>
+  if (!rows) return err
+    ? <ErrorBanner error={err} onRetry={() => setAttempt((a) => a + 1)} />
+    : <div className="flex justify-center p-10"><Spinner /></div>
+  const rangeMode = !!range
   const filtered = q.trim() ? rows.filter((r) => r.path.toLowerCase().includes(q.trim().toLowerCase())) : rows
-  const groups = {}
-  filtered.forEach((r) => { (groups[r.path.split('/')[0]] ||= []).push(r) })
-  const mine = groups[runId] || []
-  const others = Object.entries(groups).filter(([g]) => g !== runId)
+  const groups = new Map()
+  filtered.forEach((r) => {
+    const group = r.path.includes('/') ? r.path.split('/')[0] : ''
+    if (!groups.has(group)) groups.set(group, [])
+    groups.get(group).push(r)
+  })
+  const mine = groups.get(runId) || []
+  const others = [...groups].filter(([g]) => g !== runId)
   // The API needs the bearer header, so a row fetches the file and hands the blob to the browser.
   const grab = async (path, name) => {
     try {
       const blob = await api.runArtifactFile(runId, path)
       const a = document.createElement('a')
-      a.href = URL.createObjectURL(blob)
+      const url = URL.createObjectURL(blob)
+      a.href = url
       a.download = name
+      document.body.appendChild(a)
       a.click()
-      URL.revokeObjectURL(a.href)
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
     } catch (e) { setErr(e) }
   }
   // Browsers throttle programmatic downloads; a small gap keeps "download all" from dropping
@@ -184,33 +207,41 @@ function Evidence({ runId }) {
   const totalFiles = filtered.length
   return (
     <div className="rise space-y-6 pb-6">
+      <ErrorBanner error={err} onRetry={() => setAttempt((a) => a + 1)} />
       <Card className="p-6">
         <div className="mb-4 flex flex-wrap items-center gap-3">
-          <h2 className="label !mb-0">This run</h2>
-          <span className="font-mono text-[11px] text-faint">{mine.length} file{mine.length === 1 ? '' : 's'}</span>
+          <h2 className="label !mb-0">{rangeMode ? 'Range evidence' : 'This run'}</h2>
+          <span className="font-mono text-[11px] text-faint">{rangeMode ? filtered.length : mine.length} files</span>
           <div className="ml-auto flex items-center gap-2">
             <SearchInput value={q} onChange={setQ} placeholder="Filter by path" className="w-56" />
-            {mine.length > 1 && !q.trim() && (
-              <Button onClick={() => grabAll(mine)}><Icon name="packet" />Download all</Button>
+            {(rangeMode ? filtered : mine).length > 1 && (
+              <Button onClick={() => grabAll(rangeMode ? filtered : mine)}><Icon name="packet" />{q.trim() ? 'Download matching' : 'Download all'}</Button>
             )}
           </div>
         </div>
         {totalFiles !== rows.length && (
           <p className="mb-3 text-xs text-faint">{totalFiles} of {rows.length} files match “{q.trim()}”.</p>
         )}
-        {mine.length
+        {rangeMode ? (
+          groups.size ? <div className="space-y-6">{[...groups].map(([g, list]) => (
+            <section key={g}>
+              <h3 className="mb-2 break-all font-mono text-xs font-semibold text-muted">{g || 'Workspace root'} · {list.length} files</h3>
+              <FileGroups rows={list} group={g} onPreview={(p) => setPreview({ path: p })} onDownload={grab} />
+            </section>
+          ))}</div> : <p className="text-sm text-faint">{q.trim() ? 'No evidence files match this filter.' : 'No evidence collected in this workspace yet.'}</p>
+        ) : mine.length
           ? <FileGroups rows={mine} group={runId} onPreview={(p) => setPreview({ path: p })} onDownload={grab} />
-          : <p className="text-sm text-faint">No evidence collected for <span className="font-mono">{runId}</span> yet — teardown copies a run's evidence into the workspace's <span className="font-mono">.automated-tests/</span> folder.</p>}
+          : <p className="text-sm text-faint">No evidence directory named <span className="font-mono">{runId}</span> yet. Workspace directories below may use engine-generated names rather than dashboard run IDs.</p>}
       </Card>
-      {others.length > 0 && (
+      {!rangeMode && others.length > 0 && (
         <Card className="p-6">
           <details>
-            <summary className="cursor-pointer text-sm font-semibold text-muted">Other runs' evidence in this workspace ({others.length})</summary>
+            <summary className="cursor-pointer text-sm font-semibold text-muted">Other evidence directories in this workspace ({others.length})</summary>
             <div className="mt-4 space-y-6">
               {others.map(([g, list]) => (
                 <div key={g}>
                   <div className="mb-2 flex items-baseline gap-2 font-mono text-xs font-semibold text-muted">
-                    {g} <span className="text-faint">· {list.length}</span>
+                    {g || 'Workspace root'} <span className="text-faint">· {list.length}</span>
                     {list.length > 1 && (
                       <button onClick={() => grabAll(list)} className="ml-auto text-[11px] font-normal text-faint underline-offset-2 transition hover:text-accent hover:underline">
                         download all
@@ -242,22 +273,41 @@ export default function Run() {
   const [newRun, setNewRun] = useState(false)
   const [resetBox, setResetBox] = useState(null) // null = closed, {} | {team} = prefill
   const log = useRunLog(id)
+  const refresh = useRef(null)
   useTick(1000)
-  const reload = () => api.run(id).then(setRun).catch(() => {})
-  const { submit, destroy, cancel, pause, resume, live, held, canPause } = useRunActions(run, reload)
+  const reload = () => refresh.current?.()
+  const { submit, destroy, cancel, pause, resume, live, held, canPause } = useRunActions(run, reload, inventory?.range)
+  useEffect(() => { setEvents([]) }, [id])
   const { updated, live: streamLive } = useRunEvents(id, (ev) => {
     setEvents((e) => (e.some((x) => x.seq === ev.seq) ? e : [...e, ev].sort((a, b) => (a.seq || 0) - (b.seq || 0))))
     reload()
   })
 
   useEffect(() => {
-    setRun(null); setComp(null); setInventory(null); setEvents([]); setErr(null)
-    api.run(id)
-      .then((r) => { setRun(r); api.comp(r.comp_id).then(setComp).catch(() => {}) })
-      .catch(setErr)
-    api.runInventory(id).then(setInventory).catch(() => {})
-    api.runEvents(id, 0).then((r) => setEvents(r.events || [])).catch(() => {})
+    let active = true, pending = null
+    setRun(null); setComp(null); setInventory(null); setErr(null)
+    const load = () => {
+      if (pending) return pending
+      pending = Promise.all([
+        api.run(id).then((r) => { if (active) { setRun(r); setErr(null) } })
+          .catch((e) => { if (active) setErr(e) }),
+        api.runInventory(id).then((r) => { if (active) setInventory(r) }).catch(() => {}),
+      ]).finally(() => { pending = null })
+      return pending
+    }
+    refresh.current = load
+    void load()
+    // Range inventory changes during deploy/teardown AND during follow-up runs, even
+    // when this diagnostic run is terminal. Do not leave it frozen at the first fetch.
+    const timer = setInterval(load, 5000)
+    return () => { active = false; refresh.current = null; clearInterval(timer) }
   }, [id, attempt])
+  useEffect(() => {
+    if (!run?.comp_id) return
+    let active = true
+    api.comp(run.comp_id).then((c) => { if (active) setComp(c) }).catch(() => {})
+    return () => { active = false }
+  }, [run?.comp_id])
   useEffect(() => {
     document.title = run
       ? `${comp?.name || run.comp_id} · ${ACTION_LABEL[run.action] || run.action} · tezcatlipoca`
@@ -323,6 +373,7 @@ export default function Run() {
           </Link>
           <span className="chip shrink-0 bg-sunken px-2.5 py-1 font-mono text-muted">{ACTION_LABEL[run.action] || run.action}</span>
           <StatePill state={run.state} />
+          {range?.id && <Link to={`/ranges/${range.id}`} className="ml-auto shrink-0 text-sm font-semibold text-accent hover:underline">Open range</Link>}
           {range?.state === 'teardown_failed' && (
             <span className="chip shrink-0 bg-danger-soft px-2.5 py-1 text-danger" title="The estate's own machines are gone, but a VM it never owned survived">range teardown failed</span>
           )}
@@ -344,8 +395,9 @@ export default function Run() {
       {tab === 'overview' && (
         <>
           <CompetitionPanel
-            rangeKey={run.params?._destroy_comp_dir || (run.run_dir ? `${run.run_dir}/comp` : '')}
-            show={['succeeded', 'failed', 'cancelled'].includes(run.state)} />
+            rangeKey={range?.key || run.params?.comp_dir || run.params?._destroy_comp_dir || (run.run_dir ? `${run.run_dir}/comp` : '')}
+            compId={range?.comp_id || run.comp_id} engineRef={range?.engine_ref || run.engine_ref}
+            onChanged={reload} show={['succeeded', 'failed', 'cancelled'].includes(run.state)} />
           <Card className="p-6">
             <h2 className="label !mb-3">General</h2>
             <div className="min-h-[5.5rem]">
@@ -411,13 +463,13 @@ export default function Run() {
       {tab === 'infrastructure' && <RunInfra run={run} comp={comp} inventory={inventory} />}
       {tab === 'evidence' && <Evidence runId={id} />}
 
-      <NewRunModal open={newRun} onClose={() => setNewRun(false)} comps={comps}
+      <NewRunModal open={newRun} onClose={() => setNewRun(false)} comps={comps} allowedActions={['deploy']}
         initial={{
           comp_id: run.comp_id, action: 'deploy', engine_ref: run.engine_ref || 'estate-v0.3.0',
           teams: range?.teams ?? run.params?.teams ?? 2, scoring_vmid: run.params?.scoring_vmid ?? '',
         }}
         onSubmitted={reload} />
-      <ResetBoxModal open={resetBox !== null} onClose={() => setResetBox(null)} run={run}
+      <ResetBoxModal open={resetBox !== null} onClose={() => setResetBox(null)} run={run} range={range}
         teams={inventory?.teams} initial={resetBox || {}} onSubmitted={reload} />
     </div>
   )

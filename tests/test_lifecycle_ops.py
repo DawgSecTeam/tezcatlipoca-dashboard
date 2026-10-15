@@ -150,6 +150,61 @@ def test_approve_submits_the_reset_against_the_range_and_links_the_run(api):
     assert resolved.status_code == 409
 
 
+def test_approval_preserves_requested_team_workspace_and_origin_ref(api, monkeypatch):
+    http, tmp_path = api
+    store = Store(tmp_path / "data" / "dashboard.sqlite3")
+    captured = {}
+
+    def capture(self, comp_id, action, ref, params):
+        captured.update(comp_id=comp_id, action=action, ref=ref, params=params)
+        return {"id": "run-reset", "params": params}
+
+    monkeypatch.setattr(RunManager, "submit", capture)
+    original = tmp_path / "runs" / "run-original"
+    workspace = str(original / "comp")
+    store.create_run("run-original", "comp-a", "deploy", "original-sha", {"teams": 3},
+                     original, original / "run.log")
+    # A newer range of the same competition must not supply the ref or reset target.
+    newer = tmp_path / "runs" / "run-newer"
+    store.create_run("run-newer", "comp-a", "deploy", "different-sha", {"teams": 2},
+                     newer, newer / "run.log")
+    followup = tmp_path / "runs" / "run-verify"
+    store.create_run("run-verify", "comp-a", "verify", "followup-sha",
+                     {"_destroy_comp_dir": workspace}, followup, followup / "run.log")
+    token = store.mint_range_token(workspace, "comp-a")
+    _push(http, token, [{"id": 1, "team": "team3", "box": "dc01"}])
+    req = store.list_requests()[0]
+    assert http.post(f"/api/requests/{req['id']}/approve").status_code == 200
+    assert captured == {"comp_id": "comp-a", "action": "redeploy", "ref": "original-sha",
+                        "params": {"mode": "reset", "boxes": "dc01", "teams": "team3",
+                                   "comp_dir": workspace}}
+    cmd = build_command("redeploy", "comp-a", workspace, captured["params"])
+    assert cmd[cmd.index("--teams") + 1] == "team3"
+    assert cmd[cmd.index("--boxes") + 1] == "dc01"
+
+
+def test_empty_reset_team_cannot_expand_to_a_whole_range(api):
+    http, tmp_path = api
+    store = Store(tmp_path / "data" / "dashboard.sqlite3")
+    token = store.mint_range_token("/data/runs/run-deploy/comp", "comp-a")
+    _push(http, token, [{"id": 1, "team": "", "box": "web01"}])
+    req = store.list_requests()[0]
+    assert http.post(f"/api/requests/{req['id']}/approve").status_code == 409
+    assert store.get_request(req["id"])["status"] == "pending"
+
+
+def test_submit_explicit_target_cannot_cross_competitions_or_internal_override(tmp_path, monkeypatch):
+    mgr, store = _manager(tmp_path, monkeypatch)
+    other = tmp_path / "runs" / "run-other"
+    store.create_run("run-other", "other-comp", "deploy", "main", {}, other, other / "run.log")
+    for action in ("destroy", "redeploy", "start", "scrim"):
+        with pytest.raises(RunRefused, match="does not belong"):
+            mgr.submit("comp-a", action, "main", {"comp_dir": str(other / "comp")})
+    # An external caller cannot inject the manager-owned target to bypass resolution.
+    run = mgr.submit("comp-a", "start", "main", {"_destroy_comp_dir": str(other / "comp")})
+    assert run["params"]["_destroy_comp_dir"].endswith("run-deploy/comp")
+
+
 def test_deny_and_the_api_surface_needs_the_bearer(api, monkeypatch):
     http, tmp_path = api
     monkeypatch.setenv("TEZ_DASHBOARD_TOKENS", "ui=tok")
