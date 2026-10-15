@@ -9,7 +9,7 @@ on; a deploy/scrim run's own workspace is `<run_dir>/comp` (see runner._range_wo
 import hashlib
 from pathlib import Path
 
-from dashboard import estate
+from dashboard import comps_api, estate
 
 IN_FLIGHT = ("queued", "running", "pausing", "paused")
 
@@ -61,10 +61,11 @@ def retired_by(runs):
                  if r["action"] in ("destroy", "scrim") and r["returncode"] == 0), None)
 
 
-def range_state(key, runs):
+def range_state(key, runs, recorded=None):
     if any(r["state"] in IN_FLIGHT for r in runs):
         return "building"
-    if has_vms(key):
+    recorded = has_vms(key) if recorded is None else recorded
+    if recorded:
         return "live"
     if retired_by(runs):
         return "retired"
@@ -80,13 +81,17 @@ def range_view(key, runs):
     origin = next((r for r in runs if r["action"] in ("deploy", "scrim")
                    and str((Path(r["run_dir"]) / "comp").resolve()) == key), None)
     retiring = retired_by(runs)
-    state = range_state(key, runs)
+    recorded = has_vms(key)
+    state = range_state(key, runs, recorded)
     return {
         "id": range_id(key),
         "key": key,
         "comp_id": runs[0]["comp_id"],
         "state": state,
         "live": state in ("building", "live", "teardown_failed"),
+        # The recorded infrastructure is what the range's engine address and its recovery
+        # actions hang on, so every view of a range carries it.
+        "has_recorded_vms": recorded,
         "retired_by": retiring["id"] if retiring else None,
         "retired_at": retiring["ended_at"] if retiring else None,
         "deploy_run_id": origin["id"] if origin else None,
@@ -151,18 +156,22 @@ def range_summary(rng, inventory, requests):
             nodes.add(row.get("node"))
     origin = origin_run(rng)
     summary = {field: rng[field] for field in ("id", "key", "comp_id", "state", "live",
-                                               "deploy_run_id")}
+                                               "deploy_run_id", "has_recorded_vms")}
     engine_ip = (machines.get("scoring_engine") or {}).get("mgmt_ip") or _engine_ip(rng["key"])
     state = estate.load_flat(rng["key"])
     summary.update({
-        "has_recorded_vms": has_vms(rng["key"]),
         "counts": inventory["counts"],
         "nodes": sorted(node for node in nodes if node),
         "engine_ip": engine_ip,
         "deployed_at": origin.get("created_at") if origin else None,
         # Recorded workspace flags, not an engine observation: the board never polls.
         "event": {flag: bool(state.get(flag)) for flag in ("seeded", "hold_start", "ended")},
-        "links": credentials(state, engine_ip)["links"],
+        # An address recorded in a workspace whose VMs are gone is not a reachable engine:
+        # publishing it as a link is how a torn-down range kept offering a scoreboard.
+        "links": credentials(state, engine_ip if rng["has_recorded_vms"] else None)["links"],
+        # A range outlives its competition's definition: the UI must not link to a page
+        # that only 404s.
+        "comp_defined": (comps_api.COMPS / rng["comp_id"]).is_dir(),
         "degradations": inventory["deploy"]["degradations"],
         "pending_requests": sum(req["status"] == "pending" for req in requests),
         "active_runs": [run_view(run) for run in rng["runs"] if run["state"] in IN_FLIGHT],

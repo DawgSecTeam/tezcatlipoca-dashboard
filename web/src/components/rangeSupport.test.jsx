@@ -139,6 +139,12 @@ it('renders workspace identity and teardown completion without live-power claims
   expect(screen.getByRole('link', { name: 'destroy-a' }).getAttribute('href')).toBe('/ranges/stable-a/activity?operation=destroy-a')
 })
 
+it('warns on the infrastructure tab when a range that still has VMs failed its teardown', () => {
+  open(<RunInfra inventory={inventory} teardownFailed />)
+  expect(screen.getByText(/last teardown did not complete successfully/)).toBeTruthy()
+  expect(screen.getByText(range.key)).toBeTruthy()  // the records stay visible beside the warning
+})
+
 it('splits lifecycle and access sections from one view and links operations inside the range', async () => {
   const { unmount } = open(<CompetitionPanel rangeKey={range.key} rangeId={range.id} compId={range.comp_id} engineRef={range.engine_ref} section="lifecycle" view={{ ...view, links: { scoreboard: 'http://192.0.2.1' } }} />)
   expect(screen.getByRole('button', { name: 'Start the competition' })).toBeTruthy()
@@ -156,6 +162,23 @@ it('splits lifecycle and access sections from one view and links operations insi
 it('keeps shared machines off the teams view when the range page asks', () => {
   open(<RunTeams inventory={{ ...inventory, machines: { scoring_engine: { name: 'engine', vmid: 900 } } }} showMachines={false} />)
   expect(screen.queryByText('Shared machines')).toBeNull()
+})
+
+it('never offers scoring actions on a range whose teardown did not finish', () => {
+  open(<CompetitionPanel rangeKey={range.key} compId={range.comp_id} engineRef={range.engine_ref} section="lifecycle"
+    view={{ ...view, range_state: 'teardown_failed', state: 'ready', links: {} }} />)
+  expect(screen.queryByRole('button', { name: 'Start the competition' })).toBeNull()
+  expect(screen.getByText(/last teardown did not finish/)).toBeTruthy()
+})
+
+it('explains an engine address that belongs to infrastructure the range no longer has', () => {
+  const { unmount } = open(<CompetitionPanel rangeKey={range.key} compId={range.comp_id} engineRef={range.engine_ref} section="access"
+    view={{ ...view, range_state: 'teardown_failed', links: {} }} recorded={false} />)
+  expect(screen.queryByRole('link', { name: /Scoreboard/ })).toBeNull()
+  expect(screen.getByText(/records no infrastructure/)).toBeTruthy()
+  unmount()
+  open(<CompetitionPanel rangeKey={range.key} compId={range.comp_id} engineRef={range.engine_ref} section="access" view={{ ...view, links: {} }} />)
+  expect(screen.getByText('No engine address is recorded.')).toBeTruthy()
 })
 
 it('resolves bell range links via workspace record id and shows approved operation', async () => {

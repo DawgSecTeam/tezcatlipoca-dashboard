@@ -89,7 +89,7 @@ export default function Comps() {
       <TopNav actions={<Button variant="primary" onClick={() => setCreating(true)}><Icon name="plus" />New competition</Button>} />
 
       <div className="rise rise-1 mb-10 text-center">
-        <h1 className="display text-6xl">Competitions</h1>
+        <h1 className="display break-words text-4xl sm:text-6xl">Competitions</h1>
         <p className="mt-3 text-muted">
           {comps ? `${comps.length} competition${comps.length === 1 ? '' : 's'}` : '…'} · author boxes, services and misconfigs, then deploy to Proxmox
         </p>

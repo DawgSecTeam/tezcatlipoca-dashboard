@@ -77,11 +77,17 @@ def credentials(state, engine_ip):
 
 
 def status_for_range(store, rng):
-    """The management panel's payload for one range view (ranges.range_view shape)."""
+    """The management panel's payload for one range view (ranges.range_view shape).
+
+    A workspace that records no VM of its own has no engine to poll and no engine to link
+    to: its recorded address is where the engine used to be, so both are withheld rather
+    than answered with a five-second timeout and a dead scoreboard link.
+    """
     ws = Path(rng["key"])
     state = estate.load_flat(ws)
-    engine = engine_status(ws, state)
-    ip = _engine_ip(ws)
+    recorded = bool(rng.get("has_recorded_vms"))
+    engine = engine_status(ws, state) if recorded else None
+    ip = _engine_ip(ws) if recorded else None
     return {
         "range": rng["key"],
         "comp_id": rng["comp_id"],

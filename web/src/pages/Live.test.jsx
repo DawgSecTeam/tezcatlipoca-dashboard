@@ -27,3 +27,16 @@ it('leads with one status per range, quick access links and counted filters', as
   await waitFor(() => expect(screen.queryByRole('link', { name: '1 reset request pending' })).toBeNull())
   expect(screen.getByRole('link', { name: 'Verifying' })).toBeTruthy()
 })
+
+it('identifies each range and links no engine that is not there', async () => {
+  api.comps.mockResolvedValue([])
+  api.rangeBoard.mockResolvedValue([
+    { id: 'range-x', key: '/w/x', deploy_run_id: 'deploy-x', comp_id: 'same', name: 'Shared competition', live: true, state: 'teardown_failed', has_recorded_vms: false, counts: { teams: 2, boxes: 0 }, nodes: [], engine_ip: '192.0.2.37', active_runs: [], links: {}, deployed_at: Date.now() / 1000 - 300, latest_destroy: { id: 'down-x', action: 'destroy', state: 'failed', returncode: 1 }, latest_run: { id: 'down-x', action: 'destroy', state: 'failed' } },
+  ])
+  render(<MemoryRouter><Live /></MemoryRouter>)
+  // Two ranges of one competition share a Compfile name: the deploy run names the range.
+  expect(await screen.findByText('deploy-x')).toBeTruthy()
+  expect(screen.getByText('192.0.2.37')).toBeTruthy()
+  expect(screen.getAllByText('Teardown incomplete').length).toBe(2)  // status line, and the open column
+  expect(screen.queryByRole('link', { name: /Scoreboard/ })).toBeNull()
+})

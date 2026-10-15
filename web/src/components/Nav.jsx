@@ -23,7 +23,8 @@ export default function TopNav({ actions }) {
           <NavLink to="/comps" className={tab}>Comps</NavLink>
         </nav>
       </div>
-      <div className="flex items-center gap-3">
+      {/* ml-auto keeps the bell at the right edge when it wraps to its own row on a phone. */}
+      <div className="ml-auto flex items-center gap-3">
         {actions}
         <Bell />
       </div>

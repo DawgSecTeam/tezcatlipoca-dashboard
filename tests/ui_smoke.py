@@ -181,6 +181,10 @@ def build_fixture_app(root, patches):
 
     for method, replacement in (("ensure_repos", lambda self: None),
                                 ("refresh_comps", lambda self: None), ("_run", blocked),
+                                # The synthetic building/paused-build scenarios are rows with
+                                # no worker by construction; startup reconciliation would fail
+                                # exactly the states this fixture exists to render.
+                                ("reconcile_orphans", lambda self: []),
                                 ("submit", submit), ("cancel", state_stub("cancelled")),
                                 ("pause", state_stub("paused")), ("resume", state_stub("running"))):
         patches.enter_context(patch.object(RunManager, method, replacement))

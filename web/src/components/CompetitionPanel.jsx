@@ -46,7 +46,7 @@ export default function CompetitionPanel(props) {
 // section: 'all' (default), 'lifecycle' (state + start/pause/end) or 'access' (links +
 // logins). A range page renders the two separately from one controlled view.
 function CompetitionBody({ rangeKey, rangeId, compId, engineRef, onSubmitted, disabled = false, section = 'all',
-  view: suppliedView, loading: suppliedLoading, error: suppliedError, onRefresh }) {
+  view: suppliedView, loading: suppliedLoading, error: suppliedError, onRefresh, recorded }) {
   const controlled = suppliedView !== undefined
   const [polledView, setPolledView] = useState(null)
   const [pollError, setPollError] = useState(null)
@@ -109,9 +109,14 @@ function CompetitionBody({ rangeKey, rangeId, compId, engineRef, onSubmitted, di
   const actionCompId = compId || view?.comp_id || identity?.comp_id
   const actionEngineRef = engineRef || view?.engine_ref || identity?.engine_ref
   const identityMismatch = !!compId && !!view?.comp_id && compId !== view.comp_id
-  const retired = view?.range_state === 'retired' || identity?.state === 'retired'
+  const rangeState = view?.range_state || identity?.state
+  const retired = rangeState === 'retired'
+  // Scoring a range whose infrastructure is gone (or was never torn down cleanly) is not a
+  // lifecycle step: the engine may answer from a leftover VM while its range is being
+  // reclaimed. Start/Pause/Resume/End belong to a range that is actually there.
+  const torn = retired || ['failed', 'teardown_failed'].includes(rangeState)
   const missingIdentity = !actionCompId || !actionEngineRef || identityMismatch
-  const blocked = disabled || retired || missingIdentity || !!error || !!pending
+  const blocked = disabled || torn || missingIdentity || !!error || !!pending
   const refresh = useCallback(async () => {
     setRefreshError(null); setRefreshing(true)
     try { if (controlled) await onRefresh?.(); else await poll.current?.() }
@@ -158,6 +163,9 @@ function CompetitionBody({ rangeKey, rangeId, compId, engineRef, onSubmitted, di
     : `/c/${encodeURIComponent(run.comp_id || actionCompId)}/runs/${encodeURIComponent(run.id || run.run_id)}`
   const links = Object.entries(view?.links || {})
   const creds = [view?.creds?.admin && ['admin', view.creds.admin], view?.creds?.inject && ['inject', view.creds.inject]].filter(Boolean)
+  const noEngine = recorded === false
+    ? 'This range records no infrastructure, so the engine address in its workspace is not a live link.'
+    : 'No engine address is recorded.'
   if (!lifecycle) {
     return (
       <Card className="p-5">
@@ -170,7 +178,7 @@ function CompetitionBody({ rangeKey, rangeId, compId, engineRef, onSubmitted, di
               <Icon name={name === 'portal' ? 'boxes' : 'overview'} className="h-3.5 w-3.5" />
               {LINK_TEXT[name] || name}<span className="ml-auto truncate font-mono text-[11px] text-faint">{url.replace(/^https?:\/\//, '')}</span>
             </a></li>
-          ))}</ul> : <p className="text-sm text-muted">No engine address is recorded.</p>}
+          ))}</ul> : <p className="text-sm text-muted">{noEngine}</p>}
           {!!creds.length && <div className="mt-4 space-y-2">{creds.map(([label, cred]) => <Cred key={`${label}-${cred.password}`} label={label} {...cred} />)}</div>}
         </>}
       </Card>
@@ -192,15 +200,16 @@ function CompetitionBody({ rangeKey, rangeId, compId, engineRef, onSubmitted, di
       {submitted && <p className="mb-3 text-sm text-muted" role="status">Operation submitted{(submitted.id || submitted.run_id) && <> · <Link className="font-mono text-accent hover:underline" to={operationHref(submitted)}>{submitted.id || submitted.run_id}</Link></>}. Submission does not mean scoring has changed yet.</p>}
       {!view && !loading && !error && <p className="text-sm text-muted">No competition or access details are available for this workspace.</p>}
       {view && <>
-        <div className="flex flex-wrap gap-2">
+        {!torn && <div className="flex flex-wrap gap-2">
           {view.state === 'ready' && <Button variant="primary" disabled={blocked} onClick={() => submit('start')}><Icon name="play" />Start the competition</Button>}
           {view.state === 'running' && <Button disabled={blocked} onClick={() => submit('freeze')}><Icon name="pause" />Pause scoring</Button>}
           {view.state === 'paused' && <Button variant="primary" disabled={blocked} onClick={() => submit('resume')}><Icon name="play" />Resume scoring</Button>}
           {(view.state === 'running' || view.state === 'paused') && <Button variant="danger" disabled={blocked} onClick={end}><Icon name="warn" />End</Button>}
           {view.state === 'ended' && <p className="text-sm text-muted">The event has ended. Its final scoreboard is recorded in the workspace evidence directory.</p>}
-        </div>
+        </div>}
         {retired ? <p className="mt-2 text-xs text-muted">This range is retired; lifecycle actions are disabled.</p>
-          : missingIdentity && <p className="mt-2 text-xs text-danger">Lifecycle actions require the range's competition identity and originating engine ref. Refresh the range details before submitting.</p>}
+          : torn ? <p className="mt-2 text-xs text-danger">This range's infrastructure is incomplete — its last teardown did not finish. Lifecycle actions are disabled; retry the teardown from the range page first.</p>
+            : missingIdentity && <p className="mt-2 text-xs text-danger">Lifecycle actions require the range's competition identity and originating engine ref. Refresh the range details before submitting.</p>}
         {access && <>
           <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-sm">
             {links.map(([name, url]) => (
@@ -210,7 +219,8 @@ function CompetitionBody({ rangeKey, rangeId, compId, engineRef, onSubmitted, di
               </a>
             ))}
           </div>
-          <div className="mt-4 flex flex-wrap gap-2">
+          {!links.length && <p className="mt-4 text-sm text-muted">{noEngine}</p>}
+          <div className="mt-4 space-y-2">
             {creds.map(([label, cred]) => <Cred key={`${label}-${cred.password}`} label={label} {...cred} />)}
           </div>
         </>}

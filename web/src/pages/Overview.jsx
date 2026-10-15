@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api'
 import { useComp } from './CompLayout'
 import Topology, { TopologyLegend } from '../components/Topology'
+import CompRanges from '../components/CompRanges'
 import DeployPanel, { RecentRuns } from '../components/DeployPanel'
 import { Button, Card, ErrorBanner, Field, inputCls } from '../components/ui'
 import { DifficultyMeter, Icon, PageHeader, useSaveHotkey, useToast } from '../components/kit'
@@ -105,6 +106,7 @@ export default function Overview() {
           </div>
           {/* The deploy panel is a tall column; without this the left side ended at the stat
               cards and the page carried a hole in the middle. */}
+          <CompRanges compId={comp.id} />
           <RecentRuns compId={comp.id} />
         </div>
         <div><DeployPanel comp={comp} /></div>

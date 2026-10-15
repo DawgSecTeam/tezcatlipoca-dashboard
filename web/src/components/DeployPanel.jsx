@@ -166,14 +166,11 @@ export default function DeployPanel({ comp }) {
           <Button variant="primary" className="w-full !py-2.5" disabled={noBoxes} onClick={() => setConfirm(true)}>
             <Icon name="rocket" />Deploy {form.teams || 0} team{Number(form.teams) === 1 ? '' : 's'}
           </Button>
-          <div className="grid grid-cols-2 gap-3">
-            <Button disabled={noBoxes} onClick={() => submit('plan')} title="create-competition.py --plan-only: prints the plan, touches nothing">
-              <Icon name="play" />Dry run
-            </Button>
-            <Button onClick={() => submit('verify')} title="verify-competition.py against the running range">
-              <Icon name="check" />Verify
-            </Button>
-          </div>
+          <Button disabled={noBoxes} onClick={() => submit('plan')} title="create-competition.py --plan-only: prints the plan, touches nothing">
+            <Icon name="play" />Dry run
+          </Button>
+          {/* Verify is a RANGE action, and this competition may have several ranges: the
+              submit API would pick one of them implicitly. It lives on the range page. */}
           {noBoxes && <p className="text-center text-xs text-faint">Add a box before deploying.</p>}
         </div>
       </div>

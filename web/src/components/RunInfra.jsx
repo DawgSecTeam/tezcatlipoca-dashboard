@@ -122,7 +122,7 @@ function TeardownJournal({ teardown, opHref }) {
   )
 }
 
-export default function RunInfra({ run, comp, inventory }) {
+export default function RunInfra({ run, comp, inventory, teardownFailed = false }) {
   if (!inventory) {
     return (
       <Card className="p-2">
@@ -139,7 +139,9 @@ export default function RunInfra({ run, comp, inventory }) {
   const counts = inventory.counts || {}
   const boxCount = teams.reduce((n, t) => n + (t.boxes || []).length, 0)
   const retired = range?.state === 'retired'
-  const failed = range?.state === 'teardown_failed'
+  // A failed teardown on a range that still records VMs reads `live`, not `teardown_failed`:
+  // the caller knows from the range's own run history, so take its word too.
+  const failed = range?.state === 'teardown_failed' || teardownFailed
   const empty = !teams.length && !networks.length && !boxCount
   const compId = range?.comp_id || run?.comp_id
   const opHref = (id) => (range?.id

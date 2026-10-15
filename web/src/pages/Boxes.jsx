@@ -188,7 +188,8 @@ export default function Boxes() {
                 </div>
                 <div className="flex min-w-0 flex-1 items-center gap-2">
                   <PlatformBadge platform={kindOf(b)} />
-                  <span className="truncate font-mono text-sm text-muted">{b.template}</span>
+                  {/* A template whose name IS the platform ("windows") printed twice. */}
+                  {b.template && b.template !== kindOf(b) && <span className="truncate font-mono text-sm text-muted">{b.template}</span>}
                   {b.in_path && <span className="chip bg-sunken text-fw">firewall · in-path</span>}
                   {b.unmanaged && !b.in_path && <span className="chip bg-sunken text-faint">unmanaged</span>}
                 </div>

@@ -8,7 +8,9 @@ import { REDEPLOY_MODES, ResetBoxModal } from './runui'
 import MachineInventory from './MachineInventory'
 
 const REQUEST_CLS = {
-  pending: 'bg-accent-soft text-accent', approved: 'bg-accent-soft text-accent',
+  // A pending request is waiting on the operator, the same thing the Teams badge counts:
+  // the two must not colour the same state differently on one screen.
+  pending: 'bg-danger-soft text-danger', approved: 'bg-accent-soft text-accent',
   done: 'bg-sunken text-muted', denied: 'bg-sunken text-faint', failed: 'bg-danger-soft text-danger',
 }
 const MODE_LABEL = {
@@ -88,7 +90,7 @@ function TeamCard({ team, boxes, specs, range, compId, onRedeploy, onDelete, dis
       </div>
       {!boxes.length ? <p className="px-4 pb-3 text-xs text-faint">No boxes are recorded for this team.</p> : (
         <div className="overflow-x-auto">
-          <table className="w-full text-left">
+          <table className="w-full min-w-[30rem] text-left">
             <thead>
               <tr className="border-t border-line text-[11px] font-semibold uppercase tracking-wider text-faint">
                 <th className="px-4 py-2">Box</th><th className="px-4 py-2">VMID</th>
@@ -172,7 +174,7 @@ export function ResetRequests({ rangeKey, rangeId, disabled, onSubmitted, pendin
       <div className="px-4 py-3"><h3 className="text-sm font-semibold">Reset requests</h3>
         <p className="mt-1 text-xs text-muted">Requests filed by teams in this workspace. Approval submits a reset operation.</p></div>
       {error && <div className="px-4"><ErrorBanner error={error} onRetry={reload} /></div>}
-      {!!rows?.length && <div className="overflow-x-auto"><table className="w-full text-left">
+      {!!rows?.length && <div className="overflow-x-auto"><table className="w-full min-w-[34rem] text-left">
         <thead><tr className="border-t border-line text-[11px] font-semibold uppercase tracking-wider text-faint">
           <th className="px-4 py-2">Team / box</th><th className="px-4 py-2">Requested by</th><th className="px-4 py-2">Status</th><th className="px-4 py-2 text-right">Resolve</th>
         </tr></thead>

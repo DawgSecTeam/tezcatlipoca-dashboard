@@ -5,7 +5,7 @@ import TopNav from '../components/Nav'
 import { Button, Card, ErrorBanner, SearchInput } from '../components/ui'
 import { EmptyState, Icon, agoMs, useSlashFocus, useTick } from '../components/kit'
 import { ACTION_LABEL, NewRunModal } from '../components/runui'
-import { filterCounts, filterRanges, rangeIssues, rangeStatus, rangeTitle, shortRangeId } from '../rangeView'
+import { filterCounts, filterRanges, infrastructureLabel, rangeIssues, rangeStatus, rangeTitle, shortRangeId } from '../rangeView'
 
 const TONE = { danger: 'text-danger', active: 'text-accent', ok: 'text-fg', muted: 'text-muted' }
 const DOT = { danger: 'bg-danger', active: 'animate-pulse bg-accent', ok: 'bg-accent', muted: 'bg-line' }
@@ -22,9 +22,14 @@ function RangeRow({ range }) {
     <article className="range-row">
       <div className="min-w-0">
         <Link to={`/ranges/${range.id}`} className="text-lg font-semibold tracking-tight hover:text-accent">{rangeTitle(range)}</Link>
-        <div className="mt-1 flex flex-wrap gap-x-3 text-xs text-faint">
+        {/* Every range of one competition is deployed from the same Compfile, so its name
+            alone cannot tell two concurrent ranges apart: the deploy run and the engine
+            address are the range's own identity. */}
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 text-xs text-faint">
           {range.name && range.name !== range.comp_id && <span className="font-mono">{range.comp_id}</span>}
+          <span className="font-mono">{shortRangeId(range)}</span>
           <span>{range.deployed_at ? `deployed ${agoMs(range.deployed_at)}` : 'deploy time not recorded'}</span>
+          {range.engine_ip && <span className="font-mono">{range.engine_ip}</span>}
         </div>
       </div>
       <div className="min-w-0">
@@ -47,7 +52,7 @@ function RangeRow({ range }) {
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs lg:justify-end">
         {links.length ? links.map(([name, url]) => (
           <a key={name} href={url} target="_blank" rel="noopener noreferrer" className="font-medium text-accent hover:underline">{LINK_LABEL[name]} ↗</a>
-        )) : <span className="text-faint">No engine address recorded</span>}
+        )) : <span className="text-faint">{infrastructureLabel(range)}</span>}
       </div>
     </article>
   )

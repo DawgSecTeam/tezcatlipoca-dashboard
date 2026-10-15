@@ -3,6 +3,7 @@ import { Link, NavLink, Outlet, useMatch, useNavigate, useParams } from 'react-r
 import { api, kindOf } from '../api'
 import { ErrorBanner, Spinner } from '../components/ui'
 import { Icon, Logo } from '../components/kit'
+import TopNav from '../components/Nav'
 import Bell from '../components/Bell'
 
 const CompCtx = createContext(null)
@@ -47,7 +48,7 @@ function Sidebar({ comp }) {
   const box = comp.boxes.find((b) => b.name === boxName)
 
   return (
-    <aside className="panel flex h-full w-64 flex-col gap-5 p-4">
+    <aside className="panel flex w-full flex-col gap-5 p-4 lg:h-full lg:w-64">
       <Link to="/" className="group flex items-center gap-2 px-2 pt-1" title="Live">
         <Logo className="h-5 w-5" />
         <span className="text-[13px] font-semibold tracking-tight">tezcatlipoca</span>
@@ -128,15 +129,17 @@ export default function CompLayout() {
   useEffect(() => { setComp(null); setErr(null); reload() }, [reload])
   useEffect(() => { document.title = comp ? `${comp.name} · tezcatlipoca` : 'tezcatlipoca' }, [comp])
 
-  if (err) return <div className="p-10"><ErrorBanner error={err} /><Link className="text-accent" to="/">← All competitions</Link></div>
+  if (err) return <main className="range-container"><TopNav /><ErrorBanner error={err} /><Link className="text-accent" to="/comps">← All competitions</Link></main>
   if (!comp) return <div className="flex h-screen items-center justify-center"><Spinner /></div>
 
   return (
     <CompCtx.Provider value={{ comp, reload, setComp }}>
-      <div className="flex h-screen">
-        <div className="shrink-0 p-6 pr-0"><Sidebar comp={comp} /></div>
+      {/* One column on a phone: a 16rem rail beside the content left the content 110px
+          wide, clipped by an ancestor, on every competition page. */}
+      <div className="flex min-h-screen flex-col lg:h-screen lg:flex-row">
+        <div className="shrink-0 p-6 pb-0 lg:pr-0"><Sidebar comp={comp} /></div>
         {/* Padding lives inside the scroller so the floating panels' halos are never clipped. */}
-        <main className="min-w-0 flex-1 overflow-auto p-6 pl-9">
+        <main className="min-w-0 flex-1 overflow-auto p-6 lg:pl-9">
           <Outlet />
         </main>
       </div>

@@ -212,8 +212,8 @@ export function Evidence({ runId, range }) {
         <div className="mb-4 flex flex-wrap items-center gap-3">
           <h2 className="label !mb-0">{rangeMode ? 'Range evidence' : 'This run'}</h2>
           <span className="font-mono text-[11px] text-faint">{rangeMode ? filtered.length : mine.length} files</span>
-          <div className="ml-auto flex items-center gap-2">
-            <SearchInput value={q} onChange={setQ} placeholder="Filter by path" className="w-56" />
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <SearchInput value={q} onChange={setQ} placeholder="Filter by path" className="w-full sm:w-56" />
             {(rangeMode ? filtered : mine).length > 1 && (
               <Button onClick={() => grabAll(rangeMode ? filtered : mine)}><Icon name="packet" />{q.trim() ? 'Download matching' : 'Download all'}</Button>
             )}
@@ -397,7 +397,7 @@ export default function Run() {
           <CompetitionPanel
             rangeKey={range?.key || run.params?.comp_dir || run.params?._destroy_comp_dir || (run.run_dir ? `${run.run_dir}/comp` : '')}
             compId={range?.comp_id || run.comp_id} engineRef={range?.engine_ref || run.engine_ref}
-            onChanged={reload} show={['succeeded', 'failed', 'cancelled'].includes(run.state)} />
+            recorded={range?.has_recorded_vms} onSubmitted={reload} show={['succeeded', 'failed', 'cancelled'].includes(run.state)} />
           <Card className="p-6">
             <h2 className="label !mb-3">General</h2>
             <div className="min-h-[5.5rem]">

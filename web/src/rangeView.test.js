@@ -25,6 +25,12 @@ describe('range presentation', () => {
     expect(summary.pending_requests).toBe(1)
     expect(rangeIssues(summary).map((item) => item.kind)).toEqual(['requests', 'degradation'])
   })
+  it('never claims recorded VMs the inventory does not show', () => {
+    const { has_recorded_vms, ...withoutFlag } = base
+    expect(detailSummary({ ...withoutFlag, state: 'live', inventory: {} }).has_recorded_vms).toBe(false)
+    expect(detailSummary({ ...withoutFlag, state: 'live', inventory: { counts: { boxes: 2 } } }).has_recorded_vms).toBe(true)
+    expect(detailSummary({ ...withoutFlag, state: 'live', inventory: { machines: { scoring_engine: { vmid: 900 } } } }).has_recorded_vms).toBe(true)
+  })
   it('picks one status: failures, then operations, then requests, then recorded event state', () => {
     const failed = { ...base, latest_destroy: { id: 'destroy-a', action: 'destroy', state: 'failed' }, pending_requests: 2, active_runs: [{ id: 'v', action: 'verify', state: 'running' }] }
     expect(rangeStatus(failed)).toMatchObject({ tone: 'danger', label: 'Teardown incomplete', to: '/ranges/range-a/activity?operation=destroy-a' })

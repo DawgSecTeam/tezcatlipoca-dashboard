@@ -245,13 +245,14 @@ def test_finish_resolves_the_approved_request_once(tmp_path, monkeypatch):
 # ---- lifecycle state mapping ----
 
 def _ws(tmp_path, state):
+    """A range workspace that still records its own VM — what a live range looks like."""
     ws = tmp_path / "ws"
     ws.mkdir()
     (ws / "estate-state.json").write_text(json.dumps(
         {"identity": {"comp_name": "comp-a", "run_id": "run-d", "engine_mgmt_ip": "10.0.0.9"},
          "run": state}))
     return {"key": str(ws), "comp_id": "comp-a", "deploy_run_id": "run-d",
-            "state": "live"}
+            "state": "live", "has_recorded_vms": True}
 
 
 def test_lifecycle_states_from_the_engine_api(tmp_path, monkeypatch):
@@ -283,6 +284,17 @@ def test_an_unreachable_engine_reads_the_state_markers(tmp_path, monkeypatch):
     rng = _ws(tmp_path, {"ended": True})
     view = competition.status_for_range(None, rng)
     assert view["state"] == "ended" and not view["reachable"]
+
+
+def test_a_range_with_no_recorded_vm_is_not_polled_and_links_nothing(tmp_path, monkeypatch):
+    """A torn-down range records the engine's old address; asking it or linking it lies."""
+    monkeypatch.setattr(competition, "engine_status",
+                        lambda ws, state: pytest.fail("polled an engine with no VM behind it"))
+    rng = _ws(tmp_path, {"scoring_password": "s", "admin_password": "a"})
+    rng["has_recorded_vms"] = False
+    view = competition.status_for_range(None, rng)
+    assert view["state"] == "unknown" and not view["reachable"] and view["links"] == {}
+    assert view["creds"]["admin"] == {"user": "admin", "password": "a"}
 
 
 def test_the_engine_ip_comes_from_the_documents_identity(tmp_path):

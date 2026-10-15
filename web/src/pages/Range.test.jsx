@@ -64,4 +64,13 @@ it('does not offer enabled range controls for retired ranges', () => {
   open()
   expect(screen.getByRole('button', { name: 'Verify range' }).disabled).toBe(true)
   expect(screen.getByRole('button', { name: 'Reset a box' }).disabled).toBe(true)
+  expect(screen.queryByRole('button', { name: 'More range actions' })).toBeNull()
+})
+
+it('closes the range actions menu on Escape instead of leaving it over the page', async () => {
+  open()
+  await userEvent.click(screen.getByRole('button', { name: 'More range actions' }))
+  expect(screen.getByRole('button', { name: /Destroy this range/ })).toBeTruthy()
+  await userEvent.keyboard('{Escape}')
+  await waitFor(() => expect(screen.queryByRole('button', { name: /Destroy this range/ })).toBeNull())
 })

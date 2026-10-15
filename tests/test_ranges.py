@@ -467,3 +467,39 @@ def test_startup_reconciles_a_run_whose_worker_is_gone(tmp_path, monkeypatch):
         pass
     row = store.get_run("run-stuck")
     assert row["state"] == "failed" and "orphaned" in row["error"]
+
+
+# ---- what a range summary publishes about a range that is not all there ----
+
+_EMPTY_INVENTORY = {"machines": {}, "networks": [], "teams": [], "counts": {},
+                    "deploy": {"degradations": []}}
+
+
+def test_a_range_without_recorded_vms_publishes_no_engine_link(tmp_path):
+    """The document keeps the engine's address after its VM is gone; the board turned that
+    into a Scoreboard link on a range with nothing behind it."""
+    _workspace(tmp_path, "run-gone", vms=False)
+    rng = _range_of(_rec("run-gone", "destroy", created=1, run_dir=tmp_path / "run-gone"))
+    summary = ranges.range_summary(rng, _EMPTY_INVENTORY, [])
+    assert summary["has_recorded_vms"] is False
+    assert summary["links"] == {} and summary["engine_ip"] == "10.0.0.9"
+
+
+def test_a_live_range_still_publishes_its_engine_link(tmp_path):
+    _workspace(tmp_path, "run-up", vms=True)
+    rng = _range_of(_rec("run-up", "deploy", created=1, run_dir=tmp_path / "run-up"))
+    summary = ranges.range_summary(rng, _EMPTY_INVENTORY, [])
+    assert summary["has_recorded_vms"] is True
+    assert summary["links"]["scoreboard"] == "http://10.0.0.9"
+
+
+def test_comp_defined_follows_the_definitions_checkout(tmp_path, monkeypatch):
+    """A range outlives the definition it was deployed from; the range page links to the
+    competition editor, which 404s once that folder is gone."""
+    from dashboard import comps_api
+    monkeypatch.setattr(comps_api, "COMPS", tmp_path / "competitions")
+    _workspace(tmp_path, "run-def", vms=True)
+    rng = _range_of(_rec("run-def", "deploy", created=1, run_dir=tmp_path / "run-def"))
+    assert ranges.range_summary(rng, _EMPTY_INVENTORY, [])["comp_defined"] is False
+    (tmp_path / "competitions" / "c").mkdir(parents=True)
+    assert ranges.range_summary(rng, _EMPTY_INVENTORY, [])["comp_defined"] is True

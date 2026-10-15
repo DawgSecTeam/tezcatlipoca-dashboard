@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, Navigate, NavLink, useParams, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 import TopNav from '../components/Nav'
@@ -16,6 +16,27 @@ import { useCompetitionData, useRangeData } from '../useRangeData'
 const SECTIONS = [['', 'Overview', 'overview'], ['teams', 'Teams', 'boxes'], ['infrastructure', 'Infrastructure', 'cpu'], ['activity', 'Activity', 'terminal'], ['evidence', 'Evidence', 'packet']]
 const COMPETITION_LABEL = { ready: 'Ready to start', running: 'Scoring', paused: 'Scoring paused', ended: 'Competition ended', unknown: 'Engine unreachable' }
 const RANGE_LABEL = { live: 'Deployed', building: 'Operation in progress', failed: 'Deploy failed', teardown_failed: 'Teardown incomplete', retired: 'Retired' }
+
+// The range's less-common actions. A native <details> stays open on Escape and its popover
+// covers the identity row, so it is driven by state and closes on Escape/outside click.
+function ActionsMenu({ onDestroy }) {
+  const [open, setOpen] = useState(false)
+  const box = useRef(null)
+  useEffect(() => {
+    if (!open) return undefined
+    const away = (event) => { if (!box.current?.contains(event.target)) setOpen(false) }
+    const key = (event) => { if (event.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', away)
+    document.addEventListener('keydown', key)
+    return () => { document.removeEventListener('mousedown', away); document.removeEventListener('keydown', key) }
+  }, [open])
+  return <div className="relative" ref={box}>
+    <Button aria-label="More range actions" aria-expanded={open} onClick={() => setOpen((value) => !value)}><Icon name="dots" /></Button>
+    {open && <div className="absolute right-0 z-20 mt-2 w-60 rounded-xl border border-line bg-bg p-2 shadow-tile">
+      <Button variant="ghost" className="w-full !justify-start text-danger" onClick={() => { setOpen(false); onDestroy() }}><Icon name="trash" />Destroy this range…</Button>
+    </div>}
+  </div>
+}
 
 function CopyText({ text }) {
   const toast = useToast()
@@ -78,7 +99,7 @@ function TeamsGlance({ range, summary }) {
       <h2 className="text-base font-semibold">Teams <span className="font-normal text-faint">{summary.counts.teams ?? teams.length}</span></h2>
       <Link to={`/ranges/${range.id}/teams`} className="text-xs font-medium text-accent">Boxes & recovery</Link>
     </div>
-    {!teams.length ? <p className="px-5 pb-4 text-sm text-muted">No teams are recorded for this range.</p> : <div className="overflow-x-auto"><table className="w-full text-left">
+    {!teams.length ? <p className="px-5 pb-4 text-sm text-muted">No teams are recorded for this range.</p> : <div className="overflow-x-auto"><table className="w-full min-w-[28rem] text-left">
       <thead><tr className="border-t border-line text-[11px] font-semibold uppercase tracking-wider text-faint">
         <th className="px-5 py-2">Team</th><th className="px-5 py-2">Subnet</th><th className="px-5 py-2">Boxes</th><th className="px-5 py-2">Reset requests</th>
       </tr></thead>
@@ -98,7 +119,9 @@ function TeamsGlance({ range, summary }) {
 function RangeFacts({ range, summary }) {
   const origin = range.runs.find((run) => run.id === range.deploy_run_id)
   const facts = [
-    ['Deployed', range.deployed_at || origin?.created_at ? agoMs(range.deployed_at || origin?.created_at) : '—'],
+    // "Deployed" is only true once something is up; a range still building has started its
+    // deploy run, and the range page claimed it had deployed 5 minutes ago.
+    [range.state === 'building' ? 'Deploy started' : 'Deployed', range.deployed_at || origin?.created_at ? agoMs(range.deployed_at || origin?.created_at) : '—'],
     ['Deployed by', range.deploy_run_id ? <Link to={`/ranges/${range.id}/activity?operation=${range.deploy_run_id}`} className="text-accent hover:underline">{range.deploy_run_id}</Link> : '—'],
     ['Engine ref', range.engine_ref || '—'],
     ['Engine IP', summary.engine_ip || '—'],
@@ -116,7 +139,7 @@ function RangeFacts({ range, summary }) {
 function RangeOverview({ range, competition, onSubmitted, refresh, disabled }) {
   const summary = detailSummary(range)
   const issues = rangeIssues(summary).filter((issue) => issue.kind !== 'requests')
-  const panel = { rangeKey: range.key, rangeId: range.id, compId: range.comp_id, engineRef: range.engine_ref, view: competition.view, loading: !competition.view && !competition.error, error: competition.error, onRefresh: refresh, onSubmitted, disabled }
+  const panel = { rangeKey: range.key, rangeId: range.id, compId: range.comp_id, engineRef: range.engine_ref, view: competition.view, loading: !competition.view && !competition.error, error: competition.error, onRefresh: refresh, onSubmitted, disabled, recorded: summary.has_recorded_vms }
   return <div className="range-overview">
     <div className="min-w-0 space-y-6">
       {!!issues.length && <section className="rounded-2xl border border-danger/20 bg-danger-soft p-5 sm:p-6" aria-label="Attention needed">
@@ -177,7 +200,7 @@ function RangeActivity({ range, refresh }) {
   const selected = runs.find((run) => run.id === requested) || (!requested ? runs.find((run) => ['queued', 'running', 'pausing', 'paused'].includes(run.state)) || runs[0] : null)
   return <div>
     <h2 className="text-xl font-semibold">Activity & output</h2><p className="mb-5 mt-1 text-sm text-muted">Each operation has its own output. Selecting one does not change this range’s controls.</p>
-    <div className="grid items-start gap-6 xl:grid-cols-[250px_minmax(0,1fr)]">
+    <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-[250px_minmax(0,1fr)]">
       <div className="max-h-[65vh] space-y-1 overflow-auto xl:sticky xl:top-6" aria-label="Select operation">{runs.map((run) => <button key={run.id} onClick={() => setSearch({ operation: run.id })} aria-pressed={selected?.id === run.id} className={`w-full rounded-xl border p-3 text-left ${selected?.id === run.id ? 'border-accent/30 bg-accent-soft' : 'border-transparent hover:bg-sunken'}`}><span className="flex flex-wrap items-center justify-between gap-2 text-sm font-semibold">{ACTION_LABEL[run.action] || run.action}<StatePill state={run.state} /></span><span className="mt-2 block break-all font-mono text-[10px] text-faint">{run.id}</span><span className="mt-1 block text-xs text-muted">{agoMs(run.created_at)}</span></button>)}</div>
       {selected ? <OperationDetail key={selected.id} run={selected} range={range} refresh={refresh} /> : <ErrorBanner error={new Error(requested ? 'This operation does not belong to this range.' : 'No operations recorded.')} />}
     </div>
@@ -205,6 +228,9 @@ export default function Range() {
   const scopedInventory = { ...range.inventory, range: { ...range.inventory?.range, ...range, inventory: undefined, runs: undefined, requests: undefined } }
   const retired = range.state === 'retired'
   const blocked = retired || pending || !!error
+  // A range whose newest destroy failed is not necessarily torn down (`teardown_failed`
+  // is only the state where nothing is left): the Infrastructure tab must warn either way.
+  const teardownIssue = rangeIssues(summary).some((issue) => issue.kind === 'teardown')
   const submit = async (action) => {
     if (blocked) return
     if (action === 'destroy' && !(await confirm({ title: `Destroy range ${shortRangeId(range)}?`, body: `Removes infrastructure owned by this range of ${rangeTitle(range)}. Other ranges of this competition are not targeted. Review active operations before continuing.`, danger: true, confirm: 'Destroy this range' }))) return
@@ -218,13 +244,13 @@ export default function Range() {
   return <main className="range-container">
     <TopNav />
     <header className="mb-6">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><Link to="/" className="inline-flex items-center gap-1 text-xs font-medium text-muted hover:text-accent"><Icon name="back" className="h-3 w-3" />Active ranges</Link><Link to={`/c/${range.comp_id}`} className="text-xs text-faint hover:text-accent">Edit competition definition ↗</Link></div>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><Link to="/" className="inline-flex items-center gap-1 text-xs font-medium text-muted hover:text-accent"><Icon name="back" className="h-3 w-3" />Active ranges</Link>{range.comp_defined !== false && <Link to={`/c/${range.comp_id}`} className="text-xs text-faint hover:text-accent">Edit competition definition ↗</Link>}</div>
       <div className="flex flex-wrap items-start justify-between gap-5">
         <div className="min-w-0">
           <h1 className="display break-words text-4xl sm:text-5xl">{rangeTitle(range)}</h1>
           <div className="mt-3"><StatusLine range={range} summary={summary} competition={competition} /></div>
         </div>
-        <div className="flex flex-wrap gap-2"><Button onClick={() => submit('verify')} disabled={blocked}><Icon name="check" />Verify range</Button><Button onClick={() => setReset(true)} disabled={blocked || !range.inventory?.teams?.length}><Icon name="box" />Reset a box</Button><details className="relative"><summary className="btn cursor-pointer list-none" aria-label="More range actions"><Icon name="dots" /></summary><div className="absolute right-0 z-20 mt-2 w-60 rounded-xl border border-line bg-bg p-2 shadow-tile"><Button variant="ghost" className="w-full !justify-start text-danger" onClick={() => submit('destroy')} disabled={blocked}><Icon name="trash" />Destroy this range…</Button></div></details></div>
+        <div className="flex flex-wrap gap-2"><Button onClick={() => submit('verify')} disabled={blocked}><Icon name="check" />Verify range</Button><Button onClick={() => setReset(true)} disabled={blocked || !range.inventory?.teams?.length}><Icon name="box" />Reset a box</Button>{!blocked && <ActionsMenu onDestroy={() => submit('destroy')} />}</div>
       </div>
       <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-faint">
         <details className="min-w-0">
@@ -242,10 +268,10 @@ export default function Range() {
     <ErrorBanner error={error} onRetry={reload} />
     {retired && <p className="mb-5 rounded-xl bg-sunken px-4 py-3 text-sm text-muted">This range is retired. Its history and evidence remain available; range operations are disabled.</p>}
     {submitted && <div role="status" className="mb-5 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-accent-soft px-4 py-3 text-sm"><span>Submitted <span className="font-mono text-xs">{submitted.id}</span></span><Link className="font-semibold text-accent hover:underline" to={`/ranges/${range.id}/activity?operation=${submitted.id}`}>View operation</Link></div>}
-    <nav className="mb-7 flex gap-1 overflow-x-auto border-b border-line" aria-label="Range sections">{SECTIONS.map(([path, label, icon]) => <NavLink key={path} end to={`/ranges/${range.id}${path ? `/${path}` : ''}`} className={({ isActive }) => `inline-flex shrink-0 items-center gap-2 border-b-2 px-3 py-3 text-sm ${isActive ? 'border-accent font-semibold text-accent' : 'border-transparent text-muted hover:text-fg'}`}><Icon name={icon} />{label}{path === 'teams' && summary.pending_requests > 0 && <span className="chip bg-danger-soft text-danger">{summary.pending_requests}</span>}</NavLink>)}</nav>
+    <nav className="mb-7 flex flex-wrap gap-1 border-b border-line" aria-label="Range sections">{SECTIONS.map(([path, label, icon]) => <NavLink key={path} end to={`/ranges/${range.id}${path ? `/${path}` : ''}`} className={({ isActive }) => `inline-flex shrink-0 items-center gap-2 border-b-2 px-3 py-3 text-sm ${isActive ? 'border-accent font-semibold text-accent' : 'border-transparent text-muted hover:text-fg'}`}><Icon name={icon} />{label}{path === 'teams' && summary.pending_requests > 0 && <span className="chip bg-danger-soft text-danger">{summary.pending_requests}</span>}</NavLink>)}</nav>
     {section === '' && <RangeOverview range={range} competition={competition} onSubmitted={onSubmitted} refresh={reload} disabled={blocked} />}
     {section === 'teams' && <RunTeams run={origin} inventory={scopedInventory} disabled={blocked} onSubmitted={onSubmitted} showMachines={false} />}
-    {section === 'infrastructure' && <RunInfra run={origin} inventory={scopedInventory} />}
+    {section === 'infrastructure' && <RunInfra run={origin} inventory={scopedInventory} teardownFailed={teardownIssue} />}
     {section === 'activity' && <RangeActivity range={range} refresh={reload} />}
     {section === 'evidence' && <Evidence runId={origin.id} range={range} />}
     <ResetBoxModal open={reset} onClose={() => setReset(false)} run={origin} range={range} teams={range.inventory?.teams} onSubmitted={onSubmitted} />

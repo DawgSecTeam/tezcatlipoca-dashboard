@@ -244,7 +244,8 @@ export default function Runs() {
           </EmptyState>
         )}
         {runs && runs.length > 0 && (
-          <table className="w-full text-left">
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[44rem] text-left">
             <thead>
               <tr className="text-[11px] font-semibold uppercase tracking-wider text-faint">
                 <th className="px-4 py-2">State</th>
@@ -263,6 +264,7 @@ export default function Runs() {
                 : <GroupRow key={`${g.runs[0].id}-${i}`} g={g} selected={sel && g.runs.some((x) => x.id === sel)} onPick={setSel} />))}
             </tbody>
           </table>
+          </div>
         )}
       </Card>
       {sel && <Drawer runId={sel} onClose={() => setSel(null)} />}

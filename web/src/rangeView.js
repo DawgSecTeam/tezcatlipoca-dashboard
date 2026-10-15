@@ -83,7 +83,7 @@ export function detailSummary(range) {
   for (const machine of Object.values(inventory.machines || {}).flat()) if (machine?.node) nodes.add(machine.node)
   return {
     ...range,
-    has_recorded_vms: range.has_recorded_vms ?? ((inventory.counts?.boxes || 0) > 0 || !!inventory.machines?.scoring_engine?.vmid || range.state === 'live'),
+    has_recorded_vms: range.has_recorded_vms ?? ((inventory.counts?.boxes || 0) > 0 || !!inventory.machines?.scoring_engine?.vmid),
     counts: inventory.counts || {},
     nodes: range.nodes || [...nodes].sort(),
     engine_ip: range.engine_ip || inventory.machines?.scoring_engine?.mgmt_ip,
