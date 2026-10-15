@@ -13,6 +13,8 @@ export { prettyStage } from './logtex'
 export const ACTION_LABEL = {
   deploy: 'Deploy', plan: 'Dry run', verify: 'Verify',
   destroy: 'Destroy', scrim: 'Scrim', redeploy: 'Redeploy',
+  start: 'Start', freeze: 'Freeze', resume: 'Resume', end: 'End',
+  delete_team: 'Delete team',
 }
 export const RUN_ACTIONS = Object.keys(ACTION_LABEL)
 
@@ -26,7 +28,12 @@ export const stagesFor = (action) =>
     : action === 'destroy' ? ['Teardown']
       : action === 'verify' ? ['Verify']
         : action === 'redeploy' ? ['Redeploy']
-          : DEPLOY_STAGES
+          : action === 'start' ? ['Competition start']
+            : action === 'freeze' ? ['Competition freeze']
+              : action === 'resume' ? ['Competition resume']
+                : action === 'end' ? ['Competition end']
+                  : action === 'delete_team' ? ['Team removal']
+                    : DEPLOY_STAGES
 
 const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
 
@@ -35,7 +42,10 @@ const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
 // the workspace's deploy phases — a 6-second Destroy then reads "phase 8/8 seed", which is
 // nonsense. Single-step actions show their step only while in flight; deploy-family actions
 // show the phase string prettified ("6/8 · Repair sweep").
-const SINGLE_STEP = { verify: 'Verify', destroy: 'Teardown', redeploy: 'Redeploy' }
+const SINGLE_STEP = { verify: 'Verify', destroy: 'Teardown', redeploy: 'Redeploy',
+                      start: 'Competition start', freeze: 'Competition freeze',
+                      resume: 'Competition resume', end: 'Competition end',
+                      delete_team: 'Team removal' }
 
 export function stageLabel(run) {
   const single = SINGLE_STEP[run?.action]

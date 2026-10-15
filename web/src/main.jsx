@@ -5,6 +5,7 @@ import './index.css'
 import { initTheme } from './components/ui'
 import { ConfirmProvider, ToastProvider } from './components/kit'
 import TokenGate from './components/TokenGate'
+import Bell from './components/Bell'
 import Live from './pages/Live'
 import Runs from './pages/Runs'
 import Comps from './pages/Comps'
@@ -45,6 +46,7 @@ createRoot(document.getElementById('root')).render(
       </TokenGate>
       </ConfirmProvider>
       </ToastProvider>
+      <Bell />
     </BrowserRouter>
   </StrictMode>,
 )

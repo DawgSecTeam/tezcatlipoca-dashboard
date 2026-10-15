@@ -74,6 +74,11 @@ as before.
 | `POST /api/runs/{id}/cancel` | kill the run's process group |
 | `POST /api/runs/{id}/pause` | hold a deploy at its next phase boundary (`{run, detail}`) |
 | `POST /api/runs/{id}/resume` | withdraw the request, or let a held deploy continue |
+| `GET /api/competition?range=<key>` | one range's competition lifecycle (state, rounds, admin links + logins) |
+| `GET /api/requests` | reset requests the deployed portals pushed |
+| `POST /api/requests/{id}/approve` | submit a redeploy-reset run for the requested box (the run's exit resolves the request) |
+| `POST /api/requests/{id}/deny` | refuse the request |
+| `POST /api/ops/requests` | the portals' sync endpoint — per-range ops token, NOT the bearer token |
 | `GET /api/runs/{id}/log?since=N` | log tail by byte offset |
 | `GET /api/runs/{id}/events?since=N` | event cursor recovery (no polling loops needed) |
 | `GET /api/runs/{id}/events/stream` | SSE of live run events |
@@ -91,6 +96,30 @@ own output; Teams: the range's teams, boxes and redeploy actions; Infrastructure
 networks, boxes and machines from the inventory; Evidence: collected files grouped by the run
 that produced them; `/scrims/{id}` redirects here), and the per-competition editor under
 `/c/{id}`.
+
+## Deploy, then start
+
+A deploy no longer starts the competition: it ends with everything built, teams seeded and
+the student portal up — but the engine paused and the competition clock unstarted. The run
+page of the deploy gains a **Competition** panel once it finishes: Start, Pause scoring,
+Resume, End (End captures the final scoreboard into the range's evidence dir and freezes
+scoring — terminal), plus links into the Quotient admin pages (scoreboard, /admin,
+/announcements, /injects) with the logins that work there. Under the hood each action is a
+run of the engine's `competition-ops.py` in the range's workspace. The old one-shot behavior
+("start the competition right after deploying") is a checkbox in the deploy panel. Team
+removal is a **Delete team** button on the run page's Teams tab: it runs
+`destroy-competition.py --team <key>` — this team's clones die, the rest of the range is
+never addressed, and the team is deactivated (Quotient has no hard delete) with its
+scoreboard + portal logins revoked.
+
+### Reset requests
+
+A deployed portal can file box-reset requests to the dashboard: a team hits "Request reset"
+on its portal box card, the request lands in the dashboard's bell (top right) and on the
+range's Teams tab, and Approve submits the reset. The channel exists when the service env
+sets `TEZ_PUBLIC_URL` (the portal reaches the dashboard there) and the deploy was submitted
+through the dashboard — the per-range ops token is minted at submit and the portal's sync
+converges on the dashboard's statuses (approved / denied / done / failed).
 
 ### Pausing a deploy
 

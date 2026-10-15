@@ -1,11 +1,12 @@
-// Teams tab of the run page: the range's teams and their deployed boxes, plus the machines
-// that live outside the teams. Props: run (run record), comp (competition detail),
+// Teams tab of the run page: the range's teams and their deployed boxes, the reset
+// requests the teams filed through the portal, plus the machines that live outside the
+// teams. Props: run (run record), comp (competition detail),
 // inventory (GET /api/runs/{id}/inventory payload, or null while loading).
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { kindOf } from '../api'
+import { api, kindOf } from '../api'
 import { Button, Card, PlatformBadge, inputCls } from './ui'
-import { EmptyState, Icon, fmtMem, useToast } from './kit'
+import { EmptyState, Icon, fmtMem, useConfirm, useToast } from './kit'
 import { REDEPLOY_MODES, ResetBoxModal } from './runui'
 
 const specMap = (comp) => new Map((comp?.boxes || []).map((b) => [b.name, b]))
@@ -22,10 +23,29 @@ const Spec = ({ box }) => (box ? (
   </span>
 ) : <span className="text-faint">—</span>)
 
-function TeamCard({ team, specs, onRedeploy }) {
+const REQUEST_CLS = {
+  pending: 'bg-accent-soft text-accent',
+  approved: 'bg-accent-soft text-accent',
+  done: 'bg-sunken text-muted',
+  denied: 'bg-sunken text-faint',
+  failed: 'bg-danger-soft text-danger',
+}
+
+function TeamCard({ team, specs, onRedeploy, onDelete }) {
+  const confirm = useConfirm()
+  const toast = useToast()
   const boxes = team.boxes || []
   // The driver's --teams takes either form ('1' or 'team1'); prefer the identifier it prints.
   const target = team.identifier || team.key
+  const del = async () => {
+    const ok = await confirm({
+      title: `Delete team ${team.key}?`,
+      body: "Destroys this team's clones, deactivates it in the scoring engine and revokes its scoreboard + portal logins. Other teams, the engine and the templates are untouched. Quotient has no hard delete, so the team stays listed as inactive there.",
+      confirm: 'Delete team', danger: true,
+    })
+    if (!ok) return
+    try { await onDelete(team.key); toast('Team removal submitted') } catch (e) { toast(e.message, 'error') }
+  }
   return (
     <Card className="overflow-hidden">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 pt-4 pb-3">
@@ -54,6 +74,9 @@ function TeamCard({ team, specs, onRedeploy }) {
           <Button variant="ghost" className="!py-1 text-xs" disabled={!boxes.length}
             onClick={() => onRedeploy('', target, 'rollback-ready')}>
             <Icon name="back" className="h-3.5 w-3.5" />Rollback ready
+          </Button>
+          <Button variant="ghost" className="!py-1 text-xs text-danger" onClick={del}>
+            <Icon name="trash" className="h-3.5 w-3.5" />Delete team
           </Button>
         </div>
       </div>
@@ -195,6 +218,73 @@ function Machines({ machines }) {
   )
 }
 
+// The reset requests the range's teams filed through the portal. Approve submits a
+// redeploy-reset run against that box; the run's exit resolves the request (done/failed)
+// and the portal chip follows on the next sync.
+function ResetRequests({ rangeKey, compId }) {
+  const [rows, setRows] = useState(null)
+  const toast = useToast()
+  const reload = useCallback(() => api.requests()
+    .then((rs) => setRows(rs.filter((r) => r.range_key === rangeKey)))
+    .catch(() => setRows([])), [rangeKey])
+  useEffect(() => {
+    if (!rangeKey) return undefined
+    reload()
+    const t = setInterval(reload, 10000)
+    return () => clearInterval(t)
+  }, [rangeKey, reload]) // eslint-disable-line react-hooks/exhaustive-deps
+  if (!rangeKey || !rows?.length) return null
+  const act = (id, fn, label) => async () => {
+    try { await fn(id); toast(label); reload() } catch (e) { toast(e.message, 'error') }
+  }
+  return (
+    <Card className="overflow-hidden">
+      <div className="px-5 pt-4 pb-3">
+        <h3 className="text-sm font-semibold">Reset requests</h3>
+        <p className="mt-1 text-xs text-faint">Teams asked for a box reset through the portal. Approve runs a redeploy reset against that box; deny tells the team no.</p>
+      </div>
+      <table className="w-full text-left">
+        <thead>
+          <tr className="border-t-2 border-line text-[11px] font-semibold uppercase tracking-wider text-faint">
+            <th className="px-4 py-2">Team</th>
+            <th className="px-4 py-2">Box</th>
+            <th className="px-4 py-2">By</th>
+            <th className="px-4 py-2">Status</th>
+            <th className="px-4 py-2 text-right">Resolve</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y-2 divide-line">
+          {rows.map((r) => (
+            <tr key={r.id} className="text-sm">
+              <td className="px-4 py-2 font-mono">{r.team}</td>
+              <td className="px-4 py-2 font-mono">{r.box}</td>
+              <td className="px-4 py-2 text-xs text-muted">{r.requested_by || '—'}<span className="text-faint"> · {r.requested_at || ''}</span></td>
+              <td className="px-4 py-2">
+                <span className={`chip ${REQUEST_CLS[r.status] || 'bg-sunken text-muted'}`}>
+                  {r.status === 'approved' && <span className="mr-1.5 h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />}
+                  {r.status}
+                </span>
+              </td>
+              <td className="px-4 py-2 text-right">
+                {(r.status === 'pending' || r.status === 'failed') && (
+                  <span className="inline-flex gap-2">
+                    <Button variant="ghost" className="!py-1 text-xs" onClick={act(r.id, api.approveRequest, 'Reset approved')}>
+                      Approve
+                    </Button>
+                    <Button variant="ghost" className="!py-1 text-xs" onClick={act(r.id, api.denyRequest, 'Reset denied')}>
+                      Deny
+                    </Button>
+                  </span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Card>
+  )
+}
+
 export default function RunTeams({ run, comp, inventory }) {
   const [reset, setReset] = useState(null)
   const toast = useToast()
@@ -202,10 +292,18 @@ export default function RunTeams({ run, comp, inventory }) {
   const teams = inventory?.teams || []
   const redeploy = (box, team, mode) => setReset({ box, team, mode })
   const deployedFor = Number(run?.params?.teams) || rangeTeamCount(inventory)
+  // This run's range workspace: the same key the competition panel and the reset
+  // requests address.
+  const rangeKey = run?.params?._destroy_comp_dir || (run?.run_dir ? `${run.run_dir}/comp` : '')
+  const deleteTeam = (teamKey) => api.submitRun({
+    comp_id: run.comp_id, action: 'delete_team',
+    params: { team: teamKey, comp_dir: rangeKey },
+  })
   return (
     <div className="space-y-5">
+      <ResetRequests rangeKey={rangeKey} />
       {!inventory ? <Definition run={run} comp={comp} /> : teams.length ? (
-        teams.map((t) => <TeamCard key={t.key} team={t} specs={specs} onRedeploy={redeploy} />)
+        teams.map((t) => <TeamCard key={t.key} team={t} specs={specs} onRedeploy={redeploy} onDelete={deleteTeam} />)
       ) : (
         <Card className="p-2">
           <EmptyState icon="boxes" title="No teams in the inventory">

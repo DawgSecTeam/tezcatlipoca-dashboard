@@ -69,13 +69,14 @@ def build_mcp(manager):
                    scoring_vmid: int = 0, team_identifiers: str = "",
                    engine_mgmt_ip: str = "", engine_node: str = "", team_node: str = "",
                    nodes: list[str] = [], params: dict = {}) -> dict:
-        """Queue a run: action is deploy|plan|verify|destroy|scrim|redeploy. engine_ref
-        pins the tezcatlipoca revision (branch/SHA/tag). `nodes` names the catalog nodes
-        this run may deploy to (the engine gets them as its node list, not the .env);
-        `engine_node`/`team_node` then pin within that list. `team_identifiers` ("130,131")
-        and `engine_mgmt_ip` give THIS run its own team vmid block and management address,
-        which is what lets two ranges of one competition coexist on a single node. Returns
-        the run record."""
+        """Queue a run: action is deploy|plan|verify|destroy|scrim|redeploy, or one of the
+        competition-lifecycle kinds start|freeze|resume|end|delete_team (which act on the
+        range's workspace). engine_ref pins the tezcatlipoca revision (branch/SHA/tag).
+        `nodes` names the catalog nodes this run may deploy to (the engine gets them as its
+        node list, not the .env); `engine_node`/`team_node` then pin within that list.
+        `team_identifiers` ("130,131") and `engine_mgmt_ip` give THIS run its own team vmid
+        block and management address, which is what lets two ranges of one competition
+        coexist on a single node. Returns the run record."""
         p = dict(params or {})
         # Defaults, not overrides: an explicit params entry (a redeploy's teams selector, a
         # pinned scoring vmid) must survive the tool's own argument defaults.

@@ -66,6 +66,14 @@ def port():
     return int(os.environ.get("TEZ_DASHBOARD_PORT") or "8787")
 
 
+def public_url():
+    """The base URL a DEPLOYED PORTAL (on an engine VM) reaches this service at.
+
+    Only what TEZ_PUBLIC_URL says is passed to the portal (TEZ_OPS_URL): a defaulted
+    127.0.0.1 or 0.0.0.0 would wire a channel the portal can never deliver on."""
+    return os.environ.get("TEZ_PUBLIC_URL") or ""
+
+
 def opencode_bin():
     """The directory holding `opencode`, prepended to the driver child's PATH.
 

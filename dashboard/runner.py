@@ -29,7 +29,14 @@ FAIL_FAST_ACTIONS = ("deploy", "plan", "scrim")
 PAUSABLE_ACTIONS = ("deploy",)
 # Actions whose driver reports no engine phase: they get ONE stage event, not the range's
 # stale deploy phases (a 6-second teardown used to re-emit phase 1/8..8/8 in one second).
-SINGLE_STEP_STAGES = {"verify": "verify", "destroy": "teardown", "redeploy": "redeploy"}
+SINGLE_STEP_STAGES = {"verify": "verify", "destroy": "teardown", "redeploy": "redeploy",
+                      "start": "competition start", "freeze": "competition freeze",
+                      "resume": "competition resume", "end": "competition end",
+                      "delete_team": "team removal"}
+# Actions that act on the workspace an earlier run built (ownership, deploy state and the
+# terraform workdir all live there) instead of seeding their own.
+RANGE_ACTIONS = ("verify", "destroy", "redeploy", "start", "freeze", "resume", "end",
+                 "delete_team")
 
 # Third-party packages the engine drivers import in-process. The service's own interpreter IS
 # the drivers' interpreter, so a venv that predates a dependency fails deep inside a deploy
@@ -84,6 +91,18 @@ def build_command(action, comp_id, ws, params, nodes_file=None):
                 cmd += [flag, str(params[key])]
         if action == "plan":
             cmd.append("--plan-only")
+        # Deploy and start are separate steps: the default ends the deploy with the
+        # competition NOT started (engine paused, clock unstarted, injects deferred);
+        # start_after_deploy buys the old one-shot behavior back.
+        if not params.get("start_after_deploy"):
+            cmd.append("--hold-start")
+    elif action in ("start", "freeze", "resume", "end"):
+        cmd = [py, "competition-ops.py", action, "--comp-dir", ws]
+    elif action == "delete_team":
+        if not params.get("team"):
+            raise RunRefused("delete_team needs params.team (the team's key, e.g. team2)")
+        cmd = [py, "destroy-competition.py", "--comp-dir", ws,
+               "--team", str(params["team"]), "--yes"]
     elif action == "verify":
         cmd = [py, "verify-competition.py", ws]
     elif action == "destroy":
@@ -172,7 +191,7 @@ class RunManager:
         run_id = "run-" + uuid.uuid4().hex[:8]
         run_dir = self.runs_dir / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
-        if action in ("destroy", "verify", "redeploy"):
+        if action in RANGE_ACTIONS:
             # These act on the workspace that HOLDS the range: ownership (which VMs may be
             # touched), the deploy state and the terraform workdir all live in the workspace a
             # PRIOR run built, and a freshly seeded one has none — the teardown refused
@@ -189,6 +208,12 @@ class RunManager:
             params["_destroy_comp_dir"] = str(target)
         record = self.store.create_run(run_id, comp_id, action, engine_ref, params,
                                        run_dir, run_dir / "run.log")
+        if action == "deploy":
+            # A deployed portal needs a channel back to THIS dashboard (the reset-request
+            # sync): a per-range token minted once per range, keyed on the workspace the
+            # deploy is about to build. The URL rides the service env (TEZ_PUBLIC_URL) —
+            # unset it and portals deploy without the channel.
+            self.store.mint_range_token(str(run_dir / "comp"), comp_id)
         self._emit(run_id, "lifecycle", data={"state": "queued", "action": action})
         threading.Thread(target=self._run, args=(record, comp_src, engine_ref),
                          daemon=True).start()
@@ -368,6 +393,13 @@ class RunManager:
             # The run's own control file (deploy_lib/pause.py reads it): a per-run path, so a
             # request cannot outlive its run into a shared workspace.
             child_env["TEZ_PAUSE_FILE"] = str(run_dir / "pause")
+            # The portal ops channel (portal_ops → portal .env): the URL the deployed portal
+            # pushes reset requests to, and this range's own token.
+            if config.public_url():
+                child_env["TEZ_OPS_URL"] = config.public_url()
+                token = self.store.token_for_range(str(ws.resolve()))
+                if token:
+                    child_env["TEZ_OPS_TOKEN"] = token
             log = open(record["log_path"], "w")
             log.write(f"$ engine {engine_used['ref']} @ {engine_used['commit'][:12]}\n")
             log.write("$ " + " ".join(cmd) + "\n")
@@ -409,6 +441,18 @@ class RunManager:
                               ended_at=time.time())
         self._emit(run_id, "lifecycle",
                    data={"state": state, "returncode": rc, "error": error})
+        # An approved reset request rides the redeploy run that resolves it: a clean exit
+        # is `done`, anything else is `failed` (the team's chip frees the box either way —
+        # done/denied/failed all allow a new request). Only `approved` resolves, so the
+        # resolution is one-shot even if the same run id were finished twice.
+        for req in self.store.requests_for_run(run_id):
+            if req["status"] != "approved":
+                continue
+            outcome = "done" if state == "succeeded" else "failed"
+            self.store.set_request_status(req["id"], outcome)
+            self._emit(run_id, "request", data={"request": req["id"],
+                                                "status": outcome, "team": req["team"],
+                                                "box": req["box"]})
 
     def _cancel_requested(self, run_id):
         _, events = self.store.get_events(run_id, 0)

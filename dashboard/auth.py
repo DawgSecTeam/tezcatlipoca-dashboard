@@ -15,7 +15,8 @@ from dashboard import config
 class BearerAuth(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        if path == "/api/health" or not (path.startswith("/api") or path.startswith("/mcp")):
+        if path == "/api/health" or path.startswith("/api/ops") \
+                or not (path.startswith("/api") or path.startswith("/mcp")):
             return await call_next(request)
         tokens = config.tokens()
         supplied = (request.headers.get("authorization") or "").removeprefix("Bearer ").strip()

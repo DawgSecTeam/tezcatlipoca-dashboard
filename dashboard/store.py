@@ -4,6 +4,7 @@ Durable across service restarts: a run's state/outcome and its stage events surv
 so a reconnecting client recovers via the event cursor instead of polling."""
 
 import json
+import secrets
 import sqlite3
 import threading
 import time
@@ -22,6 +23,20 @@ CREATE TABLE IF NOT EXISTS events (
     run_id TEXT NOT NULL, seq INTEGER NOT NULL, ts REAL NOT NULL,
     kind TEXT NOT NULL, stage TEXT NOT NULL DEFAULT '', data TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY (run_id, seq)
+);
+CREATE TABLE IF NOT EXISTS requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    range_key TEXT NOT NULL, comp_id TEXT NOT NULL, portal_id TEXT NOT NULL,
+    team TEXT NOT NULL, box TEXT NOT NULL,
+    requested_at TEXT, requested_by TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    approved_run TEXT,
+    created_ts REAL NOT NULL,
+    UNIQUE (range_key, portal_id)
+);
+CREATE TABLE IF NOT EXISTS range_tokens (
+    token TEXT PRIMARY KEY, range_key TEXT NOT NULL, comp_id TEXT NOT NULL,
+    created_ts REAL NOT NULL
 );
 """
 
@@ -107,3 +122,87 @@ class Store:
         v = dict(row)
         v["params"] = json.loads(v["params"])
         return v
+
+    # ---- reset requests (the portal's push; the dashboard is the status authority) ----
+
+    def upsert_requests(self, range_key, comp_id, rows):
+        """Insert unknown requests, then answer with THIS store's status per portal id.
+
+        The portal pushes its whole list every sync; the response's statuses are
+        authoritative and it converges toward them, so an approve/deny/reset-run outcome
+        reaches the team without any dashboard → portal path. New rows always start
+        `pending` regardless of what the portal claims (only the dashboard resolves)."""
+        statuses = {}
+        with self._lock:
+            for row in rows:
+                portal_id = str(row.get("id") or "")
+                if not portal_id:
+                    continue
+                cur = self._db.execute(
+                    "SELECT id, status FROM requests WHERE range_key = ? AND portal_id = ?",
+                    (range_key, portal_id)).fetchone()
+                if cur:
+                    statuses[portal_id] = cur["status"]
+                    continue
+                self._db.execute(
+                    "INSERT INTO requests (range_key, comp_id, portal_id, team, box, "
+                    "requested_at, requested_by, status, created_ts) "
+                    "VALUES (?,?,?,?,?,?,?,'pending',?)",
+                    (range_key, comp_id, portal_id, str(row.get("team") or ""),
+                     str(row.get("box") or ""), str(row.get("at") or ""),
+                     str(row.get("by") or ""), time.time()))
+                statuses[portal_id] = "pending"
+            self._db.commit()
+        return statuses
+
+    def list_requests(self):
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM requests ORDER BY created_ts DESC").fetchall()
+        return [dict(r) for r in rows]
+
+    def set_request_status(self, req_id, status, approved_run=None):
+        with self._lock:
+            self._db.execute(
+                "UPDATE requests SET status = ?, approved_run = ? WHERE id = ?",
+                (status, approved_run, req_id))
+            self._db.commit()
+        return self.get_request(req_id)
+
+    def get_request(self, req_id):
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM requests WHERE id = ?", (req_id,)).fetchone()
+        return dict(row) if row else None
+
+    def requests_for_run(self, run_id):
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM requests WHERE approved_run = ?", (run_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---- per-range ops tokens (what a deployed portal presents at /api/ops/*) ----
+
+    def mint_range_token(self, range_key, comp_id):
+        token = secrets.token_urlsafe(24)
+        with self._lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO range_tokens (token, range_key, comp_id, created_ts) "
+                "VALUES (?,?,?,?)", (token, range_key, comp_id, time.time()))
+            self._db.commit()
+        return token
+
+    def range_for_token(self, token):
+        if not token:
+            return None
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM range_tokens WHERE token = ?", (token,)).fetchone()
+        return dict(row) if row else None
+
+    def token_for_range(self, range_key):
+        with self._lock:
+            row = self._db.execute(
+                "SELECT token FROM range_tokens WHERE range_key = ?",
+                (range_key,)).fetchone()
+        return row["token"] if row else None

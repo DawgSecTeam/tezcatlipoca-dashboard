@@ -30,7 +30,7 @@ function Footprint({ comp, teams }) {
 
 export default function DeployPanel({ comp }) {
   const [nodes, setNodes] = useState(null)
-  const [form, setForm] = useState({ engine_ref: 'main', teams: 2, scoring_vmid: '', engine_node: '', team_node: '', nodes: [] })
+  const [form, setForm] = useState({ engine_ref: 'main', teams: 2, scoring_vmid: '', engine_node: '', team_node: '', nodes: [], start_after_deploy: false })
   const [runs, setRuns] = useState([])
   const [viewing, setViewing] = useState(null)
   const [confirm, setConfirm] = useState(false)
@@ -92,6 +92,8 @@ export default function DeployPanel({ comp }) {
         engine_node: form.engine_node,
         team_node: form.team_node,
         nodes: form.nodes,
+        // deploy and start are separate steps; the checkbox buys the one-shot back
+        ...(form.start_after_deploy ? { params: { start_after_deploy: true } } : {}),
       })
       setViewing(run)
       refreshRuns()
@@ -123,6 +125,13 @@ export default function DeployPanel({ comp }) {
           <input className={`${inputCls} font-mono`} value={form.engine_ref} onChange={set('engine_ref')} placeholder="main" />
         </Field>
         <Field label="Teams"><Stepper value={form.teams} onChange={(v) => setForm({ ...form, teams: v })} /></Field>
+        <Field label="Competition start" hint="Off (default): the deploy leaves the engine paused and the clock unstarted — start it from the run page when the range is ready. On: the old one-shot deploy that starts scoring immediately.">
+          <label className="flex items-center gap-3 rounded-xl bg-sunken px-3 py-2 text-sm shadow-inset">
+            <input type="checkbox" checked={form.start_after_deploy}
+              onChange={(e) => setForm({ ...form, start_after_deploy: e.target.checked })} />
+            Start the competition right after deploying
+          </label>
+        </Field>
         <Footprint comp={comp} teams={form.teams} />
         <Field label="Proxmox nodes"
           hint={selected.length ? 'The pinned engine node hosts the engine; teams fill the selected nodes.' : 'Nothing selected — the run falls back to the service .env (single node).'}>

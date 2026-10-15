@@ -12,6 +12,7 @@ import {
 } from '../components/runui'
 import RunTeams from '../components/RunTeams'
 import RunInfra from '../components/RunInfra'
+import CompetitionPanel from '../components/CompetitionPanel'
 
 const TABS = ['teams', 'infrastructure', 'evidence']
 
@@ -342,6 +343,9 @@ export default function Run() {
 
       {tab === 'overview' && (
         <>
+          <CompetitionPanel
+            rangeKey={run.params?._destroy_comp_dir || (run.run_dir ? `${run.run_dir}/comp` : '')}
+            show={['succeeded', 'failed', 'cancelled'].includes(run.state)} />
           <Card className="p-6">
             <h2 className="label !mb-3">General</h2>
             <div className="min-h-[5.5rem]">

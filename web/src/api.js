@@ -59,9 +59,12 @@ export const api = {
 
   // Ranges: one entry per range workspace, live while its infrastructure is up.
   ranges: () => request('GET', '/ranges'),
+  // One range's competition lifecycle (the management panel's payload).
+  competition: (rangeKey) => request('GET', `/competition?range=${enc(rangeKey)}`),
 
   // runs: POST /api/runs {comp_id, action, engine_ref, teams, scoring_vmid, engine_node,
-  // team_node, params}; action ∈ deploy|plan|verify|destroy|scrim|redeploy.
+  // team_node, params}; action ∈ deploy|plan|verify|destroy|scrim|redeploy, or the
+  // lifecycle kinds start|freeze|resume|end|delete_team.
   submitRun: (body) => request('POST', '/runs', body),
   runs: (state) => request('GET', `/runs${state && state !== 'all' ? `?state=${enc(state)}` : ''}`),
   run: (id) => request('GET', `/runs/${enc(id)}`),
@@ -73,6 +76,10 @@ export const api = {
   runArtifacts: (id) => request('GET', `/runs/${enc(id)}/artifacts`),
   // The range's deployed infrastructure, projected server-side from its workspace.
   runInventory: (id) => request('GET', `/runs/${enc(id)}/inventory`),
+  // Reset requests (pushed by deployed portals; approve submits a redeploy-reset run).
+  requests: () => request('GET', '/requests'),
+  approveRequest: (id) => request('POST', `/requests/${id}/approve`),
+  denyRequest: (id) => request('POST', `/requests/${id}/deny`),
   // A single artifact file as a Blob (request() parses JSON, so this fetches raw).
   runArtifactFile: async (id, path) => {
     const res = await fetch(`/api/runs/${enc(id)}/artifacts/file?path=${enc(path)}`, {

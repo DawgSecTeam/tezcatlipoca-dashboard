@@ -109,7 +109,8 @@ function Drawer({ runId, onClose }) {
   }, [runId])
 
   // The shared action row: without it the pause/resume controls would be duplicated here.
-  const { cancel, pause, resume, live, held, canPause } = useRunActions(run, () => {
+  // runLive: this hook's live is "a run is in flight"; the stream live above is the SSE link.
+  const { cancel, pause, resume, live: runLive, held, canPause } = useRunActions(run, () => {
     api.run(runId).then(setRun).catch(() => {})
   })
 
@@ -131,7 +132,7 @@ function Drawer({ runId, onClose }) {
           <div className="flex shrink-0 items-center gap-2">
             {canPause && <Button onClick={pause}><Icon name="pause" />Pause after next stage</Button>}
             {held && <Button variant="primary" onClick={resume}><Icon name="play" />Resume</Button>}
-            {live && <Button variant="danger" onClick={cancel}><Icon name="warn" />Cancel</Button>}
+            {runLive && <Button variant="danger" onClick={cancel}><Icon name="warn" />Cancel</Button>}
             <button onClick={onClose} className="btn btn-ghost h-9 w-9 !p-0 text-faint" aria-label="Close">✕</button>
           </div>
         </div>

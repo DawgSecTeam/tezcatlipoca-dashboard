@@ -6,13 +6,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from mcp.server.streamable_http import TransportSecuritySettings
 from pydantic import BaseModel
 
 from dashboard import auth, comps_api, config
+from dashboard.competition import status_for_range
 from dashboard.events import EventBus
 from dashboard.inventory import build_inventory
 from dashboard.mcp_server import build_mcp
@@ -172,6 +173,64 @@ def create_app():
         if root not in f.parents or not f.is_file():
             raise HTTPException(404, "no such artifact")
         return FileResponse(f, filename=f.name)
+
+    # ---- competition lifecycle (the management panel) ----
+
+    def _range_or_404(key: str):
+        for rng in build_ranges(store):
+            if rng["key"] == key:
+                return rng
+        raise HTTPException(404, f"no such range: {key}")
+
+    @app.get("/api/competition")
+    def competition(range: str = ""):
+        if not range:
+            raise HTTPException(400, "range key required")
+        return status_for_range(store, _range_or_404(range))
+
+    # ---- reset requests (pushed by the deployed portals) ----
+
+    class OpsBody(BaseModel):
+        requests: list[dict] = []
+
+    @app.post("/api/ops/requests")
+    def ops_requests(request: Request, body: OpsBody):
+        # The global bearer middleware deliberately skips /api/ops: a deployed portal
+        # presents its own per-range token instead (the dashboard minted it at submit).
+        token = (request.headers.get("authorization") or "").removeprefix("Bearer ").strip()
+        rng = store.range_for_token(token)
+        if rng is None:
+            raise HTTPException(401, "unknown ops token")
+        statuses = store.upsert_requests(rng["range_key"], rng["comp_id"],
+                                         body.requests or [])
+        return {"statuses": statuses}
+
+    @app.get("/api/requests")
+    def requests_list():
+        return store.list_requests()
+
+    @app.post("/api/requests/{req_id}/approve")
+    def approve_request(req_id: int):
+        req = store.get_request(req_id)
+        if not req:
+            raise HTTPException(404, f"no such request: {req_id}")
+        if req["status"] == "approved":
+            raise HTTPException(409, "this request is already being executed")
+        try:
+            run = manager.submit(req["comp_id"], "redeploy", "main",
+                                 {"mode": "reset", "boxes": req["box"],
+                                  "comp_dir": req["range_key"]})
+        except RunRefused as e:
+            raise HTTPException(409, str(e))
+        store.set_request_status(req_id, "approved", approved_run=run["id"])
+        return store.get_request(req_id)
+
+    @app.post("/api/requests/{req_id}/deny")
+    def deny_request(req_id: int):
+        req = store.get_request(req_id)
+        if not req:
+            raise HTTPException(404, f"no such request: {req_id}")
+        return store.set_request_status(req_id, "denied")
 
     # MCP before the SPA catch-all (routes match in order)
     app.router.routes.extend(mcp_app.routes)
