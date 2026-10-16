@@ -16,6 +16,9 @@ class FakeStore:
     def list_runs(self, state=None, comp_id=None):
         return [r for r in self.runs if not comp_id or r["comp_id"] == comp_id]
 
+    def list_range_retires(self):
+        return {}
+
 
 def _rec(rid, action, comp="c", state="succeeded", rc=0, created=0.0, run_dir=None, params=None):
     return {"id": rid, "comp_id": comp, "action": action, "state": state, "returncode": rc,
@@ -151,7 +154,7 @@ def test_retired_candidate_refused_naming_the_retiring_run(tmp_path, monkeypatch
 
 
 def test_newest_non_retired_candidate_wins(tmp_path):
-    """Two live ranges of one competition both resolve; a destroy targets the newest."""
+    """The retired older range is skipped; the workspace that records VMs resolves."""
     _workspace(tmp_path, "run-old")
     live = _workspace(tmp_path, "run-new", vms=True)
     mgr = RunManager(FakeStore([
@@ -170,6 +173,85 @@ def test_teardown_failed_candidate_stays_resolvable(tmp_path):
         _rec("run-down", "destroy", state="failed", rc=1, created=2,
              run_dir=tmp_path / "run-d", params={"_destroy_comp_dir": str(ws)})]), None)
     assert mgr._range_workspace("c", {}, "destroy") == ws
+
+
+def test_a_stub_document_does_not_shadow_the_live_range(tmp_path):
+    """The refused run-791e0f7b left a seeded document with a run id but no inventory; ranked
+    by run-dir recency it won over run-ab512e1b's live range and every range action died on
+    `no engine management IP recorded` (2026-10-15)."""
+    live = _workspace(tmp_path, "run-live", vms=True)
+    _workspace(tmp_path, "run-stub")                      # identity + empty inventory
+    mgr = RunManager(FakeStore([
+        _rec("run-stub", "deploy", state="failed", rc=1, created=2,
+             run_dir=tmp_path / "run-stub"),
+        _rec("run-live", "deploy", created=1, run_dir=tmp_path / "run-live")]), None)
+    assert mgr._range_workspace("c", {}, "start") == live
+
+
+def test_an_ambiguous_resolver_refuses_naming_both(tmp_path):
+    """Two workspaces that both record a deployed range: picking one would act on the other
+    range's VMs, so the resolver names both instead of guessing."""
+    a = _workspace(tmp_path, "run-a", vms=True)
+    b = _workspace(tmp_path, "run-b", vms=True)
+    mgr = RunManager(FakeStore([
+        _rec("run-b", "deploy", created=2, run_dir=tmp_path / "run-b"),
+        _rec("run-a", "deploy", created=1, run_dir=tmp_path / "run-a")]), None)
+    with pytest.raises(RunRefused) as refused:
+        mgr._range_workspace("c", {}, "destroy")
+    assert "run-b" in str(refused.value) and "run-a" in str(refused.value)
+    assert str(a) in str(refused.value) and str(b) in str(refused.value)
+    assert mgr._range_workspace("c", {"comp_dir": str(b)}, "destroy") == b
+
+
+def test_an_orphan_reclaim_retires_the_range(tmp_path):
+    """`--orphan-comp/--orphan-run` destroys the VMs by tag and deletes the workspace, so no
+    destroy run ever reaches the store; without a retire record the stale document keeps
+    reading `live` (crimson-relay range-b289904cf2d5ccdf)."""
+    from dashboard.store import Store
+
+    ws = _workspace(tmp_path, "run-o", vms=True)
+    run_dir = ws.parent
+    store = Store(tmp_path / "db.sqlite3")
+    store.create_run("run-o", "c", "deploy", "main", {}, run_dir, run_dir / "run.log")
+    store.update_run("run-o", state="succeeded", returncode=0)
+    before = ranges.build_ranges(store)[0]
+    assert (before["state"], before["has_recorded_vms"]) == ("live", True)
+
+    store.retire_range(ws, "c", "destroy-competition.py --orphan-run run-o")
+    rng = ranges.build_ranges(store)[0]
+    assert (rng["state"], rng["live"], rng["has_recorded_vms"]) == ("retired", False, False)
+    assert rng["retired_by"] == "destroy-competition.py --orphan-run run-o"
+    assert rng["retired_at"] is not None
+
+
+def test_the_retire_endpoint_records_an_orphan_reclaim(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from dashboard.app import create_app
+    from dashboard.store import Store
+
+    monkeypatch.setenv("TEZ_DASHBOARD_DATA", str(tmp_path / "data"))
+    ws = _workspace(tmp_path, "run-o", vms=True)
+    run_dir = ws.parent
+    store = Store(tmp_path / "data" / "dashboard.sqlite3")
+    store.create_run("run-o", "c", "deploy", "main", {}, run_dir, run_dir / "run.log")
+    store.update_run("run-o", state="succeeded", returncode=0)
+
+    http = TestClient(create_app())
+    body = {"range": str(ws), "by": "destroy-competition.py --orphan-run run-o"}
+    assert http.post("/api/ranges/retire", json=body).status_code == 200
+    row = http.get("/api/ranges").json()[0]
+    assert row["state"] == "retired" and row["has_recorded_vms"] is False
+    assert row["retired_by"] == body["by"]
+    # `--orphan-run` names the estate document's run id, not the workspace path.
+    doc = json.loads((ws / "estate-state.json").read_text())
+    doc["identity"]["run_id"] = "run-engineid"
+    (ws / "estate-state.json").write_text(json.dumps(doc))
+    assert http.post("/api/ranges/retire",
+                     json={"run": "run-engineid", "by": "orphan"}).json()["retired_by"] == "orphan"
+    # A typo must not retire some other range.
+    assert http.post("/api/ranges/retire",
+                     json={"range": str(tmp_path / "nope")}).status_code == 404
+    assert http.post("/api/ranges/retire", json={"run": "run-nope"}).status_code == 404
 
 
 def test_ranges_route(tmp_path, monkeypatch):
@@ -491,6 +573,18 @@ def test_a_live_range_still_publishes_its_engine_link(tmp_path):
     summary = ranges.range_summary(rng, _EMPTY_INVENTORY, [])
     assert summary["has_recorded_vms"] is True
     assert summary["links"]["scoreboard"] == "http://10.0.0.9"
+
+
+def test_the_range_and_run_views_publish_the_resolved_engine_head(tmp_path):
+    """`engine_ref` is what the caller asked for; `engine_head` is the commit that ran."""
+    ws = _workspace(tmp_path, "run-h", vms=True)
+    run = _rec("run-h", "deploy", created=1, run_dir=ws.parent)
+    run["engine_ref"], run["engine_head"] = "main", "a" * 40
+    rng = _range_of(run)
+    assert rng["engine_ref"] == "main" and rng["engine_head"] == "a" * 40
+    assert ranges.run_view(run)["engine_head"] == "a" * 40
+    assert ranges.run_view(run, detail=True)["engine_head"] == "a" * 40
+    assert ranges.range_summary(rng, _EMPTY_INVENTORY, [])["engine_head"] == "a" * 40
 
 
 def test_comp_defined_follows_the_definitions_checkout(tmp_path, monkeypatch):

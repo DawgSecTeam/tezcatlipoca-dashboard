@@ -26,6 +26,9 @@ class FakeStore:
     def list_runs(self, state=None, comp_id=None):
         return list(self.runs)
 
+    def list_range_retires(self):
+        return {}
+
 
 def _run(tmp_path, ws):
     return {"id": "run-1", "comp_id": "comp-a", "action": "deploy", "state": "succeeded",

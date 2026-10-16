@@ -13,7 +13,7 @@ from pathlib import Path
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY, comp_id TEXT NOT NULL, action TEXT NOT NULL,
-    engine_ref TEXT, params TEXT NOT NULL DEFAULT '{}',
+    engine_ref TEXT, engine_head TEXT, params TEXT NOT NULL DEFAULT '{}',
     state TEXT NOT NULL, stage TEXT NOT NULL DEFAULT '',
     run_dir TEXT, log_path TEXT, pid INTEGER,
     returncode INTEGER, error TEXT,
@@ -38,6 +38,13 @@ CREATE TABLE IF NOT EXISTS range_tokens (
     token TEXT PRIMARY KEY, range_key TEXT NOT NULL, comp_id TEXT NOT NULL,
     created_ts REAL NOT NULL
 );
+-- A range reclaimed outside the run queue (`destroy-competition.py --orphan-*`): the
+-- workspace was deleted and the VMs destroyed by tag, so no `destroy` run ever reaches the
+-- runs table. Without this ledger the stale document still reads live.
+CREATE TABLE IF NOT EXISTS range_retires (
+    range_key TEXT PRIMARY KEY, comp_id TEXT NOT NULL, by TEXT NOT NULL,
+    created_ts REAL NOT NULL
+);
 """
 
 
@@ -49,6 +56,11 @@ class Store:
         self._lock = threading.Lock()
         with self._lock:
             self._db.executescript(_SCHEMA)
+            # A data dir created before `engine_head` exists: CREATE TABLE IF NOT EXISTS leaves
+            # the old table untouched, and every run record must be able to state what ran.
+            if "engine_head" not in {r[1] for r in self._db.execute("PRAGMA table_info(runs)")}:
+                self._db.execute("ALTER TABLE runs ADD COLUMN engine_head TEXT")
+            self._db.commit()
 
     def create_run(self, run_id, comp_id, action, engine_ref, params, run_dir, log_path):
         created = time.time()
@@ -65,10 +77,11 @@ class Store:
         return {"id": run_id, "comp_id": comp_id, "action": action, "engine_ref": engine_ref,
                 "params": params, "state": "queued", "stage": "", "run_dir": str(run_dir),
                 "log_path": str(log_path), "pid": None, "returncode": None, "error": None,
-                "created_at": created, "started_at": None, "ended_at": None}
+                "engine_head": None, "created_at": created, "started_at": None, "ended_at": None}
 
     def update_run(self, run_id, **fields):
-        allowed = {"state", "stage", "pid", "returncode", "error", "started_at", "ended_at"}
+        allowed = {"state", "stage", "pid", "returncode", "error", "started_at", "ended_at",
+                   "engine_head"}
         sets = ", ".join(f"{k} = ?" for k in fields if k in allowed)
         vals = [v for k, v in fields.items() if k in allowed]
         with self._lock:
@@ -217,3 +230,25 @@ class Store:
                 "SELECT token FROM range_tokens WHERE range_key = ?",
                 (range_key,)).fetchone()
         return row["token"] if row else None
+
+    # ---- retire ledger (a range reclaimed outside the run queue) ----
+
+    def retire_range(self, range_key, comp_id, by):
+        with self._lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO range_retires (range_key, comp_id, by, created_ts) "
+                "VALUES (?,?,?,?)", (str(Path(range_key).resolve()), comp_id, by, time.time()))
+            self._db.commit()
+        return self.get_range_retire(range_key)
+
+    def get_range_retire(self, range_key):
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM range_retires WHERE range_key = ?",
+                (str(Path(range_key).resolve()),)).fetchone()
+        return dict(row) if row else None
+
+    def list_range_retires(self):
+        with self._lock:
+            rows = self._db.execute("SELECT * FROM range_retires").fetchall()
+        return {r["range_key"]: dict(r) for r in rows}

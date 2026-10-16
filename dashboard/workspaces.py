@@ -58,3 +58,22 @@ def seed_workspace(comp_src, run_dir):
         else:
             shutil.copy2(item, dst, follow_symlinks=False)
     return run_dir
+
+
+def release(run_dir, retired):
+    """Discard a finished run's disposable engine worktree, holding the range's workspace.
+
+    `<run_dir>/comp` is the range, not run scratch: the estate document carries the run id
+    (the ownership proof), the teardown journal and the VM inventory a failed destroy must be
+    re-run against, and it also holds the collected evidence. Deleting it while its range
+    exists is what stranded four `teardown_failed` ranges with no sanctioned way to finish, so
+    it is held for as long as the range is not retired. Even a retired range's workspace is
+    only reclaimed as bare debris: the document and the evidence tree are the record a later
+    template reclaim and the run page read.
+    """
+    run_dir = Path(run_dir)
+    shutil.rmtree(run_dir / "engine", ignore_errors=True)
+    comp = run_dir / "comp"
+    if (retired and not (comp / "estate-state.json").exists()
+            and not (comp / ".automated-tests").exists()):
+        shutil.rmtree(comp, ignore_errors=True)

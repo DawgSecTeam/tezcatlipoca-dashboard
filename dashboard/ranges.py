@@ -61,13 +61,14 @@ def retired_by(runs):
                  if r["action"] in ("destroy", "scrim") and r["returncode"] == 0), None)
 
 
-def range_state(key, runs, recorded=None):
+def range_state(key, runs, recorded=None, retired=False):
     if any(r["state"] in IN_FLIGHT for r in runs):
         return "building"
-    recorded = has_vms(key) if recorded is None else recorded
+    if recorded is None:
+        recorded = has_vms(key)
     if recorded:
         return "live"
-    if retired_by(runs):
+    if retired:
         return "retired"
     if any(r["action"] == "destroy" for r in runs):
         # Every destroy ended rc!=0: an incomplete teardown may have left resources the
@@ -77,12 +78,16 @@ def range_state(key, runs, recorded=None):
     return "failed"
 
 
-def range_view(key, runs):
+def range_view(key, runs, reclaim=None):
     origin = next((r for r in runs if r["action"] in ("deploy", "scrim")
                    and str((Path(r["run_dir"]) / "comp").resolve()) == key), None)
     retiring = retired_by(runs)
-    recorded = has_vms(key)
-    state = range_state(key, runs, recorded)
+    # A range reclaimed by `destroy-competition.py --orphan-comp/--orphan-run` is retired in
+    # the store: its workspace document still lists the VMs a teardown never got to forget, so
+    # the recorded inventory must not win (the board kept a phantom `live` for crimson-relay
+    # range-b289904cf2d5ccdf while a Proxmox sweep found zero tagged VMs).
+    recorded = has_vms(key) and reclaim is None
+    state = range_state(key, runs, recorded, retired=bool(retiring or reclaim))
     return {
         "id": range_id(key),
         "key": key,
@@ -92,10 +97,13 @@ def range_view(key, runs):
         # The recorded infrastructure is what the range's engine address and its recovery
         # actions hang on, so every view of a range carries it.
         "has_recorded_vms": recorded,
-        "retired_by": retiring["id"] if retiring else None,
-        "retired_at": retiring["ended_at"] if retiring else None,
+        "retired_by": retiring["id"] if retiring else (reclaim or {}).get("by"),
+        "retired_at": (retiring["ended_at"] if retiring else (reclaim or {}).get("created_ts")),
         "deploy_run_id": origin["id"] if origin else None,
         "engine_ref": origin.get("engine_ref") if origin else None,
+        # The commit the deploy actually cut, not the ref it asked for: a stale fetch used to
+        # execute an older revision while the record said `main` (known-issues: provenance).
+        "engine_head": origin.get("engine_head") if origin else None,
         # The RANGE's own deploy/scrim run: a destroy's params.teams is a form default,
         # which is how a 1-team range showed "2 teams" on the board.
         "teams": (origin.get("params") or {}).get("teams") if origin else None,
@@ -105,15 +113,16 @@ def range_view(key, runs):
 
 def build_ranges(store):
     """Every range, newest run first."""
+    reclaimed = store.list_range_retires()
     grouped = {}
     for run in store.list_runs():  # newest first
         grouped.setdefault(range_key(run), []).append(run)
-    return sorted((range_view(key, runs) for key, runs in grouped.items()),
+    return sorted((range_view(key, runs, reclaimed.get(key)) for key, runs in grouped.items()),
                   key=lambda r: r["runs"][0]["created_at"], reverse=True)
 
 
 _RUN_FIELDS = ("id", "action", "state", "stage", "returncode", "created_at", "started_at",
-               "ended_at")
+               "ended_at", "engine_head")
 _PARAM_FIELDS = ("teams", "team", "boxes", "mode", "comp_dir", "_destroy_comp_dir", "nodes",
                  "engine_node", "team_node", "engine_mgmt_ip", "team_identifiers",
                  "scoring_vmid", "start_after_deploy")
@@ -179,6 +188,7 @@ def range_summary(rng, inventory, requests):
         "latest_destroy": run_view(next((run for run in rng["runs"]
                                           if run["action"] == "destroy"), None)),
         "engine_ref": origin.get("engine_ref") if origin else None,
+        "engine_head": origin.get("engine_head") if origin else None,
     })
     try:
         for line in (Path(rng["key"]) / "Compfile").read_text().splitlines():

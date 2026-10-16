@@ -257,9 +257,17 @@ class RunManager:
 
     def _range_workspace(self, comp_id, params, action):
         """The workspace holding this competition's range: an explicit `comp_dir`, else the
-        newest NON-retired run workspace OF THIS COMPETITION that carries an estate run id
-        (the store is the ledger of which run dirs belong to which competition — matching by
-        workspace name would let one competition's run reach another's range).
+        workspace that RECORDS a deployed range of this competition (the store is the ledger of
+        which run dirs belong to which competition — matching by workspace name would let one
+        competition's run reach another's range).
+
+        Candidates rank by whether their document records an inventory (a range that exists),
+        never by run-dir recency alone: a run that died before building one leaves a seeded
+        document carrying a run id, and letting that stub win made every later range action
+        target a workspace with nothing in it (live 2026-10-15, the refused run-791e0f7b stubbed
+        over run-ab512e1b). Two candidates at the winning rank mean the workspace that owns the
+        range is genuinely ambiguous, and picking one would act on the wrong VMs, so that is
+        refused naming both.
 
         A retired candidate is skipped so a re-run teardown cannot be queued against a range
         that is already gone; teardown is idempotent, so a range whose teardown merely FAILED
@@ -278,28 +286,27 @@ class RunManager:
                     f"the range in {rng['deploy_run_id']} was torn down by {rng['retired_by']} — "
                     f"nothing to {action} (a fresh deploy builds a new range)")
             return ws
-        retired = []
+        retired, candidates = [], []
         for run in self.store.list_runs(comp_id=comp_id):        # newest first
             ws = Path(run["run_dir"]) / "comp"
             if not (ws / "Compfile").exists():
                 continue
             if not estate.load_flat(ws).get("run_id"):
                 continue
-            if not estate.has_inventory(ws):
-                # A run that never built a range can still leave a seeded document carrying a
-                # run id (deploy writes identity/secrets before it fails, preflight included).
-                # Ranking by recency among "carries any run id" let that stub SHADOW the live
-                # range for every later range action: two starts and a peer submit died on
-                # "no engine management IP recorded" while the real range sat in another
-                # workspace (live 2026-10-15, scrim-one-light: the refused run-791e0f7b stubbed
-                # over run-ab512e1b). An empty inventory is the document own signal that
-                # nothing was built (estate.has_inventory).
-                continue
             rng = by_key.get(str(ws.resolve()))
             if rng and rng["state"] == "retired":
                 retired.append(rng)
                 continue
-            return ws
+            candidates.append((run["id"], ws))
+        built = [(rid, ws) for rid, ws in candidates if estate.has_inventory(ws)]
+        pool = built or candidates
+        if len(pool) > 1:
+            (a_id, a_ws), (b_id, b_ws) = pool[0], pool[1]
+            raise RunRefused(
+                f"{len(pool)} workspaces record a range for {comp_id} ({a_id} at {a_ws}, "
+                f"{b_id} at {b_ws}) — name the one to {action} with comp_dir")
+        if pool:
+            return pool[0][1]
         if retired:
             rng = retired[0]
             raise RunRefused(
@@ -449,6 +456,9 @@ class RunManager:
             ws = self._workspace(record, comp_src)
             worktree = run_dir / "engine"
             engine_used = self._provision_worktree(worktree, engine_ref, run_dir)
+            # What actually runs, in the record: `engine_ref` is what was ASKED for (a branch
+            # name), `engine_head` the commit that ref resolved to at the cut.
+            self.store.update_run(run_id, engine_head=engine_used["commit"])
             nodes_file = self._run_nodes_file(record["params"], run_dir)
             cmd = build_command(record["action"], record["comp_id"], ws, record["params"],
                                 nodes_file)
@@ -471,7 +481,11 @@ class RunManager:
             # it would make the operator's click look lost.
             state = "pausing" if (run_dir / "pause").exists() else "running"
             self.store.update_run(run_id, state=state, started_at=time.time())
-            self._emit(run_id, "lifecycle", data={"state": state, "cmd": cmd})
+            # The cut is announced here: carry the resolved commit so a subscriber need not
+            # trust `engine_ref` alone for what this run executes.
+            self._emit(run_id, "lifecycle", data={"state": state, "cmd": cmd,
+                                                  "engine_ref": engine_ref,
+                                                  "engine_head": engine_used["commit"]})
             proc = subprocess.Popen(cmd, cwd=str(worktree), stdout=log, stderr=subprocess.STDOUT,
                                     stdin=subprocess.DEVNULL, start_new_session=True,
                                     env=child_env)
@@ -485,11 +499,20 @@ class RunManager:
         except Exception as e:  # a crashed run must end as a failed run, not a ghost
             self._finish(run_id, None, error=f"{type(e).__name__}: {e}")
         finally:
-            shutil.rmtree(run_dir / "engine", ignore_errors=True)
+            # Never discard the range's workspace while its range exists: the estate document
+            # (run id, ownership, teardown journal) is the sanctioned way to finish a failed
+            # teardown (known-issues: a deleted per-run workspace strands its range).
+            workspaces.release(run_dir, self._range_retired(record))
             (run_dir / "bad-auto").unlink(missing_ok=True)
             (run_dir / "pause").unlink(missing_ok=True)
             subprocess.run(["git", "-C", str(self.engine_repo), "worktree", "prune"],
                            capture_output=True)
+
+    def _range_retired(self, record):
+        """Whether the range this run acted on is retired, so its workspace may be released."""
+        key = ranges.range_key(record)
+        rng = next((r for r in ranges.build_ranges(self.store) if r["key"] == key), None)
+        return bool(rng and rng["state"] == "retired")
 
     def _finish(self, run_id, rc, error=None, cancelling=False):
         if error is not None:
@@ -542,8 +565,16 @@ class RunManager:
         return f"origin/{engine_ref}" if probe.returncode == 0 else engine_ref
 
     def _provision_worktree(self, worktree, engine_ref, run_dir):
-        subprocess.run(["git", "-C", str(self.engine_repo), "fetch", "origin", "--quiet"],
-                       capture_output=True)
+        # A discarded fetch return code is how a whole round executed `2358606` while its
+        # records said `main`: `_resolve_ref` then resolved origin/main from whatever cached
+        # remote-tracking ref was on disk, and the run executed an older revision than the one
+        # the UI reported. A run that cannot guarantee which code it will execute must not
+        # start, so a failed fetch refuses (naming the ref and git's error) before any worktree.
+        fetch = subprocess.run(["git", "-C", str(self.engine_repo), "fetch", "origin", "--quiet"],
+                               capture_output=True, text=True)
+        if fetch.returncode != 0:
+            raise RunRefused(f"cannot fetch engine ref {engine_ref!r} from origin: "
+                             f"{fetch.stderr.strip()[-200:]}")
         resolved = self._resolve_ref(engine_ref)
         proc = subprocess.run(["git", "-C", str(self.engine_repo), "worktree", "add",
                                "--detach", str(worktree), resolved],

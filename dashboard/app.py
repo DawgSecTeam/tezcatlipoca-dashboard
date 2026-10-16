@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from mcp.server.streamable_http import TransportSecuritySettings
 from pydantic import BaseModel
 
-from dashboard import auth, comps_api, config
+from dashboard import auth, comps_api, config, estate
 from dashboard.competition import status_for_range
 from dashboard.events import EventBus
 from dashboard.inventory import build_inventory
@@ -102,6 +102,38 @@ def create_app():
     @app.get("/api/ranges/board")
     def ranges_board():
         return build_range_board(store)
+
+    class RetireBody(BaseModel):
+        # The reclaim knows the workspace, or only the run id it reclaimed by
+        # (`destroy-competition.py --orphan-run` takes the estate document's run id).
+        range: str = ""
+        run: str = ""
+        by: str = "orphan reclaim"
+
+    @app.post("/api/ranges/retire")
+    def retire_range(body: RetireBody):
+        """Retire a range reclaimed OUTSIDE the queue (`destroy-competition.py --orphan-*`).
+
+        The reclaim destroys the VMs by tag and deletes the workspace, so no `destroy` run ever
+        reaches the store and the stale document kept reading `live` (and kept resolving bare
+        range actions to a dead workspace).
+        """
+        claimed = str(Path(body.range).resolve()) if body.range else ""
+
+        def matches(rng):
+            if claimed and rng["key"] == claimed:
+                return True
+            return bool(body.run) and (body.run in {run["id"] for run in rng["runs"]}
+                                       or body.run == estate.load_flat(rng["key"]).get("run_id"))
+
+        found = [rng for rng in build_ranges(store) if matches(rng)]
+        if not found:
+            raise HTTPException(404, f"no such range: {body.range or body.run}")
+        if len(found) > 1:
+            raise HTTPException(409, "the run id names several ranges: "
+                                     + ", ".join(rng["key"] for rng in found))
+        store.retire_range(found[0]["key"], found[0]["comp_id"], body.by)
+        return next(r for r in build_ranges(store) if r["key"] == found[0]["key"])
 
     @app.get("/api/ranges/{range_id}")
     def get_range(range_id: str):
