@@ -219,7 +219,13 @@ class RunManager:
         run_id = "run-" + uuid.uuid4().hex[:8]
         run_dir = self.runs_dir / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
-        if action in RANGE_ACTIONS or params.get("comp_dir"):
+        # A scrim normally DEPLOYS its own range, so it seeds its own workspace — but
+        # --skip-deploy/--resume-event run against the range an earlier deploy built, whose
+        # secrets (teams.json) and ownership live in THAT workspace: seeding a fresh one made
+        # the harness die immediately on a missing teams.json (live 2026-10-15, run-63fb7e14).
+        resume_scope = action == "scrim" and (params.get("skip_deploy")
+                                              or params.get("resume_event"))
+        if action in RANGE_ACTIONS or resume_scope or params.get("comp_dir"):
             # These act on the workspace that HOLDS the range: ownership (which VMs may be
             # touched) and the estate state document (run id, secrets, VM inventory) live in
             # the workspace a PRIOR run built, and a freshly seeded one has none — the
@@ -278,6 +284,16 @@ class RunManager:
             if not (ws / "Compfile").exists():
                 continue
             if not estate.load_flat(ws).get("run_id"):
+                continue
+            if not estate.has_inventory(ws):
+                # A run that never built a range can still leave a seeded document carrying a
+                # run id (deploy writes identity/secrets before it fails, preflight included).
+                # Ranking by recency among "carries any run id" let that stub SHADOW the live
+                # range for every later range action: two starts and a peer submit died on
+                # "no engine management IP recorded" while the real range sat in another
+                # workspace (live 2026-10-15, scrim-one-light: the refused run-791e0f7b stubbed
+                # over run-ab512e1b). An empty inventory is the document own signal that
+                # nothing was built (estate.has_inventory).
                 continue
             rng = by_key.get(str(ws.resolve()))
             if rng and rng["state"] == "retired":

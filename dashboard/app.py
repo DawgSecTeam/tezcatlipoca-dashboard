@@ -35,6 +35,9 @@ class RunBody(BaseModel):
     engine_node: str = ""
     team_node: str = ""
     nodes: list[str] = []
+    # Names the workspace a range action must act on. Optional: without it the manager
+    # resolves the competition own range workspace.
+    comp_dir: str = ""
     params: dict = {}
 
 
@@ -79,6 +82,13 @@ def create_app():
                          ("engine_node", body.engine_node), ("team_node", body.team_node),
                          ("nodes", body.nodes)):
             params.setdefault(key, val)
+        # Only `params` reaches the runner, so a top-level comp_dir used to be dropped
+        # silently and the action fell through to range auto-resolution — which then targeted
+        # whatever workspace looked newest (live 2026-10-15: a refused run stub shadowed the
+        # live range and the action died on "no engine management IP recorded"). Honour the
+        # documented body field as the same default the other convenience fields are.
+        if getattr(body, "comp_dir", ""):
+            params.setdefault("comp_dir", body.comp_dir)
         try:
             return manager.submit(body.comp_id, body.action, body.engine_ref, params)
         except RunRefused as e:
