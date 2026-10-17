@@ -255,6 +255,31 @@ def _ws(tmp_path, state):
             "state": "live", "has_recorded_vms": True}
 
 
+def test_engine_status_polls_with_the_login_cookie(tmp_path, monkeypatch):
+    """Quotient's /api/engine is admin-only: the login cookie is the authorization."""
+    seen = {}
+
+    class Response:
+        def __init__(self, payload=None): self.payload = payload
+        def raise_for_status(self): pass
+        def json(self): return self.payload
+
+    class Session:
+        def __init__(self): self.cookies = {}
+        def post(self, url, json, timeout):
+            self.cookies["quotient"] = "session"
+            return Response()
+        def get(self, url, timeout):
+            seen["cookie"] = self.cookies.get("quotient")
+            return Response({"competition_started": False})
+
+    monkeypatch.setattr(competition.requests, "Session", Session)
+    ws = _ws(tmp_path, {"scoring_password": "s"})["key"]
+    assert competition.engine_status(ws, {"scoring_password": "s"}) == {
+        "competition_started": False}
+    assert seen["cookie"] == "session"
+
+
 def test_lifecycle_states_from_the_engine_api(tmp_path, monkeypatch):
     def fake_engine(ws, state):
         return state.get("_engine")

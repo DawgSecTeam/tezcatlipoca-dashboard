@@ -36,9 +36,9 @@ def _engine_ip(ws):
     return estate.load_flat(ws).get("engine_mgmt_ip") or None
 
 
-def _login(base_url, password):
-    r = requests.post(f"{base_url}/api/login",
-                      json={"username": "scoring", "password": password}, timeout=_TIMEOUT)
+def _login(session, base_url, password):
+    r = session.post(f"{base_url}/api/login",
+                     json={"username": "scoring", "password": password}, timeout=_TIMEOUT)
     r.raise_for_status()
     return r
 
@@ -50,8 +50,11 @@ def engine_status(ws, state):
         return None
     base_url = f"http://{ip}"
     try:
-        _login(base_url, state.get("scoring_password") or "")
-        r = requests.get(f"{base_url}/api/engine", timeout=_TIMEOUT)
+        # /api/engine is admin-only, and the login's cookie is what carries that role;
+        # a second bare request is anonymous and always 401.
+        session = requests.Session()
+        _login(session, base_url, state.get("scoring_password") or "")
+        r = session.get(f"{base_url}/api/engine", timeout=_TIMEOUT)
         r.raise_for_status()
         return r.json()
     except (requests.RequestException, ValueError):
