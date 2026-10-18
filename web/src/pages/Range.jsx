@@ -50,12 +50,13 @@ function StatusLine({ range, summary, competition }) {
   const retired = range.state === 'retired'
   const scoring = retired ? 'Competition archived' : competition.error ? 'Scoring status unavailable' : COMPETITION_LABEL[competition.view?.state] || 'Checking scoring…'
   const scoringBad = !retired && (competition.error || competition.view?.state === 'unknown')
-  const round = competition.view?.engine?.last_round
+  // /api/engine answers last_round as a round record ({ID, StartTime, Checks, SLAs}), not a number.
+  const round = competition.view?.engine?.last_round?.ID
   const run = summary.active_runs[0]
   const danger = ['failed', 'teardown_failed'].includes(range.state)
   return <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
     <span className={`inline-flex items-center gap-2 font-semibold ${danger ? 'text-danger' : ''}`}><span className={`h-2 w-2 rounded-full ${danger ? 'bg-danger' : retired ? 'bg-line' : 'bg-accent'}`} />{RANGE_LABEL[range.state] || range.state}</span>
-    <span className={scoringBad ? 'text-danger' : 'text-muted'}>{scoring}{round != null && !retired ? ` · round ${round}` : ''}</span>
+    <span className={scoringBad ? 'text-danger' : 'text-muted'}>{scoring}{round > 0 && !retired ? ` · round ${round}` : ''}</span>
     {run && <Link to={`/ranges/${range.id}/activity?operation=${run.id}`} className="text-accent hover:underline">{ACTION_LABEL[run.action] || run.action} {run.state}{run.stage ? ` · ${run.stage}` : ''}</Link>}
   </div>
 }

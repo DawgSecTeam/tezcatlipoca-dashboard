@@ -190,7 +190,7 @@ function CompetitionBody({ rangeKey, rangeId, compId, engineRef, onSubmitted, di
         <h2 className={access ? 'label !mb-0' : 'text-base font-semibold'}>{access ? 'Competition & access' : 'Competition'}</h2>
         {view && <span className={`chip px-2.5 py-1 ${STATE_CLS[view.state] || STATE_CLS.unknown}`}>{STATE_TEXT[view.state] || view.state || 'unknown'}</span>}
         {(loading || refreshing) && <span role="status" aria-label="Refreshing competition"><Spinner /></span>}
-        {view?.engine?.last_round != null && <span className="font-mono text-xs text-faint">round {view.engine.last_round}</span>}
+        {view?.engine?.last_round?.ID > 0 && <span className="font-mono text-xs text-faint">round {view.engine.last_round.ID}</span>}
         {(!controlled || onRefresh) && <Button variant="ghost" className="ml-auto !py-1 text-xs" disabled={refreshing || loading} onClick={refresh}>Refresh</Button>}
       </div>
       {error && <><ErrorBanner error={error} onRetry={!controlled || onRefresh ? refresh : undefined} />

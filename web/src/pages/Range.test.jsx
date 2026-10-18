@@ -44,6 +44,12 @@ it('orders attention, pending requests and competition first, with access and fa
   expect(screen.queryByText('Raw output viewer')).toBeNull()
 })
 
+it('renders the engine round record as its round number', () => {
+  useCompetitionData.mockReturnValue({ view: { state: 'running', engine: { last_round: { ID: 3, StartTime: '2026-10-18T00:00:00Z', Checks: null, SLAs: null } } }, error: null })
+  open()
+  expect(screen.getByText(/round 3/)).toBeTruthy()
+})
+
 it('surfaces an in-flight operation with its controls on the overview', () => {
   useRangeData.mockReturnValue({ data: { ...fixture, state: 'building', runs: [{ id: 'deploy-one', action: 'deploy', state: 'paused', stage: 'phase 4/8' }] }, error: null, refresh: vi.fn() })
   open()
