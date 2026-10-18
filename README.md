@@ -96,6 +96,21 @@ therefore per-run submit inputs, passed through to `create-competition.py`'s
 `--team-identifiers`/`--engine-mgmt-ip`; absent, a run keeps the env/catalog defaults exactly
 as before.
 
+A `--teams-only` teardown retires a range but keeps this competition's engine template and
+goldens for its next run. The board carries them as `kept_templates` /
+`reclaimable_templates`, and a full destroy is allowed to resolve that retired workspace
+(only while it has no live VMs); all other actions still refuse it.
+
+### Retention
+
+`python3 -m dashboard.retention <run-id>` is the sanctioned way to reclaim a run dir:
+it refuses unless that run's range is already retired (the same gate
+`POST /api/ranges/retire` records), then MOVES `<data>/runs/<run-id>` to
+`<data>/retired-runs/<YYYY-MM-DD>/<run-id>` — `comp/` and its evidence tree included — and
+never deletes a workspace. A non-retired range whose workspace is gone is reported as
+`workspace_missing` by `GET /api/ranges` and the inventory, so the board cannot silently
+lose it.
+
 ## API (bearer token, `Authorization: Bearer <token>`)
 
 | Route | What |

@@ -45,6 +45,18 @@ def has_vms(key):
     return any(row.get("kind") not in estate.KEPT_KINDS for row in estate.vms(Path(key)))
 
 
+def reclaimable_templates(key, state, kept=None):
+    """Whether a FULL teardown may still act on a retired range's kept templates.
+
+    `--teams-only` retires a range but keeps this competition's engine template and goldens
+    recorded for its next run. A full destroy is the only path that can destroy them, so the
+    resolver must let it reach exactly such a workspace — while it has no live VMs left. Every
+    other action, and a retired range with an empty inventory, still refuses.
+    """
+    kept = estate.kept_vms(Path(key)) if kept is None else kept
+    return state == "retired" and bool(kept) and not has_vms(key)
+
+
 def retired_by(runs):
     """The newest run of these that ended rc=0 having torn the range down, or None.
 
@@ -86,8 +98,10 @@ def range_view(key, runs, reclaim=None):
     # the store: its workspace document still lists the VMs a teardown never got to forget, so
     # the recorded inventory must not win (the board kept a phantom `live` for crimson-relay
     # range-b289904cf2d5ccdf while a Proxmox sweep found zero tagged VMs).
-    recorded = has_vms(key) and reclaim is None
+    live_vms = has_vms(key)
+    recorded = live_vms and reclaim is None
     state = range_state(key, runs, recorded, retired=bool(retiring or reclaim))
+    kept = estate.kept_vms(Path(key))
     return {
         "id": range_id(key),
         "key": key,
@@ -97,6 +111,15 @@ def range_view(key, runs, reclaim=None):
         # The recorded infrastructure is what the range's engine address and its recovery
         # actions hang on, so every view of a range carries it.
         "has_recorded_vms": recorded,
+        # `--teams-only` leaves these behind ON PURPOSE; they are not infrastructure, but a
+        # full teardown is still allowed to reclaim them (reclaimable_templates below).
+        "kept_templates": [{"kind": row.get("kind"), "name": row.get("name"),
+                            "node": row.get("node"), "vmid": row.get("vmid")}
+                           for row in kept],
+        "reclaimable_templates": reclaimable_templates(key, state, kept=kept),
+        # A non-retired range whose workspace vanished from disk. Reported, never inferred
+        # into a different state: the board must show the loss instead of dropping the range.
+        "workspace_missing": state != "retired" and not Path(key).is_dir(),
         "retired_by": retiring["id"] if retiring else (reclaim or {}).get("by"),
         "retired_at": (retiring["ended_at"] if retiring else (reclaim or {}).get("created_ts")),
         "deploy_run_id": origin["id"] if origin else None,
@@ -165,7 +188,9 @@ def range_summary(rng, inventory, requests):
             nodes.add(row.get("node"))
     origin = origin_run(rng)
     summary = {field: rng[field] for field in ("id", "key", "comp_id", "state", "live",
-                                               "deploy_run_id", "has_recorded_vms")}
+                                               "deploy_run_id", "has_recorded_vms",
+                                               "kept_templates", "reclaimable_templates",
+                                               "workspace_missing")}
     engine_ip = (machines.get("scoring_engine") or {}).get("mgmt_ip") or _engine_ip(rng["key"])
     state = estate.load_flat(rng["key"])
     summary.update({

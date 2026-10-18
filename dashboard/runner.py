@@ -271,7 +271,12 @@ class RunManager:
 
         A retired candidate is skipped so a re-run teardown cannot be queued against a range
         that is already gone; teardown is idempotent, so a range whose teardown merely FAILED
-        stays resolvable and retryable."""
+        stays resolvable and retryable. The one exception is a full destroy against a retired
+        range that still records only kept templates: `--teams-only` retires the range and
+        leaves this competition's engine template + goldens for its next run, and a full
+        teardown is the only path that reclaims them (2026-10-15). That exception is
+        destroy-only; everything else still refuses.
+        """
         explicit = (params or {}).get("comp_dir")
         by_key = {r["key"]: r for r in ranges.build_ranges(self.store)}
         if explicit:
@@ -282,11 +287,14 @@ class RunManager:
             if rng is None or any(run["comp_id"] != comp_id for run in rng["runs"]):
                 raise RunRefused(f"workspace {ws} does not belong to competition {comp_id}")
             if rng["state"] == "retired":
+                if action == "destroy" and ranges.reclaimable_templates(rng["key"],
+                                                                        rng["state"]):
+                    return ws
                 raise RunRefused(
                     f"the range in {rng['deploy_run_id']} was torn down by {rng['retired_by']} — "
                     f"nothing to {action} (a fresh deploy builds a new range)")
             return ws
-        retired, candidates = [], []
+        retired, reclaimable, candidates = [], [], []
         for run in self.store.list_runs(comp_id=comp_id):        # newest first
             ws = Path(run["run_dir"]) / "comp"
             if not (ws / "Compfile").exists():
@@ -296,6 +304,9 @@ class RunManager:
             rng = by_key.get(str(ws.resolve()))
             if rng and rng["state"] == "retired":
                 retired.append(rng)
+                if action == "destroy" and ranges.reclaimable_templates(rng["key"],
+                                                                        rng["state"]):
+                    reclaimable.append((run["id"], ws))
                 continue
             candidates.append((run["id"], ws))
         built = [(rid, ws) for rid, ws in candidates if estate.has_inventory(ws)]
@@ -307,6 +318,13 @@ class RunManager:
                 f"{b_id} at {b_ws}) — name the one to {action} with comp_dir")
         if pool:
             return pool[0][1]
+        if len(reclaimable) > 1:
+            named = ", ".join(f"{rid} at {ws}" for rid, ws in reclaimable)
+            raise RunRefused(
+                f"{len(reclaimable)} retired workspaces still record kept templates for "
+                f"{comp_id} ({named}) — name the one to destroy with comp_dir")
+        if reclaimable:
+            return reclaimable[0][1]
         if retired:
             rng = retired[0]
             raise RunRefused(
