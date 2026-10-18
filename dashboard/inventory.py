@@ -42,6 +42,9 @@ def build_inventory(store, run, rng=None):
         # Mirrors /api/ranges minus its run history: the page already holds the run it is
         # showing, and a range's whole history must not ride in on every inventory read.
         "range": {k: v for k, v in (rng or {"key": key}).items() if k != "runs"},
+        # A workspace that vanished is a lost range, not an empty deploy: surface it here too
+        # so the run page and the board read the same fact.
+        "workspace_missing": bool((rng or {}).get("workspace_missing", not ws.is_dir())),
         "deploy": {
             "last_phase": state.get("last_phase"),
             "endpoint": state.get("deployed_endpoint"),

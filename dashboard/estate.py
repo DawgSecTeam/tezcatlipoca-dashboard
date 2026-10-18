@@ -108,6 +108,15 @@ def vms(comp_dir):
     return [row for row in resources(comp_dir) if row.get("vmid") is not None]
 
 
+def kept_vms(comp_dir):
+    """The recorded VMs a teardown deliberately keeps: this competition's engine template
+    and goldens (`--teams-only` / `--keep-templates`).
+
+    These are not live infrastructure (`ranges.has_vms` excludes them), but they are real VMs
+    with ownership tags, and a later FULL teardown is the only path that destroys them."""
+    return [row for row in vms(comp_dir) if row.get("kind") in KEPT_KINDS]
+
+
 def has_inventory(comp_dir):
     """Whether the document carries a resource inventory of its own.
 

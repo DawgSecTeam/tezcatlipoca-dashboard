@@ -473,7 +473,7 @@ def test_board_and_detail_are_local_non_secret_and_workspace_scoped(tmp_path, mo
 def _kept_template_workspace(tmp_path, rid):
     """The document a `--keep-templates` teardown leaves behind: templates only."""
     ws = tmp_path / rid / "comp"
-    ws.mkdir(parents=True)
+    ws.mkdir(parents=True, exist_ok=True)
     (ws / "Compfile").write_text("name c\n")
     (ws / "estate-state.json").write_text(json.dumps({
         "identity": {"comp_name": "c", "run_id": rid},
@@ -497,6 +497,91 @@ def test_kept_templates_without_a_destroy_are_not_live(tmp_path):
     _kept_template_workspace(tmp_path, "run-kt2")
     rng = _range_of(_rec("run-kt2", "deploy", created=1, run_dir=tmp_path / "run-kt2"))
     assert (rng["state"], rng["live"]) == ("failed", False)
+
+
+def _retired_kept_store(tmp_path, *rids):
+    runs = []
+    for n, rid in enumerate(rids, start=1):
+        ws = _kept_template_workspace(tmp_path, rid)
+        runs.append(_rec(rid, "deploy", created=n * 2, run_dir=tmp_path / rid))
+        runs.append(_rec(f"{rid}-down", "destroy", created=n * 2 + 1,
+                         run_dir=tmp_path / f"{rid}-down",
+                         params={"_destroy_comp_dir": str(ws)}))
+    return FakeStore(runs)
+
+
+def test_a_retired_range_with_kept_templates_resolves_for_a_full_destroy(tmp_path):
+    """`--teams-only` retires the range and keeps the engine template + goldens; a full
+    teardown is the only path that can reclaim them, so destroy must reach that workspace."""
+    ws = _kept_template_workspace(tmp_path, "run-kt")
+    mgr = RunManager(_retired_kept_store(tmp_path, "run-kt"), None)
+    assert mgr._range_workspace("c", {}, "destroy") == ws
+
+    # The board sees the kept rows as reclaimable WITHOUT calling the retired range live.
+    rng = _range_of(*mgr.store.runs)
+    assert (rng["state"], rng["live"]) == ("retired", False)
+    assert rng["reclaimable_templates"] is True
+    assert [row["kind"] for row in rng["kept_templates"]] == ["engine_template", "golden"]
+    assert {row["vmid"] for row in rng["kept_templates"]} == {2241, 2251}
+
+
+def test_a_retired_range_with_an_empty_inventory_still_refuses_a_destroy(tmp_path):
+    """Only a KEPT template inventory is reclaimable; an emptied range has nothing to destroy."""
+    ws = _workspace(tmp_path, "run-empty")
+    mgr = RunManager(FakeStore([
+        _rec("run-empty", "deploy", created=1, run_dir=tmp_path / "run-empty"),
+        _rec("run-empty-down", "destroy", created=2, run_dir=tmp_path / "run-empty-down",
+             params={"_destroy_comp_dir": str(ws)})]), None)
+    with pytest.raises(RunRefused, match="nothing to destroy"):
+        mgr._range_workspace("c", {}, "destroy")
+
+
+def test_a_retired_kept_range_still_refuses_verify(tmp_path):
+    """The reclaim exception is destroy-only: verify has nothing to verify in a retired range."""
+    _kept_template_workspace(tmp_path, "run-ktv")
+    mgr = RunManager(_retired_kept_store(tmp_path, "run-ktv"), None)
+    with pytest.raises(RunRefused, match="nothing to verify"):
+        mgr._range_workspace("c", {}, "verify")
+
+
+def test_two_retired_kept_ranges_refuse_naming_both(tmp_path):
+    """Two retired workspaces both keep templates: picking one would act on the other's VMs,
+    exactly like the live-ambiguity refusal."""
+    a = _kept_template_workspace(tmp_path, "run-ka")
+    b = _kept_template_workspace(tmp_path, "run-kb")
+    mgr = RunManager(_retired_kept_store(tmp_path, "run-ka", "run-kb"), None)
+    with pytest.raises(RunRefused) as refused:
+        mgr._range_workspace("c", {}, "destroy")
+    assert "kept templates" in str(refused.value)
+    assert "run-ka" in str(refused.value) and "run-kb" in str(refused.value)
+    assert str(a) in str(refused.value) and str(b) in str(refused.value)
+    # an explicit comp_dir disambiguates the same way it does for live ranges
+    assert mgr._range_workspace("c", {"comp_dir": str(b)}, "destroy") == b
+
+
+def test_an_explicit_retired_kept_workspace_resolves_for_destroy_only(tmp_path):
+    ws = _kept_template_workspace(tmp_path, "run-kx")
+    mgr = RunManager(_retired_kept_store(tmp_path, "run-kx"), None)
+    assert mgr._range_workspace("c", {"comp_dir": str(ws)}, "destroy") == ws
+    with pytest.raises(RunRefused, match="nothing to verify"):
+        mgr._range_workspace("c", {"comp_dir": str(ws)}, "verify")
+    # an explicit retired workspace with no kept inventory keeps refusing too
+    empty = _workspace(tmp_path, "run-ex")
+    empty_mgr = RunManager(FakeStore([
+        _rec("run-ex", "deploy", created=1, run_dir=tmp_path / "run-ex"),
+        _rec("run-ex-down", "destroy", created=2, run_dir=tmp_path / "run-ex-down",
+             params={"_destroy_comp_dir": str(empty)})]), None)
+    with pytest.raises(RunRefused, match="nothing to destroy"):
+        empty_mgr._range_workspace("c", {"comp_dir": str(empty)}, "destroy")
+
+
+def test_a_full_destroy_for_a_frozen_comp_still_forwards_end_of_competition():
+    """A frozen range is destroyed with the flag that freezes scoring first; reclaiming a
+    retired range must not drop it."""
+    from dashboard.runner import build_command
+    cmd = build_command("destroy", "c", "/ws", {"end_of_competition": True})
+    assert "--end-of-competition" in cmd
+    assert "--end-of-competition" not in build_command("destroy", "c", "/ws", {})
 
 
 def test_a_scrim_that_tore_its_own_range_down_retires_it(tmp_path):
@@ -555,6 +640,39 @@ def test_startup_reconciles_a_run_whose_worker_is_gone(tmp_path, monkeypatch):
 
 _EMPTY_INVENTORY = {"machines": {}, "networks": [], "teams": [], "counts": {},
                     "deploy": {"degradations": []}}
+
+
+def test_the_board_summary_carries_kept_and_reclaimable_template_info(tmp_path):
+    """The board can offer the reclaim (and see the kept rows) without the range reading
+    live: the state stays `retired`."""
+    ws = _kept_template_workspace(tmp_path, "run-ktb")
+    rng = _range_of(
+        _rec("run-ktb", "deploy", created=1, run_dir=tmp_path / "run-ktb"),
+        _rec("run-ktb-down", "destroy", created=2, run_dir=tmp_path / "run-ktb-down",
+             params={"_destroy_comp_dir": str(ws)}))
+    summary = ranges.range_summary(rng, _EMPTY_INVENTORY, [])
+    assert summary["state"] == "retired" and summary["live"] is False
+    assert summary["reclaimable_templates"] is True
+    assert [row["kind"] for row in summary["kept_templates"]] == ["engine_template", "golden"]
+    assert summary["workspace_missing"] is False
+
+
+def test_a_non_retired_range_whose_workspace_is_gone_reports_it(tmp_path):
+    """A run row whose workspace vanished must not silently become an empty/absent range: the
+    board (and inventory) carry workspace_missing, and the state is not reinterpreted."""
+    from dashboard.inventory import build_inventory
+    from dashboard.store import Store
+
+    store = Store(tmp_path / "db.sqlite3")
+    run_dir = tmp_path / "runs" / "run-gone"
+    store.create_run("run-gone", "c", "deploy", "main", {}, run_dir, run_dir / "run.log")
+    store.update_run("run-gone", state="succeeded", returncode=0)
+    rng = ranges.build_ranges(store)[0]
+    assert rng["state"] == "failed" and rng["live"] is False
+    assert rng["workspace_missing"] is True
+    inventory = build_inventory(store, store.get_run("run-gone"))
+    assert inventory["workspace_missing"] is True
+    assert inventory["range"]["workspace_missing"] is True
 
 
 def test_a_range_without_recorded_vms_publishes_no_engine_link(tmp_path):

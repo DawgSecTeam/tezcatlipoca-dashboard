@@ -304,3 +304,18 @@ def test_an_explicit_comp_dir_wins_for_any_action(tmp_path):
     resolved = {"params": {"_destroy_comp_dir": str(range_dir)}, "run_dir": str(run_dir)}
     assert RunManager._workspace(resolved, defs) == range_dir
     assert RunManager._workspace({"params": {}, "run_dir": str(run_dir)}, defs) == run_dir / "comp"
+
+
+def test_kept_vms_are_the_template_rows_a_full_teardown_reclaims(tmp_path):
+    """Only engine_template/golden are kept inventory; live infrastructure is not."""
+    from dashboard import estate
+    ws = tmp_path / "run-kept" / "comp"
+    ws.mkdir(parents=True)
+    (ws / "estate-state.json").write_text(json.dumps({"resources": [
+        {"kind": "engine", "name": "engine", "vmid": 1000},
+        {"kind": "engine_template", "name": "engine-template", "vmid": 2241},
+        {"kind": "golden", "name": "golden-web01", "vmid": 2251},
+        {"kind": "bridge", "name": "vmbr113", "vmid": None}]}))
+    assert [row["kind"] for row in estate.vms(ws)] == ["engine", "engine_template", "golden"]
+    assert [row["kind"] for row in estate.kept_vms(ws)] == ["engine_template", "golden"]
+    assert estate.kept_vms(tmp_path / "no-workspace") == []
