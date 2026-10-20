@@ -4,8 +4,8 @@ import { api } from '../api'
 import TopNav from '../components/Nav'
 import { Button, Card, ErrorBanner, Spinner } from '../components/ui'
 import { EmptyState, Icon, agoMs, fmtSpan, useConfirm, useTick, useToast } from '../components/kit'
-import { ACTION_LABEL, ResetBoxModal, StageStrip, StatePill, useRunActions, useRunEvents, useRunLog } from '../components/runui'
-import CompetitionPanel from '../components/CompetitionPanel'
+import { ACTION_LABEL, LogTail, ResetBoxModal, StageStrip, StatePill, useRunActions, useRunEvents, useRunLog } from '../components/runui'
+import RangeCommandBar from '../components/RangeCommandBar'
 import RunTeams, { ResetRequests } from '../components/RunTeams'
 import RunInfra from '../components/RunInfra'
 import Run, { Evidence, Output, Timeline } from './Run'
@@ -14,8 +14,12 @@ import { rangeActionBody } from '../rangeModel'
 import { useCompetitionData, useRangeData } from '../useRangeData'
 
 const SECTIONS = [['', 'Overview', 'overview'], ['teams', 'Teams', 'boxes'], ['infrastructure', 'Infrastructure', 'cpu'], ['activity', 'Activity', 'terminal'], ['evidence', 'Evidence', 'packet']]
-const COMPETITION_LABEL = { ready: 'Ready to start', running: 'Scoring', paused: 'Scoring paused', ended: 'Competition ended', unknown: 'Engine unreachable' }
-const RANGE_LABEL = { live: 'Deployed', building: 'Operation in progress', failed: 'Deploy failed', teardown_failed: 'Teardown incomplete', retired: 'Retired' }
+const RANGE_LABEL = { live: 'Deployed', building: 'Operating', failed: 'Deploy failed', teardown_failed: 'Teardown incomplete', retired: 'Retired' }
+const RANGE_CLS = {
+  live: 'bg-accent-soft text-accent', building: 'bg-accent-soft text-accent',
+  failed: 'bg-danger-soft text-danger', teardown_failed: 'bg-danger-soft text-danger',
+  retired: 'bg-sunken text-muted',
+}
 
 // The range's less-common actions. A native <details> stays open on Escape and its popover
 // covers the identity row, so it is driven by state and closes on Escape/outside click.
@@ -45,22 +49,6 @@ function CopyText({ text }) {
   }}>copy</button>
 }
 
-// One status line: range, scoring and active operation, so state is read in one place.
-function StatusLine({ range, summary, competition }) {
-  const retired = range.state === 'retired'
-  const scoring = retired ? 'Competition archived' : competition.error ? 'Scoring status unavailable' : COMPETITION_LABEL[competition.view?.state] || 'Checking scoring…'
-  const scoringBad = !retired && (competition.error || competition.view?.state === 'unknown')
-  // /api/engine answers last_round as a round record ({ID, StartTime, Checks, SLAs}), not a number.
-  const round = competition.view?.engine?.last_round?.ID
-  const run = summary.active_runs[0]
-  const danger = ['failed', 'teardown_failed'].includes(range.state)
-  return <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
-    <span className={`inline-flex items-center gap-2 font-semibold ${danger ? 'text-danger' : ''}`}><span className={`h-2 w-2 rounded-full ${danger ? 'bg-danger' : retired ? 'bg-line' : 'bg-accent'}`} />{RANGE_LABEL[range.state] || range.state}</span>
-    <span className={scoringBad ? 'text-danger' : 'text-muted'}>{scoring}{round > 0 && !retired ? ` · round ${round}` : ''}</span>
-    {run && <Link to={`/ranges/${range.id}/activity?operation=${run.id}`} className="text-accent hover:underline">{ACTION_LABEL[run.action] || run.action} {run.state}{run.stage ? ` · ${run.stage}` : ''}</Link>}
-  </div>
-}
-
 function OperationRow({ run, range }) {
   return <Link to={`/ranges/${range.id}/activity?operation=${run.id}`} className="flex items-center justify-between gap-3 border-t border-line py-2.5 text-sm first:border-0 hover:text-accent">
     <span className="min-w-0">
@@ -71,10 +59,11 @@ function OperationRow({ run, range }) {
   </Link>
 }
 
-// An in-flight operation, with its own controls, so a held deploy can be resumed from the
-// overview instead of only from the Activity tab.
+// An in-flight operation, with its own controls and a collapsible live tail, so a held
+// deploy can be resumed from the overview without leaving for the Activity tab.
 function ActiveOperation({ run, range, refresh }) {
   const { pause, resume, cancel, live, held, canPause } = useRunActions(run, refresh, range)
+  const log = useRunLog(run.id)
   return <Card className="p-5 sm:p-6">
     <div className="mb-4 flex flex-wrap items-center gap-3">
       <h2 className="text-base font-semibold">{ACTION_LABEL[run.action] || run.action} in progress</h2>
@@ -88,6 +77,10 @@ function ActiveOperation({ run, range, refresh }) {
       {held && <Button variant="primary" onClick={resume}><Icon name="play" />Resume</Button>}
       {live && <Button variant="danger" onClick={cancel}>Cancel operation</Button>}
     </div>}
+    {log.text && <details className="mt-4">
+      <summary className="cursor-pointer text-xs font-medium text-muted hover:text-accent">Live output</summary>
+      <div className="mt-2"><LogTail text={log.text} height="10rem" /></div>
+    </details>}
   </Card>
 }
 
@@ -137,10 +130,9 @@ function RangeFacts({ range, summary }) {
   </Card>
 }
 
-function RangeOverview({ range, competition, onSubmitted, refresh, disabled }) {
+function RangeOverview({ range, onSubmitted, refresh, disabled }) {
   const summary = detailSummary(range)
   const issues = rangeIssues(summary).filter((issue) => issue.kind !== 'requests')
-  const panel = { rangeKey: range.key, rangeId: range.id, compId: range.comp_id, engineRef: range.engine_ref, view: competition.view, loading: !competition.view && !competition.error, error: competition.error, onRefresh: refresh, onSubmitted, disabled, recorded: summary.has_recorded_vms }
   return <div className="range-overview">
     <div className="min-w-0 space-y-6">
       {!!issues.length && <section className="rounded-2xl border border-danger/20 bg-danger-soft p-5 sm:p-6" aria-label="Attention needed">
@@ -152,13 +144,9 @@ function RangeOverview({ range, competition, onSubmitted, refresh, disabled }) {
       </section>}
       {summary.pending_requests > 0 && <ResetRequests key={range.key} rangeKey={range.key} rangeId={range.id} disabled={disabled} onSubmitted={onSubmitted} pendingOnly />}
       {summary.active_runs.map((run) => <ActiveOperation key={run.id} run={run} range={range} refresh={refresh} />)}
-      {range.state === 'retired'
-        ? <Card className="p-5 sm:p-6"><h2 className="text-base font-semibold">Competition archived</h2><p className="mt-2 text-sm text-muted">Live competition polling is stopped for this retired range. Review its activity and evidence for the recorded results.</p></Card>
-        : <CompetitionPanel {...panel} section="lifecycle" key={range.id} />}
       <TeamsGlance range={range} summary={summary} />
     </div>
     <aside className="min-w-0 space-y-6">
-      {range.state !== 'retired' && <CompetitionPanel {...panel} section="access" key={`${range.id}-access`} />}
       <RangeFacts range={range} summary={summary} />
       <Card className="p-5">
         <div className="mb-1 flex items-center justify-between"><h2 className="text-base font-semibold">Recent activity</h2><Link to={`/ranges/${range.id}/activity`} className="text-xs font-medium text-accent">All {range.runs.length}</Link></div>
@@ -234,6 +222,7 @@ export default function Range() {
   const reclaimable = !!range.reclaimable_templates
   const usable = !retired && !pending && !error
   const canDestroy = !pending && !error && (!retired || reclaimable)
+  const activeRun = summary.active_runs[0]
   // A range whose newest destroy failed is not necessarily torn down (`teardown_failed`
   // is only the state where nothing is left): the Infrastructure tab must warn either way.
   const teardownIssue = rangeIssues(summary).some((issue) => issue.kind === 'teardown')
@@ -256,11 +245,18 @@ export default function Range() {
       <div className="flex flex-wrap items-start justify-between gap-5">
         <div className="min-w-0">
           <h1 className="display break-words text-4xl sm:text-5xl">{rangeTitle(range)}</h1>
-          <div className="mt-3"><StatusLine range={range} summary={summary} competition={competition} /></div>
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
+            <span className={`chip px-2.5 py-1 ${RANGE_CLS[range.state] || 'bg-sunken text-muted'}`}>{RANGE_LABEL[range.state] || range.state}</span>
+            <span className="font-mono text-faint">{shortRangeId(range)}</span>
+            {range.name && range.comp_id !== range.name && <span className="font-mono text-faint">{range.comp_id}</span>}
+            {summary.engine_ip && <span className="font-mono text-faint" title="Recorded engine address">{summary.engine_ip}</span>}
+            {activeRun && <Link to={`/ranges/${range.id}/activity?operation=${activeRun.id}`} className="font-semibold text-accent hover:underline">{ACTION_LABEL[activeRun.action] || activeRun.action} · {activeRun.state}{activeRun.stage ? ` · ${activeRun.stage}` : ''}</Link>}
+          </div>
         </div>
         <div className="flex flex-wrap gap-2"><Button onClick={() => submit('verify')} disabled={!usable}><Icon name="check" />Verify range</Button><Button onClick={() => setReset(true)} disabled={!usable || !range.inventory?.teams?.length}><Icon name="box" />Reset a box</Button>{canDestroy && <ActionsMenu onDestroy={() => submit('destroy')} />}</div>
       </div>
-      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-faint">
+      <div className="mt-4"><RangeCommandBar range={range} competition={competition} onSubmitted={onSubmitted} disabled={!usable} /></div>
+      <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-faint">
         <details className="min-w-0">
           <summary className="cursor-pointer hover:text-accent">Identity: <span className="font-mono">{shortRangeId(range)}</span></summary>
           <dl className="mt-2 grid grid-cols-[6rem_minmax(0,1fr)] gap-x-3 gap-y-1 font-mono">
@@ -270,16 +266,13 @@ export default function Range() {
             <dt className="font-sans">Workspace</dt><dd className="break-all">{range.key} <CopyText text={range.key} /></dd>
           </dl>
         </details>
-        <button onClick={reload} className="ml-auto self-start text-xs text-faint hover:text-accent">{error ? 'Refresh failed · ' : ''}{updated ? `Fetched ${agoMs(updated)} · ` : ''}Refresh</button>
+        <button onClick={reload} className="ml-auto self-start text-faint hover:text-accent">{error ? 'Refresh failed · ' : ''}{updated ? `Fetched ${agoMs(updated)} · ` : ''}Refresh</button>
       </div>
     </header>
     <ErrorBanner error={error} onRetry={reload} />
-    {retired && <p className="mb-5 rounded-xl bg-sunken px-4 py-3 text-sm text-muted">{reclaimable
-      ? `This range is retired, but it still records this competition's kept templates${kept.length ? ` (vmids ${kept.map((t) => t.vmid).join(', ')})` : ''}. Destroy it to reclaim them; every other operation is disabled.`
-      : 'This range is retired. Its history and evidence remain available; range operations are disabled.'}</p>}
     {submitted && <div role="status" className="mb-5 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-accent-soft px-4 py-3 text-sm"><span>Submitted <span className="font-mono text-xs">{submitted.id}</span></span><Link className="font-semibold text-accent hover:underline" to={`/ranges/${range.id}/activity?operation=${submitted.id}`}>View operation</Link></div>}
     <nav className="mb-7 flex flex-wrap gap-1 border-b border-line" aria-label="Range sections">{SECTIONS.map(([path, label, icon]) => <NavLink key={path} end to={`/ranges/${range.id}${path ? `/${path}` : ''}`} className={({ isActive }) => `inline-flex shrink-0 items-center gap-2 border-b-2 px-3 py-3 text-sm ${isActive ? 'border-accent font-semibold text-accent' : 'border-transparent text-muted hover:text-fg'}`}><Icon name={icon} />{label}{path === 'teams' && summary.pending_requests > 0 && <span className="chip bg-danger-soft text-danger">{summary.pending_requests}</span>}</NavLink>)}</nav>
-    {section === '' && <RangeOverview range={range} competition={competition} onSubmitted={onSubmitted} refresh={reload} disabled={!usable} />}
+    {section === '' && <RangeOverview range={range} onSubmitted={onSubmitted} refresh={reload} disabled={!usable} />}
     {section === 'teams' && <RunTeams run={origin} inventory={scopedInventory} disabled={!usable} onSubmitted={onSubmitted} showMachines={false} />}
     {section === 'infrastructure' && <RunInfra run={origin} inventory={scopedInventory} teardownFailed={teardownIssue} />}
     {section === 'activity' && <RangeActivity range={range} refresh={reload} />}

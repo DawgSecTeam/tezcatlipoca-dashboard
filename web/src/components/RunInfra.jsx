@@ -43,8 +43,15 @@ function DeployFacts({ deploy }) {
   const degradations = deploy.degradations || []
   return (
     <Card className="p-5">
-      <h3 className="label">Deploy</h3>
-      <div className="flex flex-wrap items-start gap-x-10 gap-y-3">
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <h3 className="label !mb-0">Deploy record</h3>
+        {degradations.length > 0 && (
+          <span className="chip bg-danger-soft px-2.5 py-1 text-danger">
+            <Icon name="warn" className="mr-1 h-3 w-3" />{degradations.length} degradation{degradations.length === 1 ? '' : 's'}
+          </span>
+        )}
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Fact k="Last phase"><span className="font-mono tabular-nums">{deploy.last_phase != null ? phaseName(deploy.last_phase) : '—'}</span></Fact>
         <Fact k="Seeded"><Bool v={deploy.seeded} /></Fact>
         <Fact k="Multi-node"><Bool v={deploy.multi_node} /></Fact>
@@ -55,14 +62,14 @@ function DeployFacts({ deploy }) {
         )}
       </div>
       {degradations.length > 0 && (
-        <div className="mt-4 space-y-2">
+        <ul className="mt-4 space-y-2">
           {degradations.map((d, i) => (
-            <div key={i} className="flex items-start gap-2 rounded-2xl bg-danger-soft px-4 py-2.5 text-xs text-danger">
+            <li key={i} className="flex items-start gap-2 rounded-2xl bg-danger-soft px-4 py-2.5 text-xs text-danger">
               <Icon name="warn" className="mt-0.5 h-4 w-4 shrink-0" />
               <span>{typeof d === 'string' ? d : d.message || d.reason || d.detail || JSON.stringify(d)}</span>
-            </div>
+            </li>
           ))}
-        </div>
+        </ul>
       )}
     </Card>
   )
@@ -100,12 +107,19 @@ const TEARDOWN_STEP = {
   remote_access: 'Remote access',
 }
 
-function TeardownJournal({ teardown, opHref }) {
+function TeardownJournal({ teardown, opHref, failed = false }) {
   const done = Array.isArray(teardown?.done) ? teardown.done : Object.keys(teardown?.done || {})
   const recorded = !!teardown?.run_id || !!done.length
+  // An incomplete journal is the tab's one dangerous fact: red01 and its LLM key may
+  // still be out there. The card itself carries the warning, not just a footnote.
+  const incomplete = recorded && !teardown?.red01_done
   return (
-    <Card className="p-5">
-      <h3 className="text-sm font-semibold">Teardown journal</h3>
+    <Card className={`p-5 ${(failed || incomplete) ? 'border-danger/40' : ''}`}>
+      <h3 className="flex items-center gap-2 text-sm font-semibold">
+        {(failed || incomplete) && <Icon name="warn" className="h-4 w-4 text-danger" />}
+        Teardown journal
+        {(failed || incomplete) && <span className="chip bg-danger-soft px-2 py-0.5 text-danger">incomplete</span>}
+      </h3>
       {!recorded ? <p className="mt-2 text-xs text-muted">No teardown steps have been recorded for this workspace.</p> : <>
         {teardown.run_id && <p className="mt-2 text-xs text-muted">Operation · {opHref
           ? <Link to={opHref(teardown.run_id)} className="font-mono text-accent hover:underline">{teardown.run_id}</Link>
@@ -172,8 +186,8 @@ export default function RunInfra({ run, comp, inventory, teardownFailed = false 
         </div>
       )}
 
-      {(journal || retired || failed) && <TeardownJournal teardown={teardown} opHref={opHref} />}
       <DeployFacts deploy={inventory.deploy} />
+      {(journal || retired || failed) && <TeardownJournal teardown={teardown} opHref={opHref} failed={failed} />}
       <MachineInventory machines={inventory.machines} />
       {networks.length > 0 && <Networks networks={networks} />}
 

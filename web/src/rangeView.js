@@ -34,24 +34,46 @@ export function rangeIssues(range) {
 
 const ACTION_NAME = { deploy: 'Deploying', scrim: 'Scrim running', verify: 'Verifying', destroy: 'Tearing down', redeploy: 'Resetting boxes', delete_team: 'Removing a team', start: 'Starting competition', freeze: 'Pausing scoring', resume: 'Resuming scoring', end: 'Ending competition' }
 
-// The one line a reader needs first: problems outrank activity, activity outranks the
-// recorded event flags. Those flags are workspace records, not an engine observation.
-export function rangeStatus(range) {
+// The board's cached engine observation (scoring_cache): what a card's scoring
+// chip says. Null when there is nothing to show — no poll, or the range is retired.
+export function scoringChip(range) {
+  const scoring = range.scoring
+  if (!scoring || range.state === 'retired') return null
+  if (scoring.state === 'running') return { tone: 'active', label: scoring.round > 0 ? `Scoring · round ${scoring.round}` : 'Scoring' }
+  if (scoring.state === 'paused') return { tone: 'muted', label: 'Scoring paused' }
+  if (scoring.state === 'ready') return { tone: 'ok', label: 'Ready to start' }
+  if (scoring.state === 'ended') return { tone: 'muted', label: 'Competition ended' }
+  return { tone: 'danger', label: 'Engine unreachable' }
+}
+
+// The one line a card leads with: a problem, else the live operation, else cached
+// scoring, else pending requests, else the recorded state. Those recorded flags are
+// workspace records, not an engine observation — scoring above them is the poll.
+export function heroStatus(range) {
   const base = `/ranges/${range.id}`
-  if (range.state === 'retired') return { tone: 'muted', label: 'Retired', to: base }
+  if (range.state === 'retired') return { kind: 'state', tone: 'muted', label: 'Retired', to: base }
   const issue = rangeIssues(range).find((item) => item.kind === 'teardown' || item.kind === 'operation')
-  if (issue) return { tone: 'danger', label: issue.kind === 'teardown' ? 'Teardown incomplete' : 'Operation failed', issue, to: issue.run_id ? `${base}/activity?operation=${issue.run_id}` : `${base}/infrastructure` }
+  if (issue) return { kind: 'danger', tone: 'danger', label: issue.kind === 'teardown' ? 'Teardown incomplete' : 'Operation failed', issue, to: issue.run_id ? `${base}/activity?operation=${issue.run_id}` : `${base}/infrastructure` }
   const run = (range.active_runs || [])[0]
-  if (run) {
-    const held = run.state === 'paused' || run.state === 'pausing'
-    return { tone: 'active', label: `${ACTION_NAME[run.action] || run.action}${held ? ' · held' : run.state === 'queued' ? ' · queued' : ''}`, detail: run.stage || '', to: `${base}/activity?operation=${run.id}` }
-  }
-  if (range.pending_requests) return { tone: 'danger', label: `${range.pending_requests} reset request${range.pending_requests === 1 ? '' : 's'} pending`, kind: 'requests', to: `${base}/teams` }
-  if (range.state === 'failed') return { tone: 'danger', label: 'Deploy failed', to: base }
+  if (run) return { kind: 'operation', tone: 'active', run, label: ACTION_NAME[run.action] || run.action, to: `${base}/activity?operation=${run.id}` }
+  const scoring = scoringChip(range)
+  if (scoring) return { kind: 'scoring', tone: scoring.tone, label: scoring.label, to: base }
+  if (range.pending_requests) return { kind: 'attention', tone: 'danger', label: `${range.pending_requests} reset request${range.pending_requests === 1 ? '' : 's'} pending`, to: `${base}/teams` }
+  if (range.state === 'failed') return { kind: 'danger', tone: 'danger', label: 'Deploy failed', to: base }
   const event = range.event || {}
-  if (event.ended) return { tone: 'muted', label: 'Competition ended', to: base }
-  if (range.has_recorded_vms) return { tone: 'ok', label: 'Deployed', detail: event.hold_start ? 'Deployed with the start held for an operator' : '', to: base }
-  return { tone: 'muted', label: 'No infrastructure recorded', to: base }
+  if (event.ended) return { kind: 'state', tone: 'muted', label: 'Competition ended', to: base }
+  if (range.has_recorded_vms) return { kind: 'state', tone: 'ok', label: 'Deployed', detail: event.hold_start ? 'Deployed with the start held for an operator' : '', to: base }
+  return { kind: 'state', tone: 'muted', label: infrastructureLabel(range), to: base }
+}
+
+// The one-line text status (comp page, deep links): the hero plus the run's held /
+// queued qualifier and stage, which a card shows through its progress bar instead.
+export function rangeStatus(range) {
+  const hero = heroStatus(range)
+  if (hero.kind !== 'operation') return hero
+  const run = hero.run
+  const held = run.state === 'paused' || run.state === 'pausing'
+  return { ...hero, label: `${hero.label}${held ? ' · held' : run.state === 'queued' ? ' · queued' : ''}`, detail: run.stage || '' }
 }
 
 export function filterCounts(ranges) {

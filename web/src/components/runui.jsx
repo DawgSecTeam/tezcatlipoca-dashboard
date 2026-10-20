@@ -54,6 +54,21 @@ export function stageLabel(run) {
   return prettyStage(run?.stage)
 }
 
+// A card-sized progress summary from the run record alone (no stage events): where
+// in its stages the run is. The board's deploy records carry "phase 4/8" as the
+// stage string, so when the name match fails the fraction is parsed directly.
+export function stageProgress(run) {
+  const { stages, current, total, idx } = currentStep(run?.action, run?.stage, run?.state, [])
+  let index = idx
+  let count = total
+  const fraction = typeof run?.stage === 'string' ? run.stage.match(/(\d+)\s*\/\s*(\d+)/) : null
+  if (index < 0 && fraction) {
+    count = Number(fraction[2]) || count
+    index = Math.min(Number(fraction[1]), count || Infinity) - 1
+  }
+  return { total: count, idx: index, label: prettyStage(current) || SINGLE_STEP[run?.action] || '' }
+}
+
 // ── state pill ─────────────────────────────────────────────────────────────────────────────
 
 // In-flight is the accent (with a pulse); a finished run is neutral, so a board of finished

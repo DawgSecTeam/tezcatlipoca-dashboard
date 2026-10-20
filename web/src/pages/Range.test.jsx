@@ -8,10 +8,9 @@ import { api } from '../api'
 import { useCompetitionData, useRangeData } from '../useRangeData'
 vi.mock('../api', () => ({ api: { submitRun: vi.fn(), runEvents: vi.fn(), requests: vi.fn().mockResolvedValue([]), ranges: vi.fn().mockResolvedValue([]) } }))
 vi.mock('../useRangeData', () => ({ useRangeData: vi.fn(), useCompetitionData: vi.fn() }))
-vi.mock('../components/CompetitionPanel', () => ({ default: ({ section }) => <section><h2>{section === 'access' ? 'Access' : 'Competition'}</h2></section> }))
 vi.mock('../components/RunTeams', () => ({ default: () => <div>Team inventory</div>, ResetRequests: () => <section><h3>Reset requests</h3></section> }))
 vi.mock('../components/RunInfra', () => ({ default: () => <div>Technical inventory</div> }))
-vi.mock('../components/runui', () => ({ ACTION_LABEL: {}, ResetBoxModal: () => null, StageStrip: () => null, StatePill: ({ state }) => <span>{state}</span>, useRunActions: () => ({}), useRunEvents: () => ({ live: false }), useRunLog: () => ({}) }))
+vi.mock('../components/runui', () => ({ ACTION_LABEL: {}, ResetBoxModal: () => null, StageStrip: () => null, StatePill: ({ state }) => <span>{state}</span>, useRunActions: () => ({}), useRunEvents: () => ({ live: false }), useRunLog: () => ({}), LogTail: () => null }))
 vi.mock('./Run', () => ({ default: () => null, Evidence: () => <div>Range evidence</div>, Output: () => <div>Raw output viewer</div>, Timeline: () => null }))
 
 const fixture = {
@@ -28,20 +27,25 @@ afterEach(cleanup)
 beforeEach(() => {
   vi.clearAllMocks()
   useRangeData.mockReturnValue({ data: fixture, error: null, updated: Date.now(), refresh: vi.fn() })
-  useCompetitionData.mockReturnValue({ view: { state: 'ready' }, error: null })
+  useCompetitionData.mockReturnValue({ view: { state: 'ready', links: { scoreboard: 'http://192.0.2.10' }, creds: { admin: { user: 'admin', password: 'ADMIN-SECRET' } } }, error: null })
   api.runEvents.mockResolvedValue({ events: [] })
   api.submitRun.mockResolvedValue({ id: 'verify-new', action: 'verify' })
 })
 
-it('orders attention, pending requests and competition first, with access and facts beside them', () => {
+it('puts scoring state, controls, tools and credentials in the command bar, then attention and teams', async () => {
   open()
+  expect(screen.getByRole('region', { name: 'Scoring' })).toBeTruthy()
+  expect(screen.getByRole('region', { name: 'Tools and credentials' })).toBeTruthy()
+  expect(screen.getByText('Ready to start')).toBeTruthy()
+  expect(screen.getByRole('button', { name: 'Start the competition' })).toBeTruthy()
+  expect(screen.getByRole('link', { name: 'Scoreboard ↗' }).getAttribute('href')).toBe('http://192.0.2.10')
+  await userEvent.click(screen.getByRole('button', { name: 'Reveal admin password' }))
+  expect(screen.getByText('ADMIN-SECRET')).toBeTruthy()
   const headings = screen.getAllByRole('heading').map((element) => element.textContent)
   expect(headings.indexOf('Attention needed')).toBeLessThan(headings.indexOf('Reset requests'))
-  expect(headings.indexOf('Reset requests')).toBeLessThan(headings.indexOf('Competition'))
-  expect(headings).toEqual(expect.arrayContaining(['Access', 'Range', 'Recent activity']))
-  expect(headings.find((h) => h.startsWith('Teams'))).toBeTruthy()
+  expect(headings.indexOf('Reset requests')).toBeLessThan(headings.findIndex((h) => h.startsWith('Teams')))
+  expect(headings).toEqual(expect.arrayContaining(['Range', 'Recent activity']))
   expect(screen.getByText('1 pending')).toBeTruthy()
-  expect(screen.getByText('Ready to start')).toBeTruthy()
   expect(screen.queryByText('Raw output viewer')).toBeNull()
 })
 
@@ -72,6 +76,7 @@ it('does not offer enabled range controls for retired ranges', () => {
   expect(screen.getByRole('button', { name: 'Verify range' }).disabled).toBe(true)
   expect(screen.getByRole('button', { name: 'Reset a box' }).disabled).toBe(true)
   expect(screen.queryByRole('button', { name: 'More range actions' })).toBeNull()
+  expect(screen.getByText(/Competition archived/)).toBeTruthy()
 })
 
 it('offers teardown-only on a retired range that still records kept templates', async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { detailSummary, filterRanges, infrastructureLabel, rangeIssues, rangeStatus } from './rangeView'
+import { detailSummary, filterRanges, heroStatus, infrastructureLabel, rangeIssues, rangeStatus } from './rangeView'
 
 const base = { id: 'range-a', comp_id: 'same', live: true, state: 'live', has_recorded_vms: true, active_runs: [], latest_run: { id: 'deploy-a', action: 'deploy', state: 'succeeded' } }
 
@@ -38,5 +38,13 @@ describe('range presentation', () => {
     expect(rangeStatus({ ...base, pending_requests: 2 })).toMatchObject({ label: '2 reset requests pending', to: '/ranges/range-a/teams' })
     expect(rangeStatus({ ...base, event: { ended: true } }).label).toBe('Competition ended')
     expect(rangeStatus(base).label).toBe('Deployed')
+  })
+  it('shows cached scoring above requests and recorded state, but below a live operation', () => {
+    expect(heroStatus({ ...base, scoring: { state: 'running', round: 3, reachable: true }, pending_requests: 2 }).label).toBe('Scoring · round 3')
+    expect(heroStatus({ ...base, scoring: { state: 'paused', round: 3, reachable: true } }).label).toBe('Scoring paused')
+    expect(heroStatus({ ...base, scoring: { state: 'ready', reachable: true } }).label).toBe('Ready to start')
+    expect(heroStatus({ ...base, scoring: { state: 'unknown', round: 0, reachable: false } }).label).toBe('Engine unreachable')
+    expect(heroStatus(base).label).toBe('Deployed') // no cached observation: recorded state
+    expect(heroStatus({ ...base, scoring: { state: 'running', round: 1, reachable: true }, active_runs: [{ id: 'r', action: 'redeploy', state: 'running' }] }).kind).toBe('operation')
   })
 })

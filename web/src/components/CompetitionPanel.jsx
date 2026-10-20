@@ -16,7 +16,8 @@ const STATE_TEXT = {
 const LINK_TEXT = { admin: 'Admin', announcements: 'Announcements', injects: 'Injects', portal: 'Team portal', scoreboard: 'Scoreboard' }
 const ACTION_TEXT = { start: 'Start', freeze: 'Pause', resume: 'Resume', end: 'End' }
 
-function Cred({ user, password, label }) {
+// Revealable credential chip, shared with the range page's command bar.
+export function Cred({ user, password, label }) {
   const [revealed, setRevealed] = useState(false)
   const toast = useToast()
   if (!password) return null

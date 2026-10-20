@@ -72,11 +72,11 @@ function TeamCard({ team, boxes, specs, range, compId, onRedeploy, onDelete, dis
   }
   return (
     <Card className="min-w-0">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
-        <h3 className="font-mono text-sm font-semibold">{team.key}</h3>
-        {team.identifier && <span className="text-xs text-faint">id <span className="font-mono">{team.identifier}</span></span>}
-        {team.subnet && <span className="font-mono text-xs text-muted">{team.subnet}</span>}
-        {team.engine_ip && <span className="text-xs text-muted" title="Recorded engine-side gateway address">gateway <span className="font-mono">{team.engine_ip}</span></span>}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-3">
+        <h3 className="font-mono text-base font-semibold">{team.key}</h3>
+        {team.identifier && <span className="chip bg-sunken font-mono text-muted">id {team.identifier}</span>}
+        {team.subnet && <span className="chip bg-sunken font-mono text-muted">{team.subnet}</span>}
+        {team.engine_ip && <span className="chip bg-sunken font-mono text-muted" title="Recorded engine-side gateway address">gw {team.engine_ip}</span>}
         <span className="text-xs text-faint">{boxes.length === allBoxes.length ? allBoxes.length : `${boxes.length}/${allBoxes.length}`} boxes</span>
         <div className="ml-auto flex items-start gap-2">
           <Button variant="ghost" className="!py-1 text-xs" disabled={disabled || pending || !allBoxes.length}
@@ -171,8 +171,12 @@ export function ResetRequests({ rangeKey, rangeId, disabled, onSubmitted, pendin
   }
   return (
     <Card className="overflow-hidden">
-      <div className="px-4 py-3"><h3 className="text-sm font-semibold">Reset requests</h3>
-        <p className="mt-1 text-xs text-muted">Requests filed by teams in this workspace. Approval submits a reset operation.</p></div>
+      <div className="flex flex-wrap items-center gap-2.5 px-4 py-3">
+        <h3 className="text-sm font-semibold">Reset requests</h3>
+        {rows.some((row) => row.status === 'pending' || row.status === 'failed')
+          && <span className="chip bg-danger-soft px-2.5 py-1 text-danger"><Icon name="warn" className="mr-1 h-3 w-3" />awaiting review</span>}
+        <p className="w-full text-xs text-muted">Requests filed by teams in this workspace. Approval submits a reset operation.</p>
+      </div>
       {error && <div className="px-4"><ErrorBanner error={error} onRetry={reload} /></div>}
       {!!rows?.length && <div className="overflow-x-auto"><table className="w-full min-w-[34rem] text-left">
         <thead><tr className="border-t border-line text-[11px] font-semibold uppercase tracking-wider text-faint">
@@ -228,19 +232,19 @@ export default function RunTeams({ run, comp, inventory, disabled = false, onSub
   }
   return (
     <div className="space-y-4">
-      <Card className="p-4">
-        <div className="flex flex-wrap items-center gap-3">
-          <h2 className="text-sm font-semibold">Recorded teams & boxes</h2>
-          {inventory && <span className="text-xs text-muted">{teams.length} teams · {boxCount} boxes</span>}
-          {!!teams.length && <label className="ml-auto w-full sm:w-80"><span className="sr-only">Search recorded teams and boxes</span>
-            <input type="search" className={`${inputCls} text-sm`} placeholder="Search team, box, VMID, IP or node…" value={query} onChange={(event) => setQuery(event.target.value)} />
-          </label>}
-        </div>
-        <p className="mt-2 text-xs text-muted">Workspace records, not live presence or power checks. Missing records do not prove that a machine is gone.</p>
-        {range?.state === 'retired' && <p className="mt-2 text-xs text-muted">This range is retired. Historical records are shown; recovery actions are disabled.</p>}
-        {inventory && range?.state !== 'retired' && (!rangeKey || !compId || !engineRef) && <p className="mt-2 text-xs text-danger">Recovery is unavailable until the range workspace, competition and originating engine ref are known.</p>}
-      </Card>
+      {/* The operator's queue comes first: a pending reset is the one thing on this
+          tab that needs a decision from them right now. */}
       <ResetRequests key={rangeKey} rangeKey={rangeKey} rangeId={range?.id} disabled={actionDisabled} onSubmitted={onSubmitted} />
+      <Card className="flex flex-wrap items-center gap-x-4 gap-y-2 p-4">
+        <h2 className="text-sm font-semibold">Teams & boxes</h2>
+        {inventory && <span className="text-xs text-muted">{teams.length} teams · {boxCount} boxes recorded</span>}
+        {!!teams.length && <label className="ml-auto w-full sm:w-80"><span className="sr-only">Search recorded teams and boxes</span>
+          <input type="search" className={`${inputCls} text-sm`} placeholder="Search team, box, VMID, IP or node…" value={query} onChange={(event) => setQuery(event.target.value)} />
+        </label>}
+        <p className="w-full text-xs text-faint">Workspace records, not live presence or power checks. Missing records do not prove that a machine is gone.</p>
+        {range?.state === 'retired' && <p className="w-full text-xs text-muted">This range is retired. Historical records are shown; recovery actions are disabled.</p>}
+        {inventory && range?.state !== 'retired' && (!rangeKey || !compId || !engineRef) && <p className="w-full text-xs text-danger">Recovery is unavailable until the range workspace, competition and originating engine ref are known.</p>}
+      </Card>
       {!inventory ? <Card><EmptyState icon="boxes" title="No recorded inventory available">Competition definitions are not deployed inventory. Load this range's workspace inventory to inspect its teams and boxes.</EmptyState></Card>
         : !teams.length ? <Card><EmptyState icon="boxes" title="No teams recorded">This workspace has no team inventory. A partial deployment or teardown can leave incomplete records; this is not a live scan.</EmptyState></Card>
           : !filtered.length ? <Card><EmptyState icon="search" title="No matching teams or boxes">Try a team name, box, VMID, IP address or node.<button type="button" className="mt-2 block w-full text-accent" onClick={() => setQuery('')}>Clear search</button></EmptyState></Card>
