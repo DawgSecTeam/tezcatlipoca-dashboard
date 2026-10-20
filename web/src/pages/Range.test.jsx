@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import Range from './Range'
+import { ConfirmProvider } from '../components/kit'
 import { api } from '../api'
 import { useCompetitionData, useRangeData } from '../useRangeData'
 vi.mock('../api', () => ({ api: { submitRun: vi.fn(), runEvents: vi.fn(), requests: vi.fn().mockResolvedValue([]), ranges: vi.fn().mockResolvedValue([]) } }))
@@ -21,7 +22,7 @@ const fixture = {
   inventory: { counts: { teams: 1, boxes: 3 }, teams: [{ key: 'team1', subnet: '10.1.0.0/24', boxes: [{}, {}, {}] }], deploy: { degradations: ['web01 lagged'] } },
 }
 function open(path = '/ranges/range-one') {
-  return render(<MemoryRouter initialEntries={[path]}><Routes><Route path="/ranges/:rangeId/*" element={<Range />} /></Routes></MemoryRouter>)
+  return render(<ConfirmProvider><MemoryRouter initialEntries={[path]}><Routes><Route path="/ranges/:rangeId/*" element={<Range />} /></Routes></MemoryRouter></ConfirmProvider>)
 }
 afterEach(cleanup)
 beforeEach(() => {
@@ -71,6 +72,28 @@ it('does not offer enabled range controls for retired ranges', () => {
   expect(screen.getByRole('button', { name: 'Verify range' }).disabled).toBe(true)
   expect(screen.getByRole('button', { name: 'Reset a box' }).disabled).toBe(true)
   expect(screen.queryByRole('button', { name: 'More range actions' })).toBeNull()
+})
+
+it('offers teardown-only on a retired range that still records kept templates', async () => {
+  useRangeData.mockReturnValue({
+    data: {
+      ...fixture, state: 'retired', live: false, has_recorded_vms: false,
+      reclaimable_templates: true,
+      kept_templates: [{ kind: 'engine_template', vmid: 3140 }, { kind: 'golden', vmid: 3150 }],
+    }, error: null, refresh: vi.fn(),
+  })
+  open()
+  expect(screen.getByText(/still records this competition's kept templates/)).toBeTruthy()
+  expect(screen.getByText(/3140, 3150/)).toBeTruthy()
+  expect(screen.getByRole('button', { name: 'Verify range' }).disabled).toBe(true)
+  expect(screen.getByRole('button', { name: 'Reset a box' }).disabled).toBe(true)
+  await userEvent.click(screen.getByRole('button', { name: 'More range actions' }))
+  await userEvent.click(screen.getByRole('button', { name: /Destroy this range/ }))
+  await userEvent.click(screen.getByRole('button', { name: 'Destroy this range' }))
+  await waitFor(() => expect(api.submitRun).toHaveBeenCalledWith({
+    comp_id: 'one', action: 'destroy',
+    params: { comp_dir: '/synthetic/one/comp' },
+  }))
 })
 
 it('closes the range actions menu on Escape instead of leaving it over the page', async () => {

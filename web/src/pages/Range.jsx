@@ -228,13 +228,20 @@ export default function Range() {
   const origin = range.runs.find((run) => run.id === range.deploy_run_id) || range.runs[0]
   const scopedInventory = { ...range.inventory, range: { ...range.inventory?.range, ...range, inventory: undefined, runs: undefined, requests: undefined } }
   const retired = range.state === 'retired'
-  const blocked = retired || pending || !!error
+  const kept = range.kept_templates || []
+  // A retired range records nothing but this competition's kept templates; reclaiming them
+  // is the one operation left, and a full teardown is the only path that can do it.
+  const reclaimable = !!range.reclaimable_templates
+  const usable = !retired && !pending && !error
+  const canDestroy = !pending && !error && (!retired || reclaimable)
   // A range whose newest destroy failed is not necessarily torn down (`teardown_failed`
   // is only the state where nothing is left): the Infrastructure tab must warn either way.
   const teardownIssue = rangeIssues(summary).some((issue) => issue.kind === 'teardown')
   const submit = async (action) => {
-    if (blocked) return
-    if (action === 'destroy' && !(await confirm({ title: `Destroy range ${shortRangeId(range)}?`, body: `Removes infrastructure owned by this range of ${rangeTitle(range)}. Other ranges of this competition are not targeted. Review active operations before continuing.`, danger: true, confirm: 'Destroy this range' }))) return
+    if (action === 'destroy' ? !canDestroy : !usable) return
+    if (action === 'destroy' && !(await confirm({ title: `Destroy range ${shortRangeId(range)}?`, body: reclaimable
+      ? `Reclaims this competition's kept templates still recorded by this retired range${kept.length ? ` (vmids ${kept.map((t) => t.vmid).join(', ')})` : ''}. Other ranges of this competition are not targeted.`
+      : `Removes infrastructure owned by this range of ${rangeTitle(range)}. Other ranges of this competition are not targeted. Review active operations before continuing.`, danger: true, confirm: 'Destroy this range' }))) return
     setPending(true)
     try { const created = await api.submitRun(rangeActionBody(range, action)); onSubmitted(created); toast(`Operation ${created.id} submitted`) }
     catch (err) { toast(err.message, 'error') }
@@ -251,7 +258,7 @@ export default function Range() {
           <h1 className="display break-words text-4xl sm:text-5xl">{rangeTitle(range)}</h1>
           <div className="mt-3"><StatusLine range={range} summary={summary} competition={competition} /></div>
         </div>
-        <div className="flex flex-wrap gap-2"><Button onClick={() => submit('verify')} disabled={blocked}><Icon name="check" />Verify range</Button><Button onClick={() => setReset(true)} disabled={blocked || !range.inventory?.teams?.length}><Icon name="box" />Reset a box</Button>{!blocked && <ActionsMenu onDestroy={() => submit('destroy')} />}</div>
+        <div className="flex flex-wrap gap-2"><Button onClick={() => submit('verify')} disabled={!usable}><Icon name="check" />Verify range</Button><Button onClick={() => setReset(true)} disabled={!usable || !range.inventory?.teams?.length}><Icon name="box" />Reset a box</Button>{canDestroy && <ActionsMenu onDestroy={() => submit('destroy')} />}</div>
       </div>
       <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-faint">
         <details className="min-w-0">
@@ -267,11 +274,13 @@ export default function Range() {
       </div>
     </header>
     <ErrorBanner error={error} onRetry={reload} />
-    {retired && <p className="mb-5 rounded-xl bg-sunken px-4 py-3 text-sm text-muted">This range is retired. Its history and evidence remain available; range operations are disabled.</p>}
+    {retired && <p className="mb-5 rounded-xl bg-sunken px-4 py-3 text-sm text-muted">{reclaimable
+      ? `This range is retired, but it still records this competition's kept templates${kept.length ? ` (vmids ${kept.map((t) => t.vmid).join(', ')})` : ''}. Destroy it to reclaim them; every other operation is disabled.`
+      : 'This range is retired. Its history and evidence remain available; range operations are disabled.'}</p>}
     {submitted && <div role="status" className="mb-5 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-accent-soft px-4 py-3 text-sm"><span>Submitted <span className="font-mono text-xs">{submitted.id}</span></span><Link className="font-semibold text-accent hover:underline" to={`/ranges/${range.id}/activity?operation=${submitted.id}`}>View operation</Link></div>}
     <nav className="mb-7 flex flex-wrap gap-1 border-b border-line" aria-label="Range sections">{SECTIONS.map(([path, label, icon]) => <NavLink key={path} end to={`/ranges/${range.id}${path ? `/${path}` : ''}`} className={({ isActive }) => `inline-flex shrink-0 items-center gap-2 border-b-2 px-3 py-3 text-sm ${isActive ? 'border-accent font-semibold text-accent' : 'border-transparent text-muted hover:text-fg'}`}><Icon name={icon} />{label}{path === 'teams' && summary.pending_requests > 0 && <span className="chip bg-danger-soft text-danger">{summary.pending_requests}</span>}</NavLink>)}</nav>
-    {section === '' && <RangeOverview range={range} competition={competition} onSubmitted={onSubmitted} refresh={reload} disabled={blocked} />}
-    {section === 'teams' && <RunTeams run={origin} inventory={scopedInventory} disabled={blocked} onSubmitted={onSubmitted} showMachines={false} />}
+    {section === '' && <RangeOverview range={range} competition={competition} onSubmitted={onSubmitted} refresh={reload} disabled={!usable} />}
+    {section === 'teams' && <RunTeams run={origin} inventory={scopedInventory} disabled={!usable} onSubmitted={onSubmitted} showMachines={false} />}
     {section === 'infrastructure' && <RunInfra run={origin} inventory={scopedInventory} teardownFailed={teardownIssue} />}
     {section === 'activity' && <RangeActivity range={range} refresh={reload} />}
     {section === 'evidence' && <Evidence runId={origin.id} range={range} />}

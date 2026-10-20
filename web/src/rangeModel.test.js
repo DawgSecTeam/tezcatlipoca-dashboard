@@ -13,11 +13,14 @@ describe('rangeActionBody', () => {
     })
   })
 
-  it('prefers the resolved range identity over historical run fields', () => {
+  it('prefers the resolved range identity, and lets a teardown use the current engine', () => {
+    // A destroy must reach teardown fixes that postdate a SHA-pinned deploy; the state
+    // document is versioned, and engine_head records what actually ran.
     expect(rangeActionBody({ ...range, comp_id: 'resolved-comp', engine_ref: 'resolved-origin-ref' }, 'destroy')).toEqual({
-      comp_id: 'resolved-comp', engine_ref: 'resolved-origin-ref', action: 'destroy',
+      comp_id: 'resolved-comp', action: 'destroy',
       params: { comp_dir: range.key },
     })
+    expect(rangeActionBody(range, 'verify').engine_ref).toBe('origin-ref')
   })
 
   it('can infer identity from the deploy history without mutating caller params', () => {

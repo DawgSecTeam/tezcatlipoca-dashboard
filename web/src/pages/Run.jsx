@@ -323,6 +323,10 @@ export default function Run() {
 
   const boxes = comp?.boxes || []
   const range = inventory?.range || null
+  // A retired range has no teardown left unless it still records kept templates, in which
+  // case the same button is the reclaim.
+  const reclaimKept = !!(range?.reclaimable_templates && range?.state === 'retired')
+  const destroyOffered = !range || range.state !== 'retired' || reclaimKept
   // A live range has no teardown journal at all; the journal line exists only once a destroy
   // touched the range, and there red01's absence is what separates "retired" from "a VM
   // holding the LLM key is still up".
@@ -434,7 +438,7 @@ export default function Run() {
                 <Icon name="rocket" />New run (re-deploy)
               </Button>
               <Button onClick={() => setResetBox({})}><Icon name="box" />Reset a box…</Button>
-              <Button variant="danger" onClick={destroy}><Icon name="trash" />Destroy / teardown</Button>
+              {destroyOffered && <Button variant="danger" onClick={destroy}><Icon name="trash" />{reclaimKept ? 'Reclaim kept templates' : 'Destroy / teardown'}</Button>}
               {canPause && <Button onClick={pause}><Icon name="pause" />Pause after next stage</Button>}
               {held && <Button variant="primary" onClick={resume}><Icon name="play" />Resume</Button>}
               {live && <Button variant="danger" onClick={cancel}><Icon name="warn" />Cancel run</Button>}

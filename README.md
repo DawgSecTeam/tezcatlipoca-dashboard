@@ -18,10 +18,9 @@ run's state and evidence in its own data dir.
 A run pins a tezcatlipoca git ref (branch/SHA/tag) and a competition. The runner:
 
 1. cuts an engine worktree at the ref under `<data>/runs/<id>/engine` — the ref defaults to
-   `estate-v0.3.0`, the estate release that writes `estate-state.json` (`TEZ_ENGINE_REF`
-   overrides it, e.g. the merge commit or a SHA for an event), and provisioning fetches
-   `origin` first so a branch name means the fresh one, not whatever the clone had at clone
-   time,
+   `main` (`TEZ_ENGINE_REF` overrides it, e.g. a SHA pinned for an event), and provisioning
+   fetches `origin` first so a branch name means the fresh one, not whatever the clone had at
+   clone time,
 2. seeds the comp's definitions into `<data>/runs/<id>/comp` (per-run state stays in
    the workspace; the competitions repo stays definitions-only),
 3. drops the engine configuration into that worktree: `TEZ_ENGINE_ENV_FILE` as `.env` and,

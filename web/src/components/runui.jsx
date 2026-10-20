@@ -110,7 +110,9 @@ export function useRunActions(run, onChanged, range) {
   const destroy = async () => {
     const ok = await ask({
       title: `Teardown ${range?.comp_id || run?.comp_id}?`, danger: true, confirm: 'Destroy',
-      body: <>Runs <span className="font-mono">destroy-competition.py</span> against this range's explicit workspace — the VMs it created are removed.</>,
+      body: range?.reclaimable_templates
+        ? <>This range is retired; a full teardown reclaims the kept templates it still records. Everything else it created is already gone.</>
+        : <>Runs <span className="font-mono">destroy-competition.py</span> against this range's explicit workspace — the VMs it created are removed.</>,
     })
     if (ok) return submit({ action: 'destroy' })
   }
