@@ -198,7 +198,8 @@ def range_summary(rng, inventory, requests):
         "nodes": sorted(node for node in nodes if node),
         "engine_ip": engine_ip,
         "deployed_at": origin.get("created_at") if origin else None,
-        # Recorded workspace flags, not an engine observation: the board never polls.
+        # Recorded workspace flags, not an engine observation: scoring state reaches
+        # the board only through scoring_cache's cached background poll.
         "event": {flag: bool(state.get(flag)) for flag in ("seeded", "hold_start", "ended")},
         # An address recorded in a workspace whose VMs are gone is not a reachable engine:
         # publishing it as a link is how a torn-down range kept offering a scoreboard.
@@ -229,10 +230,24 @@ def range_summary(rng, inventory, requests):
 def build_range_board(store):
     # Resolve the ledger once. The inventory projector must not call build_ranges per row.
     from dashboard.inventory import build_inventory
+    from dashboard import scoring_cache
 
     requests = store.list_requests()
-    return [range_summary(rng, build_inventory(store, rng["runs"][0], rng=rng),
-                          requests_for_range(rng, requests)) for rng in build_ranges(store)]
+    ranges = build_ranges(store)
+    live_keys = set()
+    board = []
+    for rng in ranges:
+        summary = range_summary(rng, build_inventory(store, rng["runs"][0], rng=rng),
+                                requests_for_range(rng, requests))
+        # Live scoring is a cached background observation (scoring_cache): the board
+        # request itself stays local and instant, and a range without recorded VMs
+        # has no engine to ask, so it carries None rather than "unreachable".
+        summary["scoring"] = scoring_cache.snapshot(rng) if rng["live"] else None
+        if rng["live"]:
+            live_keys.add(rng["key"])
+        board.append(summary)
+    scoring_cache.prune(live_keys)
+    return board
 
 
 def range_detail(store, rng):

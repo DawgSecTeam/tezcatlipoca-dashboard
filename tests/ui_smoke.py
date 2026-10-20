@@ -126,7 +126,11 @@ def build_fixture_app(root, patches):
                          ended_at=None if run_state in ("running", "paused") else time.time() - 30)
         engines[str(ws)] = (None if lifecycle == "unavailable" else
                             {"competition_started": lifecycle != "ready",
-                             "running": lifecycle == "running"})
+                             "running": lifecycle == "running",
+                             # A scoring clock has rounds on it; a ready one does not.
+                             **({"last_round": {"ID": 12, "StartTime": "2026-10-20T09:00:00Z",
+                                                "Checks": None, "SLAs": None}}
+                                if lifecycle in ("running", "paused") else {})})
         evidence = ws / ".automated-tests" / "fixture-evidence"
         evidence.mkdir(parents=True)
         (evidence / "REPORT.md").write_text(

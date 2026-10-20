@@ -420,6 +420,15 @@ def test_board_and_detail_are_local_non_secret_and_workspace_scoped(tmp_path, mo
 
     monkeypatch.setattr(competition, "engine_status", no_poll)
     monkeypatch.setattr(competition, "status_for_range", no_poll)
+    from dashboard import scoring_cache
+
+    def canned_snapshot(rng):
+        # Live scoring reaches the board through the cached background poll; this
+        # test pins the request path, so serve a canned entry with no threads.
+        assert rng["has_recorded_vms"], "only ranges with recorded VMs are polled"
+        return {"state": "running", "round": 3, "reachable": True}
+
+    monkeypatch.setattr(scoring_cache, "snapshot", canned_snapshot)
     http = TestClient(create_app())
     original = ranges.build_ranges
     calls = []
@@ -445,6 +454,9 @@ def test_board_and_detail_are_local_non_secret_and_workspace_scoped(tmp_path, mo
     assert [run["id"] for run in summary["active_runs"]] == ["run-check"]
     assert summary["degradations"] == [{"step": "repair", "detail": "web01 lagged"}]
     assert summary["deployed_at"] == 1
+    assert summary["scoring"] == {"state": "running", "round": 3, "reachable": True}
+    other_row = next(row for row in board if row["key"] == str(other))
+    assert other_row["scoring"] is None and not other_row["live"]
     assert set(summary["event"]) == {"seeded", "hold_start", "ended"}
     assert summary["links"]["scoreboard"] == "http://10.0.0.42"
     assert not {"runs", "inventory", "requests", "params", "creds"}.intersection(summary)
