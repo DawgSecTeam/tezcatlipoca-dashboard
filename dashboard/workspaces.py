@@ -22,9 +22,9 @@ _STATE_NAMES = {
     "portal-access.log", "estate-state.json", ".deploy-timings.jsonl", ".deploy.lock",
     "known_hosts", "nakon-config.json", ".badauto-config.yaml", ".realm-c2-config.yaml",
     ".phase6-swept", ".postclone-swept", "passwords.json", "box_baseline.json",
-    "domain_accounts.json", "box_vulns.json.pre-cyberfield-prune1",
+    "domain_accounts.json", "box_vulns.json.pre-cyberfield-prune1", ".tlaloc-config.yaml",
 }
-_STATE_DIRS = {".automated-tests", "remote-access", "evidence"}
+_STATE_DIRS = {".automated-tests", "remote-access", "evidence", ".tlaloc-state", "red"}
 # NOT state (they are DEFINITIONS the deploy reads): `pfsense/` holds the factory
 # `pfsense-config-orig.xml` seed phase 5 clones from and `vyos/` the VyOS equivalent — skipping
 # them left a workspace whose firewall bootstrap died on a missing seed file (2026-10-14,

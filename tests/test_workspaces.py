@@ -124,6 +124,26 @@ def test_seed_strips_run_state_keeps_definitions(tmp_path):
     assert not (dst / "run-x-archive-1").exists()
 
 
+def test_the_red_agents_deploy_state_never_reaches_the_workspace(tmp_path):
+    """tlaloc keys its world by the competition name, so a seeded `.tlaloc-state` from a manual
+    run is a range's previous event arriving in a fresh workspace — the deploy refuses it as
+    cross-event state (live: scrim-one, run-5882173c)."""
+    src, dst = tmp_path / "defs", tmp_path / "run" / "comp"
+    _defs(src)
+    (src / ".tlaloc-state").mkdir()
+    (src / ".tlaloc-state" / "world.json").write_text('{"comp": "demo"}')
+    (src / ".tlaloc-config.yaml").write_text("run:\n  comp: demo\n")
+    (src / "red" / "payloads").mkdir(parents=True)
+    (src / "red" / "payloads" / "manifest.json").write_text("{}")
+
+    seed_workspace(src, dst)
+
+    assert (dst / "Compfile").exists()
+    assert not (dst / ".tlaloc-state").exists()
+    assert not (dst / ".tlaloc-config.yaml").exists()
+    assert not (dst / "red").exists()
+
+
 def test_a_seeded_estate_document_never_reaches_the_workspace(tmp_path):
     """The document carries every password, the run id and the VM inventory: seeding one in
     would make a fresh deploy adopt a previous run's identity (the credential-desync corpse
