@@ -7,6 +7,7 @@ deploys (via `dashboard.estate`, which mirrors the engine's `estate.state.load_f
 scrim harness's run.json phases otherwise."""
 
 import json
+import logging
 import os
 import shutil
 import signal
@@ -19,6 +20,8 @@ import importlib.util
 from pathlib import Path
 
 from dashboard import config, estate, nodes, ranges, workspaces
+
+log = logging.getLogger(__name__)
 
 PHASE_NAMES = {
     1: "cleanup", 2: "engine_template", 3: "prepare_engine", 4: "golden_set",
@@ -139,6 +142,20 @@ def build_command(action, comp_id, ws, params, nodes_file=None):
     return cmd + extra
 
 
+def _fetch_origin(engine_repo, attempts=3):
+    """GitHub resets the odd connection; a transient reset must not refuse a run that can
+    still name the commit it will execute (live: three RunRefusals in one evening)."""
+    fetch = None
+    for attempt in range(attempts):
+        fetch = subprocess.run(["git", "-C", str(engine_repo), "fetch", "origin", "--quiet"],
+                               capture_output=True, text=True)
+        if fetch.returncode == 0:
+            return fetch
+        if attempt < attempts - 1:
+            time.sleep(2 * (attempt + 1))
+    return fetch
+
+
 class RunManager:
     def __init__(self, store, bus):
         self.store, self.bus = store, bus
@@ -161,28 +178,44 @@ class RunManager:
         """
         with self._lock:
             live = set(self._procs)
-        orphans = [r["id"] for r in self.store.list_runs()
+        orphans = [r for r in self.store.list_runs()
                    if r["state"] in ranges.IN_FLIGHT and r["id"] not in live]
-        for run_id in orphans:
-            self.store.update_run(run_id, state="failed", ended_at=time.time(),
-                                  error="orphaned: no worker after service restart")
-            self._emit(run_id, "state", data={"state": "failed", "orphaned": True})
-        return orphans
+        for run in orphans:
+            run_id = run["id"]
+            error = "orphaned: no worker after service restart"
+            self.store.update_run(run_id, state="failed", ended_at=time.time(), error=error)
+            self._append_run_log(run, f"failed: {error}")
+            self._emit(run_id, "state", data={"state": "failed", "orphaned": True,
+                                               "error": error})
+            log.warning("closed orphaned run %s (%s/%s): %s", run_id, run["comp_id"],
+                        run["action"], error)
+        return [run["id"] for run in orphans]
 
     # ---- repo checkouts ----
 
     def ensure_repos(self):
         self.runs_dir.mkdir(parents=True, exist_ok=True)
-        if not (self.engine_repo / ".git").exists():
-            subprocess.run(["git", "clone", config.engine_repo_url(), str(self.engine_repo)],
-                           check=True, capture_output=True)
-        if not (self.comps_repo / ".git").exists():
-            subprocess.run(["git", "clone", config.competitions_repo_url(), str(self.comps_repo)],
-                           check=True, capture_output=True)
+        for repo, url, label in ((self.engine_repo, config.engine_repo_url(), "engine"),
+                                 (self.comps_repo, config.competitions_repo_url(),
+                                  "competitions")):
+            if (repo / ".git").exists():
+                continue
+            proc = subprocess.run(["git", "clone", url, str(repo)],
+                                  capture_output=True, text=True)
+            if proc.returncode != 0:
+                detail = (proc.stderr or proc.stdout or "").strip()[-300:]
+                log.error("cannot clone %s repo %s: %s", label, url, detail)
+                raise RunRefused(f"cannot clone the {label} repo from {url}: {detail}")
+            log.info("cloned %s repo into %s", label, repo)
 
     def refresh_comps(self):
-        subprocess.run(["git", "-C", str(self.comps_repo), "pull", "--ff-only"],
-                       capture_output=True)
+        proc = subprocess.run(["git", "-C", str(self.comps_repo), "pull", "--ff-only"],
+                              capture_output=True, text=True)
+        if proc.returncode != 0:
+            # A stale definitions checkout is usable; make the drift visible instead of
+            # silently running last week's competition.
+            log.warning("cannot refresh competitions repo: %s",
+                        (proc.stderr or proc.stdout or "").strip()[-300:])
 
     # ---- lifecycle ----
 
@@ -197,7 +230,11 @@ class RunManager:
         # Only deploy/plan/scrim take a team COUNT; a redeploy's `teams` is a selector
         # ("team2", "2" or the subnet identifier "102"), so int() there would 500.
         if params.get("teams") and action in ("deploy", "plan", "scrim"):
-            params["teams"] = int(params["teams"])
+            try:
+                params["teams"] = int(params["teams"])
+            except (TypeError, ValueError) as exc:
+                raise RunRefused(f"teams must be a number for a {action}: "
+                                 f"{params['teams']!r}") from exc
         self.ensure_repos()
         self.refresh_comps()
         comp_src = self.comps_repo / comp_id
@@ -251,8 +288,15 @@ class RunManager:
             # unset it and portals deploy without the channel.
             self.store.mint_range_token(str(run_dir / "comp"), comp_id)
         self._emit(run_id, "lifecycle", data={"state": "queued", "action": action})
-        threading.Thread(target=self._run, args=(record, comp_src, engine_ref),
-                         daemon=True).start()
+        try:
+            threading.Thread(target=self._run, args=(record, comp_src, engine_ref),
+                             daemon=True, name=f"run:{run_id}").start()
+        except Exception as exc:  # a queued row with no worker is unmanageable forever
+            self._finish(run_id, None, error=f"worker did not start: {exc}")
+            raise RunRefused(f"run {run_id} could not start: {exc}") from exc
+        log.info("queued %s %s/%s at %s (workspace=%s)", run_id, comp_id, action,
+                 engine_ref, record["params"].get("_destroy_comp_dir")
+                 or record["params"].get("comp_dir") or run_dir / "comp")
         return record
 
     def _range_workspace(self, comp_id, params, action):
@@ -342,6 +386,7 @@ class RunManager:
         except ProcessLookupError:
             pass
         self._emit(run_id, "lifecycle", data={"state": "cancelling"})
+        log.info("cancel requested for %s (pid %s)", run_id, proc.pid)
         return self.store.get_run(run_id)
 
     def pause(self, run_id):
@@ -369,6 +414,7 @@ class RunManager:
             self.store.update_run(run_id, state="pausing")
             self._emit(run_id, "lifecycle", stage="pause requested",
                        data={"state": "pausing"})
+            log.info("pause requested for %s", run_id)
         return {"run": self.store.get_run(run_id),
                 "detail": "holding at the end of the phase in progress"}
 
@@ -388,6 +434,7 @@ class RunManager:
             # A parked driver clears its marker within the second; the stage tracker sees that
             # and announces the resume, so one transition keeps one writer.
             self._emit(run_id, "lifecycle", data={"state": "resume_requested"})
+        log.info("resume requested for %s (was %s)", run_id, run["state"])
         return {"run": self.store.get_run(run_id), "detail": "resuming"}
 
     def _pause_hook(self, run, run_dir):
@@ -468,9 +515,32 @@ class RunManager:
         self.bus.publish(run_id, event)
         return event
 
-    def _run(self, record, comp_src, engine_ref):
+    @staticmethod
+    def _append_run_log(run, message):
+        """Append an operator-facing line to a run's own log.
+
+        A run can fail before its driver is spawned (a failed fetch, a missing workspace):
+        its log file then stayed at zero bytes and the board showed "failed" with no way to
+        see why. The log is the first place an operator looks, so every terminal state lands
+        there as well as in the store and the journal."""
+        path = (run or {}).get("log_path")
+        if not path:
+            return
         try:
-            run_id, run_dir = record["id"], Path(record["run_dir"])
+            with open(path, "a+", encoding="utf-8", errors="replace") as fh:
+                fh.seek(0, 2)
+                if fh.tell():
+                    fh.write("\n")
+                fh.write(f"[dashboard] {message}\n")
+        except OSError as exc:
+            log.warning("cannot append to run log %s: %s", path, exc)
+
+    def _run(self, record, comp_src, engine_ref):
+        run_id = (record or {}).get("id") or "<unknown>"
+        run_dir = Path(record["run_dir"]) if (record or {}).get("run_dir") else None
+        proc = None
+        log_fh = None
+        try:
             ws = self._workspace(record, comp_src)
             worktree = run_dir / "engine"
             engine_used = self._provision_worktree(worktree, engine_ref, run_dir)
@@ -491,10 +561,12 @@ class RunManager:
                 token = self.store.token_for_range(str(ws.resolve()))
                 if token:
                     child_env["TEZ_OPS_TOKEN"] = token
-            log = open(record["log_path"], "w")
-            log.write(f"$ engine {engine_used['ref']} @ {engine_used['commit'][:12]}\n")
-            log.write("$ " + " ".join(cmd) + "\n")
-            log.flush()
+            # `log` is the module logger; the file handle gets its own name so a run's
+            # output stream can never shadow the service log.
+            log_fh = open(record["log_path"], "w")
+            log_fh.write(f"$ engine {engine_used['ref']} @ {engine_used['commit'][:12]}\n")
+            log_fh.write("$ " + " ".join(cmd) + "\n")
+            log_fh.flush()
             # Keep a request made while the run was still provisioning: writing "running" over
             # it would make the operator's click look lost.
             state = "pausing" if (run_dir / "pause").exists() else "running"
@@ -504,25 +576,48 @@ class RunManager:
             self._emit(run_id, "lifecycle", data={"state": state, "cmd": cmd,
                                                   "engine_ref": engine_ref,
                                                   "engine_head": engine_used["commit"]})
-            proc = subprocess.Popen(cmd, cwd=str(worktree), stdout=log, stderr=subprocess.STDOUT,
-                                    stdin=subprocess.DEVNULL, start_new_session=True,
-                                    env=child_env)
+            log.info("started %s %s/%s at %s", run_id, record["comp_id"],
+                     record["action"], engine_used["commit"][:12])
+            proc = subprocess.Popen(cmd, cwd=str(worktree), stdout=log_fh,
+                                    stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                    start_new_session=True, env=child_env)
             with self._lock:
                 self._procs[run_id] = proc
             self.store.update_run(run_id, pid=proc.pid)
             self._track_stages(run_id, ws, proc, record["action"])
             rc = proc.wait()
-            log.close()
             self._finish(run_id, rc, cancelling=rc < 0)
-        except Exception as e:  # a crashed run must end as a failed run, not a ghost
-            self._finish(run_id, None, error=f"{type(e).__name__}: {e}")
+        except Exception as exc:  # a crashed run must end as a failed run, not a ghost
+            # The traceback goes to the journal (where the exception would otherwise vanish
+            # because this worker is not in uvicorn's request path) and the summary to the
+            # run's own log (where the operator looks).
+            log.exception("run %s (%s/%s) crashed", run_id, (record or {}).get("comp_id"),
+                          (record or {}).get("action"))
+            if proc is not None and proc.poll() is None:
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                except OSError as kill_exc:
+                    log.warning("cannot stop run %s process group: %s", run_id, kill_exc)
+            self._finish(run_id, None, error=f"{type(exc).__name__}: {exc}")
         finally:
-            # Never discard the range's workspace while its range exists: the estate document
-            # (run id, ownership, teardown journal) is the sanctioned way to finish a failed
-            # teardown (known-issues: a deleted per-run workspace strands its range).
-            workspaces.release(run_dir, self._range_retired(record))
-            (run_dir / "bad-auto").unlink(missing_ok=True)
-            (run_dir / "pause").unlink(missing_ok=True)
+            if log_fh is not None:
+                try:
+                    log_fh.close()
+                except OSError:
+                    pass
+            if run_dir is not None:
+                # Never discard the range's workspace while its range exists: the estate
+                # document (run id, ownership, teardown journal) is the sanctioned way to
+                # finish a failed teardown (known-issues: a deleted per-run workspace strands
+                # its range).
+                try:
+                    workspaces.release(run_dir, self._range_retired(record))
+                except Exception:
+                    log.exception("cannot release the worktree of run %s", run_id)
+                (run_dir / "bad-auto").unlink(missing_ok=True)
+                (run_dir / "pause").unlink(missing_ok=True)
             subprocess.run(["git", "-C", str(self.engine_repo), "worktree", "prune"],
                            capture_output=True)
 
@@ -543,8 +638,19 @@ class RunManager:
             state = "failed"
         self.store.update_run(run_id, state=state, returncode=rc, error=error,
                               ended_at=time.time())
+        run = self.store.get_run(run_id) or {}
+        detail = f"{state}"
+        if rc is not None:
+            detail += f" rc={rc}"
+        if error:
+            detail += f": {error}"
+        self._append_run_log(run, detail)
         self._emit(run_id, "lifecycle",
                    data={"state": state, "returncode": rc, "error": error})
+        if state in ("failed", "cancelled"):
+            log.warning("run %s %s/%s %s", run_id, run.get("comp_id"), run.get("action"), detail)
+        else:
+            log.info("run %s %s/%s %s", run_id, run.get("comp_id"), run.get("action"), detail)
         # An approved reset request rides the redeploy run that resolves it: a clean exit
         # is `done`, anything else is `failed` (the team's chip frees the box either way —
         # done/denied/failed all allow a new request). Only `approved` resolves, so the
@@ -588,8 +694,7 @@ class RunManager:
         # remote-tracking ref was on disk, and the run executed an older revision than the one
         # the UI reported. A run that cannot guarantee which code it will execute must not
         # start, so a failed fetch refuses (naming the ref and git's error) before any worktree.
-        fetch = subprocess.run(["git", "-C", str(self.engine_repo), "fetch", "origin", "--quiet"],
-                               capture_output=True, text=True)
+        fetch = _fetch_origin(self.engine_repo)
         if fetch.returncode != 0:
             raise RunRefused(f"cannot fetch engine ref {engine_ref!r} from origin: "
                              f"{fetch.stderr.strip()[-200:]}")

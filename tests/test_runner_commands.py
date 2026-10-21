@@ -1,5 +1,8 @@
+from types import SimpleNamespace
+
 import pytest
 
+from dashboard import runner
 from dashboard.runner import RunRefused, build_command
 
 
@@ -105,3 +108,24 @@ def test_run_nodes_file_and_driver_env(tmp_path, monkeypatch):
 
     # every catalog token rides the child env, so a later verify/destroy can resolve it
     assert mgr._driver_env()["TEZ_NODE_TOKEN_NODE_A"] == "sec"
+
+
+def test_a_transient_fetch_reset_is_retried(monkeypatch):
+    """GitHub resets the odd connection; one reset refused three runs in one evening."""
+    calls = []
+
+    def fake(cmd, **kw):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=1 if len(calls) == 1 else 0, stderr="reset")
+
+    monkeypatch.setattr(runner.subprocess, "run", fake)
+    monkeypatch.setattr(runner.time, "sleep", lambda s: None)
+    out = runner._fetch_origin("/repo")
+    assert len(calls) == 2 and out.returncode == 0
+
+
+def test_a_persistent_fetch_failure_still_refuses(monkeypatch):
+    monkeypatch.setattr(runner.subprocess, "run",
+                        lambda cmd, **kw: SimpleNamespace(returncode=128, stderr="reset"))
+    monkeypatch.setattr(runner.time, "sleep", lambda s: None)
+    assert runner._fetch_origin("/repo").returncode == 128
