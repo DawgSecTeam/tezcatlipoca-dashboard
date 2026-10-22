@@ -47,3 +47,29 @@ export function useCompetitionData(key, revision) {
   }, [key, revision])
   return state.key === key ? state : { view: null, error: null, updated: null }
 }
+
+// The range's server-computed triage answer, on the same 10s cadence as the range itself.
+// A diagnosis is advisory chrome: if it cannot be fetched the page still works, so the
+// error is swallowed and the next tick retries.
+export function useRangeDiagnosis(id) {
+  const [diagnosis, setDiagnosis] = useState(null)
+  useEffect(() => {
+    if (!id) return
+    let active = true
+    let busy = false
+    setDiagnosis(null)
+    const load = async () => {
+      if (busy) return
+      busy = true
+      try {
+        const data = await api.rangeDiagnosis(id)
+        if (active) setDiagnosis(data)
+      } catch { /* the page's own error banner covers a dead service */ }
+      finally { busy = false }
+    }
+    load()
+    const timer = setInterval(load, 10000)
+    return () => { active = false; clearInterval(timer) }
+  }, [id])
+  return diagnosis
+}

@@ -131,3 +131,15 @@ def driver_path():
             seen.add(p)
             prepend.append(p)
     return ":".join(prepend + [base]) if prepend else base
+
+
+def shutdown_grace_seconds():
+    """How long uvicorn may wait for open streams before closing them on SIGTERM.
+
+    The SSE/log views keep a response open for the life of a page. A default unbounded
+    graceful stop waits on them until systemd's timeout, then aborts the interpreter
+    (journal: `Main process exited, code=dumped, status=6/ABRT`)."""
+    try:
+        return max(1, int(os.environ.get("TEZ_DASHBOARD_SHUTDOWN_GRACE") or "10"))
+    except ValueError:
+        return 10

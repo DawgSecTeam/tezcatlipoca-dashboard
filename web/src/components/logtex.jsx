@@ -125,7 +125,9 @@ const stripEsc = (t) => t.replace(ESC_RE, '')
 // The log body: one element per processed line, so jumps land exactly (the old ratio-based
 // phase jump drifted whenever wrapped lines changed the page height). Follow, search with hit
 // navigation and a jump-to-latest button live here; the drawer and the run page share it.
-export function LogView({ log, height = '60vh', showPhases = false }) {
+// `focus` ({line}, 1-based) is the diagnosis panel's jump target — a fresh object each click,
+// so the same line asked for twice scrolls again.
+export function LogView({ log, height = '60vh', showPhases = false, focus = null }) {
   const [follow, setFollow] = useState(true)
   const [q, setQ] = useState('')
   const [hit, setHit] = useState(0)
@@ -147,6 +149,14 @@ export function LogView({ log, height = '60vh', showPhases = false }) {
     setFollow(false)
     el.scrollTop = child.offsetTop - el.offsetTop - 8
   }
+
+  // The server's line numbers are the raw log's, and parseLog yields one element per line,
+  // so the mapping is the same index minus one. The log may still be streaming when the
+  // click lands; the guard makes a not-yet-loaded line a no-op instead of a crash.
+  useEffect(() => {
+    if (focus?.line) scrollToLine(focus.line - 1)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus])
 
   return (
     <div>

@@ -37,7 +37,7 @@ def build_inventory(store, run, rng=None):
     identifiers = _team_identifiers(ws, state)
     teams = _teams_from_resources(resources, identifiers, _targets(state), boxes)
     networks = _networks_from_resources(resources, identifiers, state)
-    machines = _machines_from_resources(resources, state, teams, ws)
+    machines = _machines_from_resources(resources, state, teams, ws, document)
     return {
         # Mirrors /api/ranges minus its run history: the page already holds the run it is
         # showing, and a range's whole history must not ride in on every inventory read.
@@ -171,7 +171,8 @@ def _networks_from_resources(resources, identifiers, state):
         out.append({
             "name": name,
             "node": node,
-            "kind": ("transit" if name.startswith("vmbrW")
+            "kind": ("red" if name.startswith("vmbrR")
+                     else "transit" if name.startswith("vmbrW")
                      else "satellite" if engine_node and node != engine_node
                      else "team"),
             "teams": [by_identifier[identifier]] if identifier in by_identifier else [],
@@ -182,7 +183,7 @@ def _networks_from_resources(resources, identifiers, state):
     return out
 
 
-def _machines_from_resources(resources, state, teams, ws):
+def _machines_from_resources(resources, state, teams, ws, document):
     machines = {}
     engine = next((r for r in resources if r.get("kind") == "engine"), None)
     if engine:
@@ -194,7 +195,7 @@ def _machines_from_resources(resources, state, teams, ws):
             "mgmt_ip": state.get("engine_mgmt_ip") or None,
             "team_ips": [t["engine_ip"] for t in teams],
         }
-    red01 = _red01(ws, state)
+    red01 = _red01(ws, state, document)
     if red01:
         machines["red01"] = red01
     template = next((r for r in resources if r.get("kind") == "engine_template"), None)
@@ -230,9 +231,12 @@ def _fallback_ip(identifier, last_octet):
     return f"192.168.{identifier}.{last_octet}" if identifier and last_octet else None
 
 
-def _red01(ws, state):
-    """red01's identity: the comp's bad-auto config (what `badauto destroy` acts on), else
-    the deploy state's assume-breach record (vmid/ip only)."""
+def _red01(ws, state, document):
+    """red01's identity: the document's `red` section (current engine), else the comp's
+    bad-auto config, else the legacy assume-breach record."""
+    red = document.get("red") or {}
+    if isinstance(red, dict) and (red.get("vmid") or red.get("ip")):
+        return {"vmid": red.get("vmid"), "ip": red.get("ip"), "node": red.get("node")}
     cfg = _yaml(ws / ".badauto-config.yaml")
     deploy = cfg.get("deploy") or {}
     breach = state.get("assume_breach") or {}

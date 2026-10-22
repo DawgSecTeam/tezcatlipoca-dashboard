@@ -110,6 +110,17 @@ never deletes a workspace. A non-retired range whose workspace is gone is report
 `workspace_missing` by `GET /api/ranges` and the inventory, so the board cannot silently
 lose it.
 
+## Logging
+
+Every service logger lives under `dashboard.*` and writes one timestamped line to stderr
+(the journal under systemd); `TEZ_DASHBOARD_LOG_LEVEL` sets the level and
+`TEZ_DASHBOARD_LOG_FILE` adds a rotating 5 MiB × 3 file. A run's own `run.log` is the
+operator's first surface: the runner appends a `[dashboard] <state> rc=… [: reason]` line
+when it finishes, crashes, or is closed as an orphan after a restart, and the terminal
+lifecycle event carries the same `error`. Background scoring polls and MCP event pumps log
+a traceback instead of swallowing it. `TEZ_DASHBOARD_SHUTDOWN_GRACE` (default 10s) bounds
+the graceful stop so an open SSE stream cannot make systemd time out and abort the process.
+
 ## API (bearer token, `Authorization: Bearer <token>`)
 
 | Route | What |
@@ -135,6 +146,7 @@ lose it.
 | `GET /api/runs/{id}/artifacts` | collected evidence tree |
 | `GET /api/runs/{id}/artifacts/file?path=` | one artifact file (paths under the run's evidence tree only) |
 | `GET /api/runs/{id}/inventory` | the range's deployed infrastructure, projected from its workspace |
+| `GET /api/runs/{id}/diagnosis`, `GET /api/ranges/{id}/diagnosis` | deterministic triage: headline, quoted cause, next step (see **Diagnosis**) |
 
 ## Web UI
 
@@ -182,11 +194,38 @@ while red, blue and the clock keep running), a request is refused when the run's
 predates the hook, and a held run shows the phase it stopped after. The engine side is
 `deploy_lib/pause.py` in the tezcatlipoca checkout.
 
+## Diagnosis
+
+`GET /api/runs/{id}/diagnosis` and `GET /api/ranges/{id}/diagnosis` answer "what's wrong"
+from local facts only: the run record (state, stage, rc, error), its stage events, the last
+200 KB of its log re-aligned to whole lines, and the range workspace's estate document. No
+engine is polled and no model is consulted, so the answer is instant and reproducible. The
+run page shows the card above General whenever there is something to report, quoting the
+failing line with a jump into the log; the range overview swaps its "Attention needed"
+heuristic for the same verdict, and the newest run's cause rides up into it.
+
+The rules are signatures an operator would recognise — a missing driver dependency,
+`opencode` absent from PATH, an engine ref that does not resolve, SSH/Proxmox auth, a
+preflight collision, an unreachable host, a full disk, a killed process — plus run states
+(orphaned by a restart, held at a phase boundary, silent for too long, queued too long) and
+range facts (teardown incomplete, workspace missing, kept templates, degradations, pending
+requests, an unreachable engine). A failed run quotes exactly one log line, with
+token/password/URL-userinfo values redacted, and the estate document is never serialized —
+the same reason `run_view` withholds raw `error` from the board.
+
+`TEZ_DIAGNOSE_STALL_SECONDS` (default 600) sets the silence threshold for the "running but
+stalled" warning; `TEZ_DIAGNOSE_TAIL_BYTES` (default 200000) bounds the log read.
+
 ## MCP (`/mcp`, Streamable HTTP, same bearer token)
 
 Tools: `list_comps`, `get_comp`, `submit_run`, `list_runs`, `get_run`, `watch_run`,
 `unwatch_run`, `cancel_run`, `pause_run`, `resume_run`, `get_run_log`, `get_run_events`,
-`get_artifacts`.
+`get_artifacts`, `diagnose_run`, `diagnose_range`.
+
+`diagnose_run`/`diagnose_range` return the same JSON the HTTP routes do. An agent asking
+"why did this fail?" should reach for them first: they collapse the
+`list_runs` → `get_run` → `get_run_log` → `get_run_events` → `get_artifacts` chain into one
+local call and hand back the cause, the quoted line and the next step.
 
 ## Nodes
 

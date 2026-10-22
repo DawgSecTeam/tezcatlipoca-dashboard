@@ -152,7 +152,10 @@ _PARAM_FIELDS = ("teams", "team", "boxes", "mode", "comp_dir", "_destroy_comp_di
 
 
 def run_view(run, detail=False):
-    """Named public fields only: arbitrary params, driver errors and extra_args may be secret."""
+    """Named public fields only: arbitrary params, driver errors and extra_args may be secret.
+
+    The raw `error` is deliberately withheld: it can quote a command line or a URL carrying a
+    token. The run page's `/api/runs/{id}` is the authenticated detail surface that shows it."""
     if run is None:
         return None
     view = {field: run.get(field) for field in _RUN_FIELDS}
@@ -190,7 +193,7 @@ def range_summary(rng, inventory, requests):
     summary = {field: rng[field] for field in ("id", "key", "comp_id", "state", "live",
                                                "deploy_run_id", "has_recorded_vms",
                                                "kept_templates", "reclaimable_templates",
-                                               "workspace_missing")}
+                                               "workspace_missing", "teams")}
     engine_ip = (machines.get("scoring_engine") or {}).get("mgmt_ip") or _engine_ip(rng["key"])
     state = estate.load_flat(rng["key"])
     summary.update({

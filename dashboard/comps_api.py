@@ -6,6 +6,7 @@ catalog for the "add config" pickers. Runs (deploy/verify/destroy/scrim) are the
 queue's job (see app.py / runner.py); this module only owns definitions."""
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -19,6 +20,8 @@ from fastapi import Body, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from dashboard import config, estate, nodes
+
+log = logging.getLogger(__name__)
 
 COMPS = config.competitions_checkout()
 NAKON_DIR = config.nakon_dir()
@@ -502,7 +505,7 @@ def get_templates():
         except Exception as e:  # noqa: BLE001
             # Never silently: "0 of 17 live" is indistinguishable from an unreachable
             # Proxmox, and this read failed on every call for a day (2026-10-15).
-            print(f"  WARNING: cannot read live templates from Proxmox ({e})", flush=True)
+            log.warning("cannot read live templates from Proxmox: %s", e)
             live = []
     names = sorted(set(live) | used)
     return [{"name": n, "platform": os_to_platform(n), "live": n in live} for n in names]

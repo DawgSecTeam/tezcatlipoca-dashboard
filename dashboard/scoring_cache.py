@@ -12,11 +12,14 @@ No credentials ever enter this cache — the public block is state/round/reachab
 only, exactly what the board card renders.
 """
 
+import logging
 import threading
 import time
 from pathlib import Path
 
 from dashboard import competition, estate
+
+log = logging.getLogger(__name__)
 
 TTL_SECONDS = 15.0
 _MAX_REFRESHES = 4
@@ -59,7 +62,7 @@ def _launch(ws):
                 # prune, which is harmless.
                 _cache[ws] = entry
         except Exception:  # keep the last-known entry; the next TTL retries
-            pass
+            log.warning("scoring poll failed for %s", ws, exc_info=True)
         finally:
             # The permit goes back before the in-flight marker clears, so "not in
             # flight" also means "its slot is free again".
@@ -67,7 +70,14 @@ def _launch(ws):
             with _lock:
                 _inflight.discard(ws)
 
-    threading.Thread(target=work, name=f"scoring-cache:{Path(ws).name}", daemon=True).start()
+    try:
+        threading.Thread(target=work, name=f"scoring-cache:{Path(ws).name}",
+                         daemon=True).start()
+    except Exception:  # a poll that never starts must not consume a slot forever
+        log.exception("cannot start scoring poll for %s", ws)
+        _gate.release()
+        with _lock:
+            _inflight.discard(ws)
 
 
 def snapshot(rng):

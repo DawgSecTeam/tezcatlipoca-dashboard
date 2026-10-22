@@ -6,13 +6,17 @@ for that run is pushed to the session as a log notification (structured data:
 cursor (get_run_events since=N) recovers anything missed across a reconnect."""
 
 import asyncio
+import logging
 from pathlib import Path
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
+from dashboard import diagnose, ranges
 from dashboard.runner import RunRefused
+
+log = logging.getLogger(__name__)
 
 
 def build_mcp(manager):
@@ -94,6 +98,7 @@ def build_mcp(manager):
             # ToolError, not ValueError: the SDK only forwards a ToolError's own text to the
             # client — anything else arrives as "Error executing tool submit_run" with the
             # reason swallowed, so a refused overlap looked like a crash (2026-10-14).
+            log.warning("refused MCP %s %s: %s", comp_id, action, e)
             raise ToolError(f"refused: {e}") from e
 
     @mcp.tool()
@@ -193,6 +198,33 @@ def build_mcp(manager):
         return [{"path": str(p.relative_to(root)), "bytes": p.stat().st_size}
                 for p in sorted(root.rglob("*")) if p.is_file()]
 
+    # The question an operator actually asks an agent ("why did this fail?") answered from
+    # one local read: record + events + the run log's last whole lines, with the failing line
+    # quoted and its offset. It collapses the list_runs -> get_run -> get_run_log ->
+    # get_run_events -> get_artifacts chain into one call.
+    @mcp.tool()
+    def diagnose_run(run_id: str) -> dict:
+        """Why a run failed or what it is doing: headline, first cause (the log line and its
+        offset), findings with next steps, and the facts behind them. No model, no polling."""
+        run = store.get_run(run_id)
+        if not run:
+            raise ToolError(f"no such run: {run_id}")
+        return diagnose.diagnose_run(store, run)
+
+    @mcp.tool()
+    def diagnose_range(range_id: str) -> dict:
+        """A range's triage answer: state, teardown progress, kept templates and the newest
+        run's cause. `range_id` is the range's opaque id (`range-…`) or its workspace path."""
+        try:
+            key = str(Path(range_id).resolve())
+        except OSError:
+            key = None
+        rng = next((r for r in ranges.build_ranges(store)
+                    if r["id"] == range_id or (key and r["key"] == key)), None)
+        if rng is None:
+            raise ToolError(f"no such range: {range_id}")
+        return diagnose.diagnose_range(store, rng)
+
     async def _pump(session, run_id, queue):
         try:
             while True:
@@ -201,7 +233,7 @@ def build_mcp(manager):
                     level="info", data={"type": "run_event", "run_id": run_id, **event})
         except asyncio.CancelledError:
             pass
-        except Exception:
-            pass  # a dead session must never kill the run or the service
+        except Exception:  # a dead session must never kill the run or the service
+            log.warning("MCP event pump for %s stopped", run_id, exc_info=True)
 
     return mcp

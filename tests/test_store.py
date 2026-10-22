@@ -44,3 +44,12 @@ def test_event_cursor(tmp_path):
     assert nxt == 2 and [e["kind"] for e in events] == ["stage", "lifecycle"]
     nxt2, again = store.get_events("run-1", nxt)
     assert nxt2 == nxt and again == []
+
+
+def test_an_absent_log_path_is_null_not_the_string_none(tmp_path):
+    """`str(None)` recorded the literal "None"; a later append then created a file by that
+    name in the service's cwd instead of skipping a logless run."""
+    store = Store(tmp_path / "db.sqlite3")
+    run = store.create_run("run-nolog", "comp-a", "verify", "main", {}, tmp_path / "r", None)
+    assert run["log_path"] is None
+    assert store.get_run("run-nolog")["log_path"] is None

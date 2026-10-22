@@ -13,6 +13,7 @@ import {
 import RunTeams from '../components/RunTeams'
 import RunInfra from '../components/RunInfra'
 import CompetitionPanel from '../components/CompetitionPanel'
+import Diagnosis from '../components/Diagnosis'
 
 const TABS = ['teams', 'infrastructure', 'evidence']
 
@@ -91,9 +92,10 @@ export function Timeline({ events = [], start }) {
 }
 
 // The engine log renders through the shared LogView (ANSI colors, folded repeats, log
-// search, exact phase jumps); this wrapper only carries the panel caption.
-export function Output({ log, height = '50vh', showPhases = true }) {
-  return <LogView log={log} height={height} showPhases={showPhases} />
+// search, exact phase jumps); this wrapper only carries the panel caption. `focus` is the
+// diagnosis panel's jump target (an object, so asking for the same line twice re-scrolls).
+export function Output({ log, height = '50vh', showPhases = true, focus = null }) {
+  return <LogView log={log} height={height} showPhases={showPhases} focus={focus} />
 }
 
 const fmtBytes = (n) => (n == null ? '' : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`)
@@ -272,10 +274,18 @@ export default function Run() {
   const [attempt, setAttempt] = useState(0)
   const [newRun, setNewRun] = useState(false)
   const [resetBox, setResetBox] = useState(null) // null = closed, {} | {team} = prefill
+  const [diagnosis, setDiagnosis] = useState(null)
+  // A jump target for the Output panel: a new object on every click so LogView re-scrolls
+  // even when the same line is asked for twice.
+  const [focus, setFocus] = useState(null)
   const log = useRunLog(id)
   const refresh = useRef(null)
   useTick(1000)
   const reload = () => refresh.current?.()
+  const jumpToLine = (line) => {
+    setFocus({ line, n: Date.now() })
+    requestAnimationFrame(() => document.getElementById('run-output')?.scrollIntoView({ behavior: 'smooth', block: 'start' }))
+  }
   const { submit, destroy, cancel, pause, resume, live, held, canPause } = useRunActions(run, reload, inventory?.range)
   useEffect(() => { setEvents([]) }, [id])
   const { updated, live: streamLive } = useRunEvents(id, (ev) => {
@@ -285,13 +295,16 @@ export default function Run() {
 
   useEffect(() => {
     let active = true, pending = null
-    setRun(null); setComp(null); setInventory(null); setErr(null)
+    setRun(null); setComp(null); setInventory(null); setErr(null); setDiagnosis(null)
     const load = () => {
       if (pending) return pending
       pending = Promise.all([
         api.run(id).then((r) => { if (active) { setRun(r); setErr(null) } })
           .catch((e) => { if (active) setErr(e) }),
         api.runInventory(id).then((r) => { if (active) setInventory(r) }).catch(() => {}),
+        // The triage verdict follows the same poll as the record: a run that fails or
+        // stalls while the page is open updates its diagnosis without a reload.
+        api.runDiagnosis(id).then((r) => { if (active) setDiagnosis(r) }).catch(() => {}),
       ]).finally(() => { pending = null })
       return pending
     }
@@ -398,6 +411,11 @@ export default function Run() {
 
       {tab === 'overview' && (
         <>
+          {/* Only when there is something to say: a healthy run's stage strip and facts are
+              the context, and a permanent "no problems" card pushed them down. */}
+          {diagnosis && diagnosis.severity !== 'ok' && (
+            <Diagnosis diagnosis={diagnosis} onFocusLine={jumpToLine} />
+          )}
           <CompetitionPanel
             rangeKey={range?.key || run.params?.comp_dir || run.params?._destroy_comp_dir || (run.run_dir ? `${run.run_dir}/comp` : '')}
             compId={range?.comp_id || run.comp_id} engineRef={range?.engine_ref || run.engine_ref}
@@ -452,12 +470,12 @@ export default function Run() {
                 <Timeline events={events} start={run.started_at || run.created_at} />
               </div>
             </Card>
-            <Card className="p-6">
+            <Card className="p-6" id="run-output">
               <div className="mb-3 flex items-baseline justify-between gap-2">
                 <h2 className="label !mb-0">Output</h2>
                 <span className="text-[11px] text-faint">this run's engine log</span>
               </div>
-              <Output log={log} />
+              <Output log={log} focus={focus} />
             </Card>
           </div>
         </>
