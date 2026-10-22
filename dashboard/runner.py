@@ -279,6 +279,10 @@ class RunManager:
             params["_destroy_comp_dir"] = str(target)
             if params.get("comp_dir"):
                 params["comp_dir"] = str(target)
+            # A destroy tears the range down under the deploy that owns it; the deploy then
+            # hangs on a dead box and keeps the engine lock (live: run-084bf18b was refused
+            # while the destroyed run's create-competition still held the lock, pid orphaned).
+            self._cancel_live_runs_for_comp_dir(params.get("comp_dir"))
         record = self.store.create_run(run_id, comp_id, action, engine_ref, params,
                                        run_dir, run_dir / "run.log")
         if action == "deploy":
@@ -375,6 +379,27 @@ class RunManager:
                 f"the range in {rng['deploy_run_id']} was torn down by {rng['retired_by']} — "
                 f"nothing to {action} (a fresh deploy builds a new range)")
         return None
+
+    def _cancel_live_runs_for_comp_dir(self, comp_dir):
+        """Stop the live run that owns this workspace before its range is destroyed."""
+        if not comp_dir:
+            return
+        wanted = Path(comp_dir).resolve()
+        with self._lock:
+            live = dict(self._procs)
+        for run_id, proc in live.items():
+            if proc.poll() is not None:
+                continue
+            run = self.store.get_run(run_id)
+            if run is None or run["state"] not in ranges.IN_FLIGHT:
+                continue
+            other = (run.get("params") or {}).get("comp_dir")
+            if other and Path(other).resolve() == wanted:
+                try:
+                    self.cancel(run_id)
+                    log.info("destroy of %s: cancelled the live run on that workspace", comp_dir)
+                except RunRefused:
+                    pass
 
     def cancel(self, run_id):
         with self._lock:
