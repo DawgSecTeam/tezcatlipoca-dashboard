@@ -393,7 +393,10 @@ class RunManager:
             run = self.store.get_run(run_id)
             if run is None or run["state"] not in ranges.IN_FLIGHT:
                 continue
-            other = (run.get("params") or {}).get("comp_dir")
+            params = run.get("params") or {}
+            other = params.get("comp_dir") or params.get("_destroy_comp_dir")
+            if not other and run.get("run_dir"):
+                other = str(Path(run["run_dir"]) / "comp")
             if other and Path(other).resolve() == wanted:
                 try:
                     self.cancel(run_id)

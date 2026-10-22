@@ -41,7 +41,7 @@ def test_a_destroy_cancels_the_live_run_on_its_workspace(tmp_path):
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
                             start_new_session=True)
     store = _Store({"run-live": {"id": "run-live", "state": "running",
-                                 "params": {"comp_dir": comp_dir}}})
+                                 "params": {}, "run_dir": str(tmp_path)}})
     runner = _Runner(store)
     runner._procs["run-live"] = proc
     runner._cancel_live_runs_for_comp_dir(comp_dir)
