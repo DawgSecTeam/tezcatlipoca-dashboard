@@ -63,6 +63,9 @@ export const api = {
   ranges: () => request('GET', '/ranges'),
   rangeBoard: () => request('GET', '/ranges/board'),
   range: (id) => request('GET', `/ranges/${enc(id)}`),
+  // One range's deterministic triage answer (state + its runs' diagnoses). Same JSON the
+  // MCP `diagnose_range` tool returns.
+  rangeDiagnosis: (id) => request('GET', `/ranges/${enc(id)}/diagnosis`),
   // One range's competition lifecycle (the management panel's payload).
   competition: (rangeKey) => request('GET', `/competition?range=${enc(rangeKey)}`),
 
@@ -72,6 +75,9 @@ export const api = {
   submitRun: (body) => request('POST', '/runs', body),
   runs: (state) => request('GET', `/runs${state && state !== 'all' ? `?state=${enc(state)}` : ''}`),
   run: (id) => request('GET', `/runs/${enc(id)}`),
+  // Why this run failed / what it is doing: server-computed from the record, events and the
+  // log tail. The same JSON the MCP `diagnose_run` tool returns.
+  runDiagnosis: (id) => request('GET', `/runs/${enc(id)}/diagnosis`),
   cancelRun: (id) => request('POST', `/runs/${enc(id)}/cancel`),
   pauseRun: (id) => request('POST', `/runs/${enc(id)}/pause`),
   resumeRun: (id) => request('POST', `/runs/${enc(id)}/resume`),

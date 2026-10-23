@@ -163,6 +163,30 @@ def test_document_machines_and_deploy_facts(tmp_path, monkeypatch):
     assert payload["range"]["comp_id"] == "comp-a"
 
 
+def test_the_documents_red_section_is_the_current_red01_identity(tmp_path, monkeypatch):
+    document = json.loads(json.dumps(DOCUMENT))
+    document["red"] = {"vmid": 2660, "ip": "10.0.0.245", "node": "proxmox"}
+    ws = _doc_workspace(tmp_path, document)
+    _comp(tmp_path, monkeypatch)
+    run = _run(tmp_path, ws)
+    payload = build_inventory(FakeStore([run]), run)
+    # The current engine writes `red`; it outranks the older bad-auto/assume-breach records.
+    assert payload["machines"]["red01"] == {"vmid": 2660, "ip": "10.0.0.245",
+                                            "node": "proxmox"}
+
+
+def test_the_red_segment_bridge_is_labeled_red(tmp_path, monkeypatch):
+    document = json.loads(json.dumps(DOCUMENT))
+    document["resources"].append({"kind": "bridge", "node": "pve", "name": "vmbrRabc123",
+                                  "vmid": None, "tags": [], "at": "t"})
+    ws = _doc_workspace(tmp_path, document)
+    _comp(tmp_path, monkeypatch)
+    run = _run(tmp_path, ws)
+    payload = build_inventory(FakeStore([run]), run)
+    kinds = {n["name"]: n["kind"] for n in payload["networks"]}
+    assert kinds["vmbrRabc123"] == "red"
+
+
 def test_teardown_section_reports_step_names(tmp_path, monkeypatch):
     document = json.loads(json.dumps(DOCUMENT))
     document["teardown"] = {"run_id": "run-down",

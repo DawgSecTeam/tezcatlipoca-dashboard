@@ -64,19 +64,22 @@ class Store:
 
     def create_run(self, run_id, comp_id, action, engine_ref, params, run_dir, log_path):
         created = time.time()
+        # Keep an absent log path NULL: `str(None)` used to record the literal "None", and a
+        # later append (or log open) then created a file named `None` in the service's cwd.
+        logged = str(log_path) if log_path is not None else None
         with self._lock:
             self._db.execute(
                 "INSERT INTO runs (id, comp_id, action, engine_ref, params, state, run_dir, "
                 "log_path, created_at) VALUES (?,?,?,?,?, 'queued', ?,?,?)",
                 (run_id, comp_id, action, engine_ref, json.dumps(params), str(run_dir),
-                 str(log_path), created))
+                 logged, created))
             self._db.commit()
         # The inserted record, not a re-read: a transient read failure here handed the
         # caller None, which then died unpacking in the worker and left the queued row
         # behind forever with no process (2026-10-15 run-31072cb0).
         return {"id": run_id, "comp_id": comp_id, "action": action, "engine_ref": engine_ref,
                 "params": params, "state": "queued", "stage": "", "run_dir": str(run_dir),
-                "log_path": str(log_path), "pid": None, "returncode": None, "error": None,
+                "log_path": logged, "pid": None, "returncode": None, "error": None,
                 "engine_head": None, "created_at": created, "started_at": None, "ended_at": None}
 
     def update_run(self, run_id, **fields):

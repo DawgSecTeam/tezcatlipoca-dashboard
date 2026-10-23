@@ -84,6 +84,9 @@ function RangeCard({ range }) {
               {hero.label}
               {hero.detail && <span className="text-xs font-normal text-faint">{hero.detail}</span>}
             </Link>}
+        {hero.kind === 'danger' && hero.issue?.message && (
+          <p className="mt-1.5 break-words text-xs leading-relaxed text-danger">{hero.issue.message}</p>
+        )}
         {scoring && (
           <p className={`mt-2 flex items-center gap-2 text-xs font-medium ${scoring.tone === 'danger' ? 'text-danger' : 'text-muted'}`}>
             <span className={`h-1.5 w-1.5 rounded-full ${DOT[scoring.tone]}`} />{scoring.label}

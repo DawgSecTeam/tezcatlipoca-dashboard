@@ -54,9 +54,12 @@ async def _roundtrip(server):
             await session.initialize()
             tools = await session.list_tools()
             names = {t.name for t in tools.tools}
-            assert {"submit_run", "watch_run", "get_run_events", "cancel_run"} <= names
+            assert {"submit_run", "watch_run", "get_run_events", "cancel_run",
+                    "diagnose_run", "diagnose_range"} <= names
             result = await session.call_tool("list_runs", {})
             assert not result.is_error
             assert not result.content or result.content[0].text == "[]"
             result = await session.call_tool("get_run", {"run_id": "run-ghost"})
+            assert result.is_error
+            result = await session.call_tool("diagnose_run", {"run_id": "run-ghost"})
             assert result.is_error

@@ -21,6 +21,10 @@ export default function RangeCommandBar({ range, competition, onSubmitted, disab
   const view = competition.view
   const loading = !view && !competition.error
   const retired = range.state === 'retired'
+  // A range that records no VM has no engine to poll: showing "Engine unreachable" there
+  // invents a failure (a dead engine) where the truth is "nothing was built". Only a range
+  // that is still provisioning gets the benefit of the doubt.
+  const noEngine = range.has_recorded_vms === false && range.state !== 'building'
   // Scoring a range whose infrastructure is gone (or was never torn down cleanly) is
   // not a lifecycle step: the engine may answer from a leftover VM while its range is
   // being reclaimed. Start/Pause/Resume/End belong to a range that is actually there.
@@ -31,7 +35,7 @@ export default function RangeCommandBar({ range, competition, onSubmitted, disab
   const busy = useRef(false)
   const confirm = useConfirm()
   const toast = useToast()
-  const blocked = disabled || retired || torn || missingIdentity || !!competition.error || !!pending || loading
+  const blocked = disabled || retired || torn || noEngine || missingIdentity || !!competition.error || !!pending || loading
 
   const submit = async (action) => {
     if (blocked || busy.current) return
@@ -86,26 +90,29 @@ export default function RangeCommandBar({ range, competition, onSubmitted, disab
       <section className="min-w-0 p-4 sm:p-5" aria-label="Scoring">
         <div className="flex flex-wrap items-center gap-3">
           <span className="label !mb-0">Scoring</span>
-          {view && <span className={`chip px-2.5 py-1 text-xs ${STATE_CLS[state] || STATE_CLS.unknown}`}>
-            {state === 'running' && <span className="mr-1.5 h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />}
-            {STATE_TEXT[state] || state || 'unknown'}
-          </span>}
+          {noEngine
+            ? <span className="chip bg-sunken px-2.5 py-1 text-xs text-muted">No engine recorded</span>
+            : view && <span className={`chip px-2.5 py-1 text-xs ${STATE_CLS[state] || STATE_CLS.unknown}`}>
+                {state === 'running' && <span className="mr-1.5 h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />}
+                {STATE_TEXT[state] || state || 'unknown'}
+              </span>}
           {round > 0 && <span className="font-mono text-xs text-faint">round {round}</span>}
-          {(loading || competition.error) && <Spinner />}
+          {!noEngine && (loading || competition.error) && <Spinner />}
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           {pending && <p className="text-sm text-accent" role="status">Submitting {pending}…</p>}
-          {state === 'ready' && <Button variant="primary" disabled={blocked} onClick={() => submit('start')}><Icon name="play" />Start the competition</Button>}
-          {state === 'running' && <Button disabled={blocked} onClick={() => submit('freeze')}><Icon name="pause" />Pause scoring</Button>}
-          {state === 'paused' && <Button variant="primary" disabled={blocked} onClick={() => submit('resume')}><Icon name="play" />Resume scoring</Button>}
-          {(state === 'running' || state === 'paused') && <Button variant="danger" disabled={blocked} onClick={end}><Icon name="warn" />End</Button>}
-          {state === 'ended' && <p className="text-sm text-muted">The event has ended. Its final scoreboard is recorded in the workspace evidence directory.</p>}
-          {state === 'unknown' && view && !view.reachable && <p className="text-sm text-muted">The engine is not answering; lifecycle actions are unavailable until it does.</p>}
+          {!noEngine && state === 'ready' && <Button variant="primary" disabled={blocked} onClick={() => submit('start')}><Icon name="play" />Start the competition</Button>}
+          {!noEngine && state === 'running' && <Button disabled={blocked} onClick={() => submit('freeze')}><Icon name="pause" />Pause scoring</Button>}
+          {!noEngine && state === 'paused' && <Button variant="primary" disabled={blocked} onClick={() => submit('resume')}><Icon name="play" />Resume scoring</Button>}
+          {!noEngine && (state === 'running' || state === 'paused') && <Button variant="danger" disabled={blocked} onClick={end}><Icon name="warn" />End</Button>}
+          {!noEngine && state === 'ended' && <p className="text-sm text-muted">The event has ended. Its final scoreboard is recorded in the workspace evidence directory.</p>}
+          {!noEngine && state === 'unknown' && view && !view.reachable && <p className="text-sm text-muted">The engine is not answering; lifecycle actions are unavailable until it does.</p>}
+          {noEngine && <p className="text-sm text-muted">This range records no infrastructure, so there is no engine to drive.</p>}
         </div>
         <ErrorBanner error={submitError || competition.error} onClose={submitError ? () => setSubmitError(null) : undefined} />
         {torn && <p className="mt-2 text-xs text-danger">This range's infrastructure is incomplete — its last teardown did not finish. Retry the teardown before driving the competition.</p>}
-        {!torn && missingIdentity && <p className="mt-2 text-xs text-danger">Lifecycle actions require the range's competition identity and originating engine ref. Refresh the range details before submitting.</p>}
-        {view && !view.reachable && state !== 'unknown' && state !== 'ended' && <p className="mt-2 text-xs text-muted">The engine is not answering. What shows here is recorded workspace state, not a current engine observation.</p>}
+        {!torn && !noEngine && missingIdentity && <p className="mt-2 text-xs text-danger">Lifecycle actions require the range's competition identity and originating engine ref. Refresh the range details before submitting.</p>}
+        {!noEngine && view && !view.reachable && state !== 'unknown' && state !== 'ended' && <p className="mt-2 text-xs text-muted">The engine is not answering. What shows here is recorded workspace state, not a current engine observation.</p>}
       </section>
 
       {/* Tools: the operator's way in, and the logins they need on the way. */}
@@ -118,7 +125,7 @@ export default function RangeCommandBar({ range, competition, onSubmitted, disab
             </a>
           ))}
         </div>
-        {loading && <p className="text-sm text-muted">Checking access details…</p>}
+        {!noEngine && loading && <p className="text-sm text-muted">Checking access details…</p>}
         {!loading && !links.length && <p className="text-xs text-muted">{range.has_recorded_vms === false ? 'This range records no infrastructure, so there is no live engine to open.' : 'No engine addresses are recorded.'}</p>}
         {!!creds.length && <div className="flex flex-wrap gap-2">{creds.map(([label, cred]) => <Cred key={`${label}-${cred.password}`} label={label} {...cred} />)}</div>}
       </section>

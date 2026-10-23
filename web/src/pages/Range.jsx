@@ -6,12 +6,13 @@ import { Button, Card, ErrorBanner, Spinner } from '../components/ui'
 import { EmptyState, Icon, agoMs, fmtSpan, useConfirm, useTick, useToast } from '../components/kit'
 import { ACTION_LABEL, LogTail, ResetBoxModal, StageStrip, StatePill, useRunActions, useRunEvents, useRunLog } from '../components/runui'
 import RangeCommandBar from '../components/RangeCommandBar'
+import Diagnosis from '../components/Diagnosis'
 import RunTeams, { ResetRequests } from '../components/RunTeams'
 import RunInfra from '../components/RunInfra'
 import Run, { Evidence, Output, Timeline } from './Run'
 import { detailSummary, rangeIssues, rangeTitle, shortRangeId } from '../rangeView'
 import { rangeActionBody } from '../rangeModel'
-import { useCompetitionData, useRangeData } from '../useRangeData'
+import { useCompetitionData, useRangeData, useRangeDiagnosis } from '../useRangeData'
 
 const SECTIONS = [['', 'Overview', 'overview'], ['teams', 'Teams', 'boxes'], ['infrastructure', 'Infrastructure', 'cpu'], ['activity', 'Activity', 'terminal'], ['evidence', 'Evidence', 'packet']]
 const RANGE_LABEL = { live: 'Deployed', building: 'Operating', failed: 'Deploy failed', teardown_failed: 'Teardown incomplete', retired: 'Retired' }
@@ -133,9 +134,15 @@ function RangeFacts({ range, summary }) {
 function RangeOverview({ range, onSubmitted, refresh, disabled }) {
   const summary = detailSummary(range)
   const issues = rangeIssues(summary).filter((issue) => issue.kind !== 'requests')
+  // The server's verdict supersedes the client heuristic whenever it names a real problem:
+  // it carries the failing line and the next step, which `rangeIssues` can only paraphrase
+  // from the run record. While it loads (or for info-only findings the page already shows
+  // elsewhere) the heuristic keeps the section populated.
+  const diagnosis = useRangeDiagnosis(range.id)
+  const diagnosed = diagnosis && ['error', 'warning'].includes(diagnosis.severity)
   return <div className="range-overview">
     <div className="min-w-0 space-y-6">
-      {!!issues.length && <section className="rounded-2xl border border-danger/20 bg-danger-soft p-5 sm:p-6" aria-label="Attention needed">
+      {diagnosed ? <Diagnosis diagnosis={diagnosis} /> : !!issues.length && <section className="rounded-2xl border border-danger/20 bg-danger-soft p-5 sm:p-6" aria-label="Attention needed">
         <h2 className="flex items-center gap-2 text-sm font-semibold text-danger"><Icon name="warn" />Attention needed</h2>
         <ul className="mt-3 space-y-3">{issues.map((issue, index) => <li key={`${issue.kind}-${index}`} className="flex flex-wrap items-baseline justify-between gap-2 text-sm leading-relaxed">
           <span>{issue.message}</span>
@@ -159,6 +166,7 @@ function RangeOverview({ range, onSubmitted, refresh, disabled }) {
 function OperationDetail({ run, range, refresh }) {
   const [events, setEvents] = useState([])
   const [eventError, setEventError] = useState(null)
+  const [failure, setFailure] = useState(null)
   const log = useRunLog(run.id)
   const { pause, resume, cancel, live, held, canPause } = useRunActions(run, refresh, range)
   const stream = useRunEvents(run.id, (event) => {
@@ -170,11 +178,20 @@ function OperationDetail({ run, range, refresh }) {
     api.runEvents(run.id).then((response) => { if (active) setEvents((old) => [...new Map([...response.events, ...old].map((event) => [event.seq, event])).values()].sort((a, b) => a.seq - b.seq)) }).catch((error) => { if (active) setEventError(error) })
     return () => { active = false }
   }, [run.id])
+  useEffect(() => {
+    // The range payload withholds raw driver errors (they can quote a token-bearing command);
+    // the run detail endpoint is the authenticated surface that carries the explanation.
+    let active = true
+    setFailure(run.error || null)
+    if (!run.error) api.run(run.id).then((record) => { if (active) setFailure(record?.error || null) }).catch(() => { /* the event stream still carries it */ })
+    return () => { active = false }
+  }, [run.id, run.error])
   return <div className="space-y-5">
     <Card className="p-5 sm:p-6">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h3 className="text-lg font-semibold">{ACTION_LABEL[run.action] || run.action}</h3><p className="mt-1 break-all font-mono text-xs text-faint">{run.id}</p></div><StatePill state={run.state} /></div>
       <StageStrip action={run.action} stage={run.stage} state={run.state} endedAt={run.ended_at} stageEvents={events.filter((event) => event.kind === 'stage')} />
       <dl className="mt-5 grid grid-cols-2 gap-4 text-xs sm:grid-cols-4">{[['Engine ref', run.engine_ref], ['Started', agoMs(run.started_at || run.created_at)], ['Duration', fmtSpan(run.started_at || run.created_at, run.ended_at)], ['Exit code', run.returncode ?? '—']].map(([label, value]) => <div key={label}><dt className="label">{label}</dt><dd className="break-words font-mono text-muted">{value || '—'}</dd></div>)}</dl>
+      {failure && <div className="mt-5 rounded-xl bg-danger-soft px-4 py-2.5 text-xs leading-relaxed text-danger" role="alert"><b className="font-semibold">Failure:</b> <span className="break-words">{String(failure)}</span></div>}
       {(canPause || held || live) && <div className="mt-5 flex flex-wrap gap-2">{canPause && <Button onClick={pause}><Icon name="pause" />Pause deployment after stage</Button>}{held && <Button onClick={resume}><Icon name="play" />Resume deployment</Button>}{live && <Button variant="danger" onClick={cancel}>Cancel operation</Button>}</div>}
     </Card>
     <Card className="p-5 sm:p-6"><div className="mb-4 flex flex-wrap items-center justify-between gap-2"><h3 className="text-base font-semibold">Operation output</h3><span className="text-xs text-faint">{stream.live ? 'Event stream connected' : 'Recovering events by cursor'}</span></div><Output log={log} /></Card>

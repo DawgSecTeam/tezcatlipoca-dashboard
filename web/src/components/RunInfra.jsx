@@ -8,7 +8,7 @@ import { EmptyState, Icon } from './kit'
 import { DEPLOY_STAGES } from './runui'
 import MachineInventory from './MachineInventory'
 
-const NET_KIND = { team: 'Team', transit: 'Transit', satellite: 'Satellite' }
+const NET_KIND = { team: 'Team', transit: 'Transit', satellite: 'Satellite', red: 'Red segment' }
 
 // The deploy state stores the last phase as a number; a bare "8" told the operator nothing.
 const phaseName = (n) => {

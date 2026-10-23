@@ -12,12 +12,52 @@ export function infrastructureLabel(range) {
   return 'No infrastructure recorded'
 }
 
+// A degradation or run error is written by a driver for a log, not for a chip: it can be a
+// whole traceback, a JSON blob, or a urllib warning wrapped around the real failure. Pick the
+// line that actually says what broke and cap it, so "Needs attention" stays readable and one
+// bad record cannot cover the board.
+const ANSI = /\x1b\[[0-9;]*m/g
+const FAILURE_LINE = /(?:^|\s)[A-Za-z_][\w.]*Error(?::|$)/
+export function cleanMessage(value, max = 220) {
+  const raw = typeof value === 'string' ? value : value?.message || value?.reason || value?.detail || (value == null ? '' : JSON.stringify(value))
+  let text = String(raw || '').replace(ANSI, '').trim()
+  if (!text) return ''
+  if (text.startsWith('{')) {
+    try {
+      const data = JSON.parse(text)
+      if (data && typeof data === 'object') {
+        const rows = data.items || data.results || []
+        const first = (Array.isArray(rows) ? rows : []).find((row) => row && row.detail)?.detail
+        const missing = Array.isArray(data.missing) ? data.missing : []
+        const steps = data.steps && typeof data.steps === 'object'
+          ? Object.entries(data.steps).map(([step, count]) => `${step} ${count}`).join(' · ')
+          : ''
+        const summary = [first || data.detail || data.message || data.error,
+          data.ok === false ? 'check failed' : '',
+          missing.length ? `missing ${missing.slice(0, 6).join(', ')}${missing.length > 6 ? '…' : ''}` : '',
+          steps].filter(Boolean).join(' — ')
+        if (summary) text = summary
+      }
+    } catch { /* not JSON after all */ }
+  }
+  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean)
+  const failure = [...lines].reverse().find((line) => FAILURE_LINE.test(line))
+  let out = (failure || lines[0] || '').replace(/\s+/g, ' ').trim()
+  if (out.length > max) out = `${out.slice(0, max - 1).trimEnd()}…`
+  return out
+}
+
+export function degradationMessage(item) {
+  if (typeof item === 'string') return cleanMessage(item)
+  const what = item?.what ? `${item.what}: ` : ''
+  return `${what}${cleanMessage(item?.detail || item?.message || item?.reason || item)}`
+}
+
 export function rangeIssues(range) {
   const issues = []
   if (range.pending_requests) issues.push({ kind: 'requests', message: `${range.pending_requests} reset request${range.pending_requests === 1 ? '' : 's'} awaiting review` })
   for (const item of range.degradations || []) {
-    const message = typeof item === 'string' ? item : item.message || item.reason || item.detail || JSON.stringify(item)
-    issues.push({ kind: 'degradation', message })
+    issues.push({ kind: 'degradation', message: degradationMessage(item) })
   }
   const destroy = range.latest_destroy || range.runs?.find((run) => run.action === 'destroy')
   if (destroy && ['failed', 'cancelled'].includes(destroy.state) && range.state !== 'retired') {
@@ -27,7 +67,8 @@ export function rangeIssues(range) {
   }
   const latest = range.latest_run || range.runs?.[0]
   if (latest?.state === 'failed' && latest.id !== destroy?.id) {
-    issues.push({ kind: 'operation', message: `${latest.action} failed${latest.returncode != null ? ` (exit ${latest.returncode})` : ''}.`, run_id: latest.id })
+    const reason = cleanMessage(latest.error, 160)
+    issues.push({ kind: 'operation', message: `${latest.action} failed${latest.returncode != null ? ` (exit ${latest.returncode})` : ''}${reason ? ` — ${reason}` : ''}.`, run_id: latest.id })
   }
   return issues
 }

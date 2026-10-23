@@ -301,9 +301,10 @@ export function useRunLog(runId) {
 }
 
 // The shared log view lives in logtex.jsx (ANSI parsing, repeat folding, search, exact phase
-// jumps); the drawer and the run page's Output panel both render through it.
-export function LogView({ log, height = '60vh', showPhases = false }) {
-  return <LogViewImpl log={log} height={height} showPhases={showPhases} />
+// jumps); the drawer and the run page's Output panel both render through it. `focus` is an
+// optional jump target from the diagnosis panel: {line} (1-based), identity-re-triggered.
+export function LogView({ log, height = '60vh', showPhases = false, focus = null }) {
+  return <LogViewImpl log={log} height={height} showPhases={showPhases} focus={focus} />
 }
 
 export function RunLogModal({ open, onClose, title, log }) {

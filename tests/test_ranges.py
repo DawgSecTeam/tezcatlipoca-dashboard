@@ -446,6 +446,7 @@ def test_board_and_detail_are_local_non_secret_and_workspace_scoped(tmp_path, mo
     assert summary["name"] == "Original range"
     assert summary["state"] == "building" and summary["live"] and summary["has_recorded_vms"]
     assert summary["counts"] == {"teams": 1, "boxes": 1, "networks": 1}
+    assert summary["teams"] == 1  # the card reports the RANGE deploy team count
     assert summary["nodes"] == ["pve", "sat", "templates"]
     assert summary["engine_ip"] == "10.0.0.42" and summary["engine_ref"] == "origin-ref"
     assert summary["pending_requests"] == 1

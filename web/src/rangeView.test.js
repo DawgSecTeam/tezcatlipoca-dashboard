@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { detailSummary, filterRanges, heroStatus, infrastructureLabel, rangeIssues, rangeStatus } from './rangeView'
+import { cleanMessage, degradationMessage, detailSummary, filterRanges, heroStatus, infrastructureLabel, rangeIssues, rangeStatus } from './rangeView'
 
 const base = { id: 'range-a', comp_id: 'same', live: true, state: 'live', has_recorded_vms: true, active_runs: [], latest_run: { id: 'deploy-a', action: 'deploy', state: 'succeeded' } }
 
@@ -30,6 +30,25 @@ describe('range presentation', () => {
     expect(detailSummary({ ...withoutFlag, state: 'live', inventory: {} }).has_recorded_vms).toBe(false)
     expect(detailSummary({ ...withoutFlag, state: 'live', inventory: { counts: { boxes: 2 } } }).has_recorded_vms).toBe(true)
     expect(detailSummary({ ...withoutFlag, state: 'live', inventory: { machines: { scoring_engine: { vmid: 900 } } } }).has_recorded_vms).toBe(true)
+  })
+  it('folds a traceback or JSON warning down to the line that says what broke', () => {
+    const traceback = 'Traceback (most recent call last):\n  File "/x.py", line 1\n    boom\nPermissionError: [Errno 13] Permission denied: /var/lib/tlaloc'
+    expect(cleanMessage(traceback)).toBe('PermissionError: [Errno 13] Permission denied: /var/lib/tlaloc')
+    const wrapped = 'eRequestWarning: Unverified HTTPS request\n  warnings.warn(\ntlaloc: C2Error: POST /api/v1.4/payload/ -> HTTP 404'
+    expect(cleanMessage(wrapped)).toBe('tlaloc: C2Error: POST /api/v1.4/payload/ -> HTTP 404')
+    expect(cleanMessage('{"ok": false, "missing": ["c2.base_url", "red.depth"]}')).toBe('check failed — missing c2.base_url, red.depth')
+    expect(cleanMessage({ what: 'repair', detail: 'web01 lagged' })).toBe('web01 lagged')
+    expect(cleanMessage('x'.repeat(500)).endsWith('…')).toBe(true)
+    expect(cleanMessage('x'.repeat(500)).length).toBe(220)
+  })
+  it('labels a structured degradation with what failed and keeps the chip short', () => {
+    expect(degradationMessage({ what: 'tlaloc_c2_prep', detail: 'line one\nC2Error: HTTP 404' })).toBe('tlaloc_c2_prep: C2Error: HTTP 404')
+    expect(degradationMessage('plain warning')).toBe('plain warning')
+    expect(degradationMessage({ what: 'assume_breach_seed', detail: '{"ok": false, "steps": {"access": 0, "root": 0}}' })).toBe('assume_breach_seed: check failed — access 0 · root 0')
+  })
+  it('includes a failed operation reason when the record carries one', () => {
+    const issue = rangeIssues({ ...base, latest_run: { id: 'run-a', action: 'scrim', state: 'failed', error: 'RuntimeError: compose up failed' } })[0]
+    expect(issue.message).toBe('scrim failed — RuntimeError: compose up failed.')
   })
   it('picks one status: failures, then operations, then requests, then recorded event state', () => {
     const failed = { ...base, latest_destroy: { id: 'destroy-a', action: 'destroy', state: 'failed' }, pending_requests: 2, active_runs: [{ id: 'v', action: 'verify', state: 'running' }] }

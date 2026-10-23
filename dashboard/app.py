@@ -2,24 +2,28 @@
 
 import asyncio
 import json
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
 from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from mcp.server.streamable_http import TransportSecuritySettings
 from pydantic import BaseModel
 
-from dashboard import auth, comps_api, config, estate
+from dashboard import auth, comps_api, config, diagnose, estate
 from dashboard.competition import status_for_range
 from dashboard.events import EventBus
 from dashboard.inventory import build_inventory
+from dashboard.logging_setup import configure as configure_logging
 from dashboard.mcp_server import build_mcp
 from dashboard.ranges import build_range_board, build_ranges, origin_run, range_detail
 from dashboard.runner import RunManager, RunRefused, artifacts_root
 from dashboard.store import Store
+
+logger = logging.getLogger(__name__)
 
 
 class RunBody(BaseModel):
@@ -42,6 +46,7 @@ class RunBody(BaseModel):
 
 
 def create_app():
+    configure_logging()
     store = Store(config.data_dir() / "dashboard.sqlite3")
     bus = EventBus()
     manager = RunManager(store, bus)
@@ -58,13 +63,26 @@ def create_app():
         # executing it holds no Popen here, so it can never start, finish or be cancelled
         # (cancel refuses a run this lifetime never spawned) and its range boards as
         # `building` forever — run-31072cb0, stuck six hours on 2026-10-15.
-        manager.reconcile_orphans()
-        async with mcp.session_manager.run():
-            yield
+        orphans = manager.reconcile_orphans()
+        logger.info("dashboard started: data=%s engine_ref=%s tokens=%d orphans_closed=%d",
+                    config.data_dir(), config.default_engine_ref(), len(config.tokens()),
+                    len(orphans))
+        try:
+            async with mcp.session_manager.run():
+                yield
+        finally:
+            logger.info("dashboard stopping")
 
     app = FastAPI(title="tezcatlipoca-dashboard", lifespan=lifespan)
     app.add_middleware(auth.BearerAuth)
     app.router.routes.extend(comps_api.app.router.routes)
+
+    @app.exception_handler(Exception)
+    async def unhandled_error(request: Request, exc: Exception):
+        # uvicorn only writes a traceback for exceptions that escape the app; logging it
+        # here keeps a 500 attributable to the route and the run/journal it came from.
+        logger.exception("unhandled error on %s %s", request.method, request.url.path)
+        return JSONResponse({"detail": "internal server error"}, status_code=500)
 
     @app.get("/api/health")
     def health():
@@ -92,6 +110,7 @@ def create_app():
         try:
             return manager.submit(body.comp_id, body.action, body.engine_ref, params)
         except RunRefused as e:
+            logger.warning("refused %s %s: %s", body.comp_id, body.action, e)
             raise HTTPException(409, str(e))
 
     @app.get("/api/ranges")
@@ -142,6 +161,15 @@ def create_app():
             raise HTTPException(404, f"no such range: {range_id}")
         return range_detail(store, rng)
 
+    # A range's answer composes its own state with its runs' diagnoses, so the board's
+    # "Needs attention" chip can lead somewhere that names the cause and the next step.
+    @app.get("/api/ranges/{range_id}/diagnosis")
+    def range_diagnosis(range_id: str):
+        rng = next((rng for rng in build_ranges(store) if rng["id"] == range_id), None)
+        if rng is None:
+            raise HTTPException(404, f"no such range: {range_id}")
+        return diagnose.diagnose_range(store, rng)
+
     @app.get("/api/runs")
     def runs(state: str = "", comp_id: str = ""):
         return store.list_runs(state=state or None, comp_id=comp_id or None)
@@ -155,6 +183,12 @@ def create_app():
     @app.get("/api/runs/{run_id}")
     def get_run(run_id: str):
         return _run_or_404(run_id)
+
+    # The same answer the MCP `diagnose_run` tool returns: one local read of the record,
+    # its events and its log tail, instead of an agent's five-call reconstruction of them.
+    @app.get("/api/runs/{run_id}/diagnosis")
+    def run_diagnosis(run_id: str):
+        return diagnose.diagnose_run(store, _run_or_404(run_id))
 
     @app.post("/api/runs/{run_id}/cancel")
     def cancel(run_id: str):
