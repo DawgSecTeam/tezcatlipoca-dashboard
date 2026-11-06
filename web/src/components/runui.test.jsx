@@ -7,7 +7,7 @@ import { EventList, NewRunModal, ResetBoxModal, useRunActions, useRunEvents, use
 
 const mocks = vi.hoisted(() => ({ toast: vi.fn(), confirm: vi.fn() }))
 vi.mock('../api', () => ({
-  api: { submitRun: vi.fn(), comp: vi.fn(), nodes: vi.fn(), runEvents: vi.fn(), runLog: vi.fn(), runArtifacts: vi.fn(), runArtifactFile: vi.fn() },
+  api: { submitRun: vi.fn(), comp: vi.fn(), nodes: vi.fn(), runs: vi.fn(), runEvents: vi.fn(), runLog: vi.fn(), runArtifacts: vi.fn(), runArtifactFile: vi.fn() },
   streamRunEvents: vi.fn(),
 }))
 vi.mock('./kit', async (original) => ({
@@ -24,6 +24,7 @@ beforeEach(() => {
   api.submitRun.mockResolvedValue(created)
   api.comp.mockResolvedValue({ boxes: [{ name: 'web01' }] })
   api.runEvents.mockResolvedValue({ next: 0, events: [] })
+  api.runs.mockResolvedValue([])
   mocks.confirm.mockResolvedValue(true)
 })
 afterEach(() => { cleanup(); vi.useRealTimers() })

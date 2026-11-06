@@ -91,6 +91,27 @@ class Store:
             self._db.execute(f"UPDATE runs SET {sets} WHERE id = ?", (*vals, run_id))
             self._db.commit()
 
+    def update_run_if_state(self, run_id, expected, **fields):
+        """A state transition that is only valid from `expected` states.
+
+        Check-then-write let a pause request resurrect a deploy that finished between the read
+        and the update (state pausing with no worker) — the range then boarded as building
+        forever. Returns whether the row moved; False means the run left the expected states
+        and the caller must not announce a transition.
+        """
+        allowed = {"state", "stage", "pid", "returncode", "error", "started_at", "ended_at",
+                   "engine_head"}
+        sets = ", ".join(f"{k} = ?" for k in fields if k in allowed)
+        vals = [v for k, v in fields.items() if k in allowed]
+        expected = tuple(expected)
+        marks = ", ".join("?" for _ in expected)
+        with self._lock:
+            cursor = self._db.execute(
+                f"UPDATE runs SET {sets} WHERE id = ? AND state IN ({marks})",
+                (*vals, run_id, *expected))
+            self._db.commit()
+            return cursor.rowcount > 0
+
     def get_run(self, run_id):
         # Reads take the same lock as writes: the connection is shared across the FastAPI
         # threadpool, and sqlite3 connections are not thread-safe even with
@@ -184,6 +205,44 @@ class Store:
                 "SELECT * FROM requests ORDER BY created_ts DESC").fetchall()
         return [dict(r) for r in rows]
 
+    def claim_request(self, req_id):
+        """Atomically take a reset request out of the approval queue.
+
+        The route read the status, submitted a run, then wrote `approved`: two clicks (or two
+        browser tabs) both passed the read and two redeploys ran for one request, leaving the
+        first `approved_run` orphaned. The conditional UPDATE makes exactly one caller win;
+        only pending/failed requests are claimable (a denied/done one cannot be re-approved).
+        """
+        with self._lock:
+            cursor = self._db.execute(
+                "UPDATE requests SET status = 'approved', approved_run = NULL "
+                "WHERE id = ? AND status IN ('pending', 'failed')", (req_id,))
+            self._db.commit()
+            return cursor.rowcount > 0
+
+    def deny_request(self, req_id):
+        """Deny only a request that is still waiting; an approved one is already executing."""
+        with self._lock:
+            cursor = self._db.execute(
+                "UPDATE requests SET status = 'denied' "
+                "WHERE id = ? AND status IN ('pending', 'failed')", (req_id,))
+            self._db.commit()
+            return cursor.rowcount > 0
+
+    def resolve_request_if_approved(self, req_id, status):
+        """Resolve an approved request once, from whichever writer gets there first.
+
+        The approval route links approved_run after submit returns, and the run's _finish
+        resolves the request; an already-resolved request must not be overwritten (a late
+        route write used to turn `done` back into `approved`).
+        """
+        with self._lock:
+            cursor = self._db.execute(
+                "UPDATE requests SET status = ? WHERE id = ? AND status = 'approved'",
+                (status, req_id))
+            self._db.commit()
+            return cursor.rowcount > 0
+
     def set_request_status(self, req_id, status, approved_run=None):
         with self._lock:
             self._db.execute(
@@ -208,6 +267,9 @@ class Store:
 
     def mint_range_token(self, range_key, comp_id):
         token = secrets.token_urlsafe(24)
+        # The retire/revoke paths resolve the workspace; key the row the same way or a symlinked
+        # run dir leaves the old portal token behind after its range is gone.
+        range_key = str(Path(range_key).resolve())
         with self._lock:
             # One token per WORKSPACE: the primary key is the token, so INSERT OR REPLACE
             # only replaced a row when the token collided, and a re-deploy into the same
@@ -231,10 +293,31 @@ class Store:
         with self._lock:
             row = self._db.execute(
                 "SELECT token FROM range_tokens WHERE range_key = ?",
-                (range_key,)).fetchone()
+                (str(Path(range_key).resolve()),)).fetchone()
         return row["token"] if row else None
 
     # ---- retire ledger (a range reclaimed outside the run queue) ----
+
+    def revoke_range_token(self, range_key):
+        """A retired/destroyed range's portal must not keep pushing reset requests.
+
+        Tokens were only ever replaced by a re-mint; an old portal kept the channel after its
+        range was torn down, and its requests accumulated against a range nothing could act on.
+        """
+        with self._lock:
+            self._db.execute("DELETE FROM range_tokens WHERE range_key = ?",
+                             (str(Path(range_key).resolve()),))
+            self._db.commit()
+
+    def close_requests_for_range(self, range_key, status="failed"):
+        """Resolve requests a now-dead range can never action (the team may ask again)."""
+        with self._lock:
+            cursor = self._db.execute(
+                "UPDATE requests SET status = ? WHERE range_key = ? "
+                "AND status IN ('pending', 'failed')",
+                (status, str(Path(range_key).resolve())))
+            self._db.commit()
+            return cursor.rowcount
 
     def retire_range(self, range_key, comp_id, by):
         with self._lock:
@@ -242,6 +325,9 @@ class Store:
                 "INSERT OR REPLACE INTO range_retires (range_key, comp_id, by, created_ts) "
                 "VALUES (?,?,?,?)", (str(Path(range_key).resolve()), comp_id, by, time.time()))
             self._db.commit()
+        # Retirement closes the portal channel and its outstanding requests with it.
+        self.revoke_range_token(range_key)
+        self.close_requests_for_range(range_key)
         return self.get_range_retire(range_key)
 
     def get_range_retire(self, range_key):

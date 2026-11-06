@@ -13,6 +13,12 @@ from dashboard import comps_api, estate
 
 IN_FLIGHT = ("queued", "running", "pausing", "paused")
 
+# The actions that cannot build infrastructure. `plan` renders a definition and `verify` inspects
+# an existing range; a workspace whose ONLY runs are these never held a range, so it must not get a
+# board card that later reports `failed` and sends the operator hunting VMs that never existed
+# (2026-11-06 audit). Everything else — deploy, scrim, destroy, lifecycle — is a range.
+NON_PROVISIONING_ACTIONS = ("plan", "verify")
+
 
 def range_key(run):
     """The workspace path that identifies a run's range."""
@@ -108,6 +114,24 @@ def range_view(key, runs, reclaim=None):
         "comp_id": runs[0]["comp_id"],
         "state": state,
         "live": state in ("building", "live", "teardown_failed"),
+        # A deploy still owns this range: its engine may answer /api/engine but the range is
+        # not ready to drive. The board, the range page and the run page all gate their
+        # competition controls on this one recorded fact instead of guessing from `building`
+        # (which also covers verify/redeploy/delete_team, none of which means "not ready").
+        "deploying": any(run.get("action") == "deploy" and run.get("state") in IN_FLIGHT
+                         for run in runs),
+        # Its mirror: a destroy removes the VMs every other range action needs, so the
+        # surfaces disable them from this fact instead of re-deriving it from run lists.
+        "tearing_down": any(run.get("action") == "destroy" and run.get("state") in IN_FLIGHT
+                            for run in runs),
+        # Any operation other than a scrim means the range is moving: the engine may answer,
+        # but the workspace is mid-write. One fact for the bar, the headers, Teams, the bell
+        # and the competition panel to gate on. A scrim is excluded because it deploys and
+        # runs the competition itself — its range is exactly where scoring controls belong.
+        "settled": not any(run.get("state") in IN_FLIGHT and run.get("action") != "scrim"
+                           for run in runs),
+        "deploy_state": origin.get("state") if origin else None,
+        "deploy_failed": bool(origin and origin.get("state") in ("failed", "cancelled")),
         # The recorded infrastructure is what the range's engine address and its recovery
         # actions hang on, so every view of a range carries it.
         "has_recorded_vms": recorded,
@@ -135,13 +159,28 @@ def range_view(key, runs, reclaim=None):
 
 
 def build_ranges(store):
-    """Every range, newest run first."""
+    """Every range, newest run first.
+
+    A range is a workspace that a provisioning run built in. `plan` and `verify` runs get their
+    own per-run workspace but never create infrastructure, so they are not ranges: one dry run
+    used to leave a permanent card behind that later reported `failed` and told the operator to go
+    hunt Proxmox for VMs that never existed (2026-11-06 audit). A workspace that DOES carry a
+    deploy/scrim keeps every run against it, plans included.
+    """
     reclaimed = store.list_range_retires()
     grouped = {}
     for run in store.list_runs():  # newest first
         grouped.setdefault(range_key(run), []).append(run)
-    return sorted((range_view(key, runs, reclaimed.get(key)) for key, runs in grouped.items()),
-                  key=lambda r: r["runs"][0]["created_at"], reverse=True)
+    out = []
+    for key, runs in grouped.items():
+        # A workspace whose only runs are inspection actions (plan/verify) never held
+        # infrastructure. Anything else — a deploy, a destroy, a lifecycle action, an in-flight
+        # run — is a range, including a failed one the board must show.
+        inspection_only = all(r["action"] in NON_PROVISIONING_ACTIONS for r in runs)
+        if inspection_only and not any(r["state"] in IN_FLIGHT for r in runs):
+            continue
+        out.append(range_view(key, runs, reclaimed.get(key)))
+    return sorted(out, key=lambda r: r["runs"][0]["created_at"], reverse=True)
 
 
 _RUN_FIELDS = ("id", "action", "state", "stage", "returncode", "created_at", "started_at",
@@ -191,6 +230,8 @@ def range_summary(rng, inventory, requests):
             nodes.add(row.get("node"))
     origin = origin_run(rng)
     summary = {field: rng[field] for field in ("id", "key", "comp_id", "state", "live",
+                                               "deploying", "tearing_down", "settled",
+                                               "deploy_state", "deploy_failed",
                                                "deploy_run_id", "has_recorded_vms",
                                                "kept_templates", "reclaimable_templates",
                                                "workspace_missing", "teams")}

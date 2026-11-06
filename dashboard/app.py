@@ -64,9 +64,14 @@ def create_app():
         # (cancel refuses a run this lifetime never spawned) and its range boards as
         # `building` forever — run-31072cb0, stuck six hours on 2026-10-15.
         orphans = manager.reconcile_orphans()
-        logger.info("dashboard started: data=%s engine_ref=%s tokens=%d orphans_closed=%d",
+        # An orphaned redeploy or a crash between approving a reset and linking its run left
+        # requests `approved` with no writer; reconcile_orphans closes the run, this closes
+        # the request (and an approved request with no run was never submitted).
+        stranded = manager.reconcile_requests()
+        logger.info("dashboard started: data=%s engine_ref=%s tokens=%d orphans_closed=%d "
+                    "requests_resolved=%d",
                     config.data_dir(), config.default_engine_ref(), len(config.tokens()),
-                    len(orphans))
+                    len(orphans), len(stranded))
         try:
             async with mcp.session_manager.run():
                 yield
@@ -86,7 +91,17 @@ def create_app():
 
     @app.get("/api/health")
     def health():
-        return {"ok": True, "service": "tezcatlipoca-dashboard"}
+        # Report the checkouts a fresh install lacks: /api/comps 503s without the competitions
+        # clone and no run can start without the engine clone, so "ok: true" alone let a broken
+        # install look healthy (2026-11-06 audit).
+        missing = [str(p) for p in (config.competitions_checkout(), config.engine_checkout())
+                   if not p.is_dir()]
+        body = {"ok": not missing, "service": "tezcatlipoca-dashboard"}
+        if missing:
+            body["missing"] = missing
+            body["hint"] = ("clone these checkouts (or submit one run — the runner clones both "
+                            "on first use)")
+        return body
 
     @app.post("/api/runs")
     def submit(body: RunBody):
@@ -309,22 +324,42 @@ def create_app():
         req = store.get_request(req_id)
         if not req:
             raise HTTPException(404, f"no such request: {req_id}")
-        if req["status"] == "approved":
-            raise HTTPException(409, "this request is already being executed")
+        if req["status"] not in ("pending", "failed"):
+            raise HTTPException(409, "this request is no longer waiting for approval")
         if not req["team"] or not req["box"]:
             raise HTTPException(409, "a reset request needs a team and box target")
-        key = str(Path(req["range_key"]).resolve())
-        rng = next((rng for rng in build_ranges(store)
-                    if rng["key"] == key and rng["comp_id"] == req["comp_id"]), None)
-        origin = origin_run(rng) if rng else None
-        engine_ref = (origin or {}).get("engine_ref") or config.default_engine_ref()
+        # Claim BEFORE submitting: two concurrent approvals both passed the status read and
+        # submitted two redeploys for one request (the first approved_run was orphaned).
+        if not store.claim_request(req_id):
+            raise HTTPException(409, "this request is already being executed")
         try:
+            key = str(Path(req["range_key"]).resolve())
+            rng = next((rng for rng in build_ranges(store)
+                        if rng["key"] == key and rng["comp_id"] == req["comp_id"]), None)
+            origin = origin_run(rng) if rng else None
+            engine_ref = (origin or {}).get("engine_ref") or config.default_engine_ref()
             run = manager.submit(req["comp_id"], "redeploy", engine_ref,
                                  {"mode": "reset", "boxes": req["box"], "teams": req["team"],
                                   "comp_dir": key})
         except RunRefused as e:
+            # Put it back in the queue: the refusal is a state to retry (the range was still
+            # deploying, retired, ...), not a verdict on the request itself.
+            store.set_request_status(req_id, req["status"])
             raise HTTPException(409, str(e))
+        except Exception:
+            # Any other failure (a bad range record, a DB error) must not strand the request
+            # `approved` with no run: restore it and let the caller see the 500.
+            store.set_request_status(req_id, req["status"])
+            raise
         store.set_request_status(req_id, "approved", approved_run=run["id"])
+        # A fast driver failure can finish the redeploy before this line links its run id:
+        # _finish then found no request to resolve and the request sat `approved` forever.
+        # Resolve from the run's terminal state here (the conditional update makes this safe
+        # if _finish already resolved it).
+        finished = store.get_run(run["id"])
+        if finished and finished["state"] in ("succeeded", "failed", "cancelled"):
+            store.resolve_request_if_approved(
+                req_id, "done" if finished["state"] == "succeeded" else "failed")
         return store.get_request(req_id)
 
     @app.post("/api/requests/{req_id}/deny")
@@ -332,7 +367,9 @@ def create_app():
         req = store.get_request(req_id)
         if not req:
             raise HTTPException(404, f"no such request: {req_id}")
-        return store.set_request_status(req_id, "denied")
+        if not store.deny_request(req_id):
+            raise HTTPException(409, "this request is no longer waiting for a decision")
+        return store.get_request(req_id)
 
     # MCP before the SPA catch-all (routes match in order)
     app.router.routes.extend(mcp_app.routes)

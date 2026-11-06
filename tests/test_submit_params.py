@@ -58,6 +58,9 @@ def _manager(tmp_path, monkeypatch):
         json.dumps({"identity": {"comp_name": "comp-a", "run_id": "run-deploy"}}))
     store.create_run("run-deploy", "comp-a", "deploy", "main", {"teams": 1}, run_dir,
                      run_dir / "run.log")
+    # The workspace exists because its deploy finished; a queued deploy would (correctly)
+    # hold the settled range actions back.
+    store.update_run("run-deploy", state="succeeded", returncode=0)
     return mgr
 
 

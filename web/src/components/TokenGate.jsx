@@ -25,7 +25,7 @@ export default function TokenGate({ children }) {
             Every dashboard request carries <code className="font-mono text-xs">Authorization: Bearer …</code>.
           </p>
           <Field label="Token">
-            <input className={`${inputCls} font-mono`} type="password" autoFocus placeholder="tez-…"
+            <input className={`${inputCls} font-mono`} type="password" autoFocus placeholder="paste the bearer token"
               value={value} onChange={(e) => setValue(e.target.value)} />
           </Field>
           <div className="flex justify-end gap-3">

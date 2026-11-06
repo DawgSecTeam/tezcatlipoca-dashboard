@@ -38,7 +38,7 @@ const Bool = ({ v }) => (v == null
   ? <span className="text-faint">—</span>
   : <span className={`chip ${v ? 'bg-accent-soft text-accent' : 'bg-sunken text-muted'}`}>{v ? 'yes' : 'no'}</span>)
 
-function DeployFacts({ deploy }) {
+function DeployFacts({ deploy, linked = true }) {
   if (!deploy) return null
   const degradations = deploy.degradations || []
   return (
@@ -57,7 +57,11 @@ function DeployFacts({ deploy }) {
         <Fact k="Multi-node"><Bool v={deploy.multi_node} /></Fact>
         {deploy.endpoint && (
           <Fact k="Endpoint">
-            <a href={deploy.endpoint} target="_blank" rel="noreferrer" className="break-all font-mono text-xs text-accent hover:underline">{deploy.endpoint}</a>
+            {linked
+              ? <a href={deploy.endpoint} target="_blank" rel="noreferrer" className="break-all font-mono text-xs text-accent hover:underline">{deploy.endpoint}</a>
+              // The endpoint is a recorded fact on a retired/failed range; the host behind it
+              // was torn down, so a link would only time out.
+              : <span className="break-all font-mono text-xs text-faint" title="Recorded endpoint — this range is retired or its teardown failed">{deploy.endpoint}</span>}
           </Fact>
         )}
       </div>
@@ -186,7 +190,7 @@ export default function RunInfra({ run, comp, inventory, teardownFailed = false 
         </div>
       )}
 
-      <DeployFacts deploy={inventory.deploy} />
+      <DeployFacts deploy={inventory.deploy} linked={!retired && !failed} />
       {(journal || retired || failed) && <TeardownJournal teardown={teardown} opHref={opHref} failed={failed} />}
       <MachineInventory machines={inventory.machines} />
       {networks.length > 0 && <Networks networks={networks} />}

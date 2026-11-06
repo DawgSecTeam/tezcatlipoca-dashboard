@@ -19,6 +19,12 @@ class FakeStore:
     def update_run(self, run_id, **fields):
         self.run.update(fields)
 
+    def update_run_if_state(self, run_id, expected, **fields):
+        if run_id != self.run["id"] or self.run["state"] not in expected:
+            return False
+        self.run.update(fields)
+        return True
+
     def add_event(self, run_id, kind, stage="", data=None):
         event = {"seq": len(self.events) + 1, "kind": kind, "stage": stage, **(data or {})}
         self.events.append(event)
@@ -159,6 +165,35 @@ def test_resume_refuses_a_run_that_is_not_held(tmp_path):
     mgr, _ = _manager(tmp_path, run)
     with pytest.raises(RunRefused, match="nothing to resume"):
         mgr.resume("run-1")
+
+
+def test_pause_does_not_resurrect_a_run_that_finished_in_the_window(tmp_path, monkeypatch):
+    """The state read passes, the deploy finishes, then the write lands: without a conditional
+    update the record became `pausing` with no worker and its range stuck building forever."""
+    run = _run(tmp_path)
+    _cut_worktree(run)
+    mgr, store = _manager(tmp_path, run)
+
+    def finish_before_the_write(ws):
+        store.run["state"] = "succeeded"
+        return 0
+
+    monkeypatch.setattr(RunManager, "_deploy_phase", lambda self, ws: finish_before_the_write(ws))
+    with pytest.raises(RunRefused, match="finished before the pause request landed"):
+        mgr.pause("run-1")
+    assert store.run["state"] == "succeeded"
+    assert store.events == []
+    assert not (Path(run["run_dir"]) / "pause").exists()
+
+
+def test_resume_does_not_resurrect_a_run_that_finished_in_the_window(tmp_path, monkeypatch):
+    run = _run(tmp_path, state="pausing")
+    (Path(run["run_dir"]) / "pause").touch()
+    mgr, store = _manager(tmp_path, run)
+    monkeypatch.setattr(store, "update_run_if_state", lambda *a, **k: False)
+    with pytest.raises(RunRefused, match="finished before it could be resumed"):
+        mgr.resume("run-1")
+    assert store.events == []
 
 
 def test_the_tracker_mirrors_the_hold_and_the_resume(tmp_path):

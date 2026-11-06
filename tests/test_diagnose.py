@@ -372,3 +372,29 @@ def test_paramiko_auth_failure_is_an_ssh_rule_not_a_generic_failure(tmp_path):
                       "[dashboard] failed rc=1\n"))
     assert out["findings"][0]["code"] == "ssh_auth"
     assert "TEZ_SSH_PRIVATE_KEY_PATH" in out["findings"][0]["advice"]
+
+
+def test_a_pause_request_is_not_yet_a_hold(tmp_path):
+    """`pausing` = request on disk, driver has NOT reached a boundary (2026-11-06 audit).
+
+    Reporting "held at a phase boundary" here told the operator a stalled deploy was safely
+    parked while it was still inside a Proxmox call, so `Resume` looked like the answer.
+    """
+    out = diagnose.diagnose_run(FakeStore(), _run(tmp_path, state="pausing", rc=None,
+                                                 stage="phase 1/8 cleanup"))
+    f = out["findings"][0]
+    assert f["code"] == "run_pause_pending"
+    assert "waiting" in f["title"].lower()
+    assert "NEXT phase boundary" in f["detail"]
+
+
+def test_a_pause_request_that_has_gone_silent_is_a_warning(tmp_path):
+    now = time.time()
+    run = _run(tmp_path, state="pausing", rc=None, stage="phase 1/8 cleanup",
+               started=now - 3600)
+    os.utime(run["log_path"], (now - 3600, now - 3600))
+    out = diagnose.diagnose_run(FakeStore(), run, now=now)
+    f = out["findings"][0]
+    assert f["code"] == "run_pause_pending_stalled"
+    assert f["severity"] == "warning"
+    assert "Cancel run" in f["advice"]

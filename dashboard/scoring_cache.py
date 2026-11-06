@@ -89,6 +89,12 @@ def snapshot(rng):
     """
     if not rng.get("has_recorded_vms"):
         return None
+    # A range with a non-scrim operation in flight is mid-write: its cached engine answer is
+    # about to be superseded (a start/freeze changes the clock, a deploy builds a new one).
+    # The board's hero already names the operation; serving "ready" beside it was how the
+    # card contradicted itself.
+    if rng.get("settled") is False:
+        return None
     ws = rng["key"]
     with _lock:
         entry = _cache.get(ws)

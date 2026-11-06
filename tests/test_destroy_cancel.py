@@ -21,6 +21,12 @@ class _Store:
     def get_run(self, run_id):
         return self._runs.get(run_id)
 
+    def list_runs(self, state=None, comp_id=None):
+        return list(self._runs.values())
+
+    def get_events(self, run_id, since=0):
+        return 0, []
+
     def update_run(self, *a, **k):
         pass
 
@@ -61,3 +67,12 @@ def test_a_destroy_leaves_another_workspace_alone(tmp_path):
     assert runner.emitted == []
     assert proc.poll() is None
     os.killpg(proc.pid, signal.SIGTERM)
+
+
+def test_a_destroy_cancels_a_deploy_that_has_not_spawned_its_driver(tmp_path):
+    """A queued/provisioning deploy has no Popen yet; the cancel is recorded for _run."""
+    store = _Store({"run-queued": {"id": "run-queued", "state": "running",
+                                   "params": {}, "run_dir": str(tmp_path)}})
+    runner = _Runner(store)
+    runner._cancel_live_runs_for_comp_dir(str(tmp_path / "comp"))
+    assert ("run-queued", "lifecycle", {"state": "cancelling"}) in runner.emitted

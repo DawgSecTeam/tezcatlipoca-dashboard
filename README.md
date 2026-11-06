@@ -167,8 +167,13 @@ page of the deploy gains a **Competition** panel once it finishes: Start, Pause 
 Resume, End (End captures the final scoreboard into the range's evidence dir and freezes
 scoring — terminal), plus links into the Quotient admin pages (scoreboard, /admin,
 /announcements, /injects) with the logins that work there. Under the hood each action is a
-run of the engine's `competition-ops.py` in the range's workspace. The old one-shot behavior
-("start the competition right after deploying") is a checkbox in the deploy panel. Team
+run of the engine's `competition-ops.py` in the range's workspace. The range page's command
+bar and the panel are withheld while the range is busy (a deploy building it, or a
+verify/reset/teardown in flight): the engine answers `/api/engine` before the later build
+phases finish, so an engine poll alone is not readiness. A Start submitted in that window is
+refused by the queue rather than racing the build. The old one-shot behavior ("start the
+competition right after deploying") is a checkbox in the deploy
+panel. Team
 removal is a **Delete team** button on the run page's Teams tab: it runs
 `destroy-competition.py --team <key>` — this team's clones die, the rest of the range is
 never addressed, and the team is deactivated (Quotient has no hard delete) with its

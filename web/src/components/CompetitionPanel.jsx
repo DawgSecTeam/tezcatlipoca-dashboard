@@ -4,14 +4,16 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
 import { Button, Card, ErrorBanner, Spinner } from './ui'
-import { Icon, useConfirm, useToast } from './kit'
+import { Icon, copyText, useConfirm, useToast } from './kit'
 
 const STATE_CLS = {
   ready: 'bg-accent-soft text-accent', running: 'bg-accent-soft text-accent',
   paused: 'bg-sunken text-muted', ended: 'bg-sunken text-faint', unknown: 'bg-danger-soft text-danger',
+  deploying: 'bg-accent-soft text-accent',
 }
 const STATE_TEXT = {
   ready: 'ready — not started', running: 'scoring', paused: 'paused', ended: 'ended', unknown: 'engine unreachable',
+  deploying: 'deploying',
 }
 const LINK_TEXT = { admin: 'Admin', announcements: 'Announcements', injects: 'Injects', portal: 'Team portal', scoreboard: 'Scoreboard' }
 const ACTION_TEXT = { start: 'Start', freeze: 'Pause', resume: 'Resume', end: 'End' }
@@ -30,8 +32,8 @@ export function Cred({ user, password, label }) {
         aria-pressed={revealed} onClick={() => setRevealed((value) => !value)}>{revealed ? 'Hide' : 'Reveal'}</button>
       <button type="button" className="rounded px-1 py-0.5 text-accent hover:underline" aria-label={`Copy ${label} password`}
         onClick={async () => {
-          try { await navigator.clipboard.writeText(password); toast('Password copied') }
-          catch { toast('Could not copy password. Reveal it to copy manually.', 'error') }
+          if (await copyText(password)) toast('Password copied')
+          else toast('Could not copy password. Reveal it and copy it manually.', 'error')
         }}>Copy</button>
     </div>
   )
@@ -116,8 +118,17 @@ function CompetitionBody({ rangeKey, rangeId, compId, engineRef, onSubmitted, di
   // lifecycle step: the engine may answer from a leftover VM while its range is being
   // reclaimed. Start/Pause/Resume/End belong to a range that is actually there.
   const torn = retired || ['failed', 'teardown_failed'].includes(rangeState)
+  // A deploy's engine can answer /api/engine before the range is finished (teams seeded,
+  // portal up): the server reports `deploying` so a start is never offered against a
+  // half-built range. `state === 'deploying'` keeps older payloads honest too.
+  const deploying = !!view?.deploying || view?.state === 'deploying'
+  // Any non-scrim operation in flight means the range is still moving: the engine may answer,
+  // but the workspace is mid-write (a verify reads it, a reset rewrites it, a start changes
+  // the clock). Withhold the lifecycle controls rather than offer one the queue refuses.
+  const settled = view?.settled !== false
+  const operating = deploying || !settled
   const missingIdentity = !actionCompId || !actionEngineRef || identityMismatch
-  const blocked = disabled || torn || missingIdentity || !!error || !!pending
+  const blocked = disabled || torn || operating || missingIdentity || !!error || !!pending
   const refresh = useCallback(async () => {
     setRefreshError(null); setRefreshing(true)
     try { if (controlled) await onRefresh?.(); else await poll.current?.() }
@@ -162,24 +173,34 @@ function CompetitionBody({ rangeKey, rangeId, compId, engineRef, onSubmitted, di
   const operationHref = (run) => rangeId
     ? `/ranges/${rangeId}/activity?operation=${encodeURIComponent(run.id || run.run_id)}`
     : `/c/${encodeURIComponent(run.comp_id || actionCompId)}/runs/${encodeURIComponent(run.id || run.run_id)}`
+  // A recorded engine address is not a reachable engine: links built from it time out while
+  // the panel says the engine is not answering. The portal may live elsewhere, so it stays.
   const links = Object.entries(view?.links || {})
-  const creds = [view?.creds?.admin && ['admin', view.creds.admin], view?.creds?.inject && ['inject', view.creds.inject]].filter(Boolean)
+    .filter(([name]) => name === 'portal' || view?.reachable !== false)
+  // Passwords from a workspace that records no VM are history, not credentials for a machine
+  // that exists; do not offer Reveal/Copy for them.
   const noEngine = recorded === false
+  const creds = noEngine ? []
+    : [view?.creds?.admin && ['admin', view.creds.admin], view?.creds?.inject && ['inject', view.creds.inject]].filter(Boolean)
+  const noEngineText = recorded === false
     ? 'This range records no infrastructure, so the engine address in its workspace is not a live link.'
-    : 'No engine address is recorded.'
+    : view?.reachable === false
+      ? 'The engine is not answering; its admin links open once it does.'
+      : 'No engine address is recorded.'
   if (!lifecycle) {
     return (
       <Card className="p-5">
         <h2 className="mb-3 text-base font-semibold">Access</h2>
         {mismatched && <ErrorBanner error={error} />}
         {!view && !mismatched && <p className="text-sm text-muted">{loading ? 'Loading access details…' : 'No access details are available for this workspace.'}</p>}
-        {view && <>
+        {view && deploying && <p className="text-sm text-muted">This range is still deploying. Access details appear once the engine is ready.</p>}
+        {view && !deploying && <>
           {links.length ? <ul className="space-y-1.5 text-sm">{links.map(([name, url]) => (
             <li key={name}><a className="flex items-center gap-1.5 text-accent hover:underline" href={url} target="_blank" rel="noopener noreferrer">
               <Icon name={name === 'portal' ? 'boxes' : 'overview'} className="h-3.5 w-3.5" />
               {LINK_TEXT[name] || name}<span className="ml-auto truncate font-mono text-[11px] text-faint">{url.replace(/^https?:\/\//, '')}</span>
             </a></li>
-          ))}</ul> : <p className="text-sm text-muted">{noEngine}</p>}
+          ))}</ul> : <p className="text-sm text-muted">{noEngineText}</p>}
           {!!creds.length && <div className="mt-4 space-y-2">{creds.map(([label, cred]) => <Cred key={`${label}-${cred.password}`} label={label} {...cred} />)}</div>}
         </>}
       </Card>
@@ -189,7 +210,9 @@ function CompetitionBody({ rangeKey, rangeId, compId, engineRef, onSubmitted, di
     <Card className="p-5">
       <div className="mb-3 flex flex-wrap items-center gap-3">
         <h2 className={access ? 'label !mb-0' : 'text-base font-semibold'}>{access ? 'Competition & access' : 'Competition'}</h2>
-        {view && <span className={`chip px-2.5 py-1 ${STATE_CLS[view.state] || STATE_CLS.unknown}`}>{STATE_TEXT[view.state] || view.state || 'unknown'}</span>}
+        {view && (noEngine
+          ? <span className="chip bg-sunken px-2.5 py-1 text-muted">No engine recorded</span>
+          : <span className={`chip px-2.5 py-1 ${STATE_CLS[view.state] || STATE_CLS.unknown}`}>{STATE_TEXT[view.state] || view.state || 'unknown'}</span>)}
         {(loading || refreshing) && <span role="status" aria-label="Refreshing competition"><Spinner /></span>}
         {view?.engine?.last_round?.ID > 0 && <span className="font-mono text-xs text-faint">round {view.engine.last_round.ID}</span>}
         {(!controlled || onRefresh) && <Button variant="ghost" className="ml-auto !py-1 text-xs" disabled={refreshing || loading} onClick={refresh}>Refresh</Button>}
@@ -200,8 +223,10 @@ function CompetitionBody({ rangeKey, rangeId, compId, engineRef, onSubmitted, di
       {pending && <p className="mb-3 text-sm text-accent" role="status">Submitting {ACTION_TEXT[pending].toLowerCase()} operation…</p>}
       {submitted && <p className="mb-3 text-sm text-muted" role="status">Operation submitted{(submitted.id || submitted.run_id) && <> · <Link className="font-mono text-accent hover:underline" to={operationHref(submitted)}>{submitted.id || submitted.run_id}</Link></>}. Submission does not mean scoring has changed yet.</p>}
       {!view && !loading && !error && <p className="text-sm text-muted">No competition or access details are available for this workspace.</p>}
-      {view && <>
-        {!torn && <div className="flex flex-wrap gap-2">
+      {view && deploying && <p className="mt-2 text-sm text-muted">This range is still deploying. Competition controls and access details appear once the engine is ready.</p>}
+      {view && !deploying && <>
+        {operating && <p className="mt-2 text-sm text-muted">An operation is still running on this range. Competition controls appear when it finishes.</p>}
+        {!torn && !operating && <div className="flex flex-wrap gap-2">
           {view.state === 'ready' && <Button variant="primary" disabled={blocked} onClick={() => submit('start')}><Icon name="play" />Start the competition</Button>}
           {view.state === 'running' && <Button disabled={blocked} onClick={() => submit('freeze')}><Icon name="pause" />Pause scoring</Button>}
           {view.state === 'paused' && <Button variant="primary" disabled={blocked} onClick={() => submit('resume')}><Icon name="play" />Resume scoring</Button>}
@@ -211,6 +236,7 @@ function CompetitionBody({ rangeKey, rangeId, compId, engineRef, onSubmitted, di
         {retired ? <p className="mt-2 text-xs text-muted">This range is retired; lifecycle actions are disabled.</p>
           : torn ? <p className="mt-2 text-xs text-danger">This range's infrastructure is incomplete — its last teardown did not finish. Lifecycle actions are disabled; retry the teardown from the range page first.</p>
             : missingIdentity && <p className="mt-2 text-xs text-danger">Lifecycle actions require the range's competition identity and originating engine ref. Refresh the range details before submitting.</p>}
+        {view.deploy_failed && !torn && <p className="mt-2 text-xs text-danger">The last deploy did not finish. Verify the range before starting the competition.</p>}
         {access && <>
           <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-sm">
             {links.map(([name, url]) => (
@@ -220,12 +246,12 @@ function CompetitionBody({ rangeKey, rangeId, compId, engineRef, onSubmitted, di
               </a>
             ))}
           </div>
-          {!links.length && <p className="mt-4 text-sm text-muted">{noEngine}</p>}
+          {!links.length && <p className="mt-4 text-sm text-muted">{noEngineText}</p>}
           <div className="mt-4 space-y-2">
             {creds.map(([label, cred]) => <Cred key={`${label}-${cred.password}`} label={label} {...cred} />)}
           </div>
         </>}
-        {!view.reachable && view.state !== 'ended' && <p className="mt-3 text-xs text-muted">The engine is not answering. Any available workspace details are recorded state, not a current engine observation.</p>}
+        {!noEngine && !view.reachable && view.state !== 'ended' && <p className="mt-3 text-xs text-muted">The engine is not answering. Any available workspace details are recorded state, not a current engine observation.</p>}
       </>}
     </Card>
   )

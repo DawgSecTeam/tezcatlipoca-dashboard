@@ -98,7 +98,7 @@ export function ConfirmProvider({ children }) {
       <Modal open={!!req} onClose={() => close(false)} title={req?.title || 'Are you sure?'}>
         {req?.body && <div className="text-sm leading-relaxed text-muted">{req.body}</div>}
         <div className="mt-6 flex justify-end gap-3">
-          <Button onClick={() => close(false)}>Cancel</Button>
+          <Button onClick={() => close(false)}>{req?.dismiss || 'Cancel'}</Button>
           <Button variant={req?.danger ? 'danger' : 'primary'} className={req?.danger ? '!border-danger/40' : ''} autoFocus onClick={() => close(true)}>
             {req?.confirm || 'Confirm'}
           </Button>
@@ -213,6 +213,33 @@ export function useSlashFocus(ref) {
 
 export const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
 export const saveKey = isMac ? '⌘S' : 'Ctrl S'
+
+// navigator.clipboard exists only in a secure context (https, or http on localhost). The
+// dashboard is normally opened over plain http on a LAN address, where the API is undefined —
+// which made every "Copy" button fail with nothing but a toast. Fall back to the selection
+// copy (still supported everywhere) so the buttons work on the address operators actually use.
+export async function copyText(text) {
+  const value = String(text ?? '')
+  if (!value) return false
+  if (navigator.clipboard?.writeText) {
+    try { await navigator.clipboard.writeText(value); return true } catch { /* not allowed: fall back */ }
+  }
+  const active = document.activeElement
+  const area = document.createElement('textarea')
+  area.value = value
+  area.setAttribute('readonly', '')
+  area.setAttribute('aria-hidden', 'true')
+  area.style.cssText = 'position:fixed;top:0;left:-9999px;opacity:0'
+  document.body.appendChild(area)
+  try {
+    area.select()
+    area.setSelectionRange(0, value.length)
+    return typeof document.execCommand === 'function' && document.execCommand('copy')
+  } catch { return false } finally {
+    area.remove()
+    active?.focus?.()
+  }
+}
 
 // ── formatters ────────────────────────────────────────────────────────────────────────────
 

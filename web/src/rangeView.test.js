@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cleanMessage, degradationMessage, detailSummary, filterRanges, heroStatus, infrastructureLabel, rangeIssues, rangeStatus } from './rangeView'
+import { cleanMessage, degradationMessage, detailSummary, filterRanges, heroStatus, infrastructureLabel, rangeIssues, rangeStatus, scoringChip } from './rangeView'
 
 const base = { id: 'range-a', comp_id: 'same', live: true, state: 'live', has_recorded_vms: true, active_runs: [], latest_run: { id: 'deploy-a', action: 'deploy', state: 'succeeded' } }
 
@@ -65,5 +65,14 @@ describe('range presentation', () => {
     expect(heroStatus({ ...base, scoring: { state: 'unknown', round: 0, reachable: false } }).label).toBe('Engine unreachable')
     expect(heroStatus(base).label).toBe('Deployed') // no cached observation: recorded state
     expect(heroStatus({ ...base, scoring: { state: 'running', round: 1, reachable: true }, active_runs: [{ id: 'r', action: 'redeploy', state: 'running' }] }).kind).toBe('operation')
+  })
+  it('withholds the stale scoring chip while an operation that changes scoring runs', () => {
+    const scoring = { state: 'ready', reachable: true }
+    for (const action of ['deploy', 'start', 'freeze', 'resume', 'end', 'destroy']) {
+      expect(scoringChip({ ...base, active_runs: [{ id: 'x', action, state: 'running' }], scoring })).toBeNull()
+    }
+    // verify and a box reset do not move the clock, so their observation is still current
+    expect(scoringChip({ ...base, active_runs: [{ id: 'v', action: 'verify', state: 'running' }], scoring }).label).toBe('Ready to start')
+    expect(scoringChip({ ...base, scoring }).label).toBe('Ready to start')
   })
 })

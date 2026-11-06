@@ -111,7 +111,12 @@ function actionRange(run, range) {
 export function useRunActions(run, onChanged, range) {
   const toast = useToast()
   const ask = useConfirm()
+  const busy = useRef(false)
   const submit = async (body) => {
+    // A double-click submitted two verifies (or two redeploys) before the first response
+    // landed; the second click is the same click.
+    if (busy.current) return undefined
+    busy.current = true
     try {
       const created = await api.submitRun({
         ...body,
@@ -121,19 +126,22 @@ export function useRunActions(run, onChanged, range) {
       onChanged?.(created)
       return created
     } catch (e) { toast(e.message, 'error') }
+    finally { busy.current = false }
   }
   const destroy = async () => {
     const ok = await ask({
       title: `Teardown ${range?.comp_id || run?.comp_id}?`, danger: true, confirm: 'Destroy',
       body: range?.reclaimable_templates
         ? <>This range is retired; a full teardown reclaims the kept templates it still records. Everything else it created is already gone.</>
-        : <>Runs <span className="font-mono">destroy-competition.py</span> against this range's explicit workspace — the VMs it created are removed.</>,
+        : range?.deploying
+          ? <>Runs <span className="font-mono">destroy-competition.py</span> against this range's explicit workspace. The deploy still building it is cancelled first; the VMs it created are removed.</>
+          : <>Runs <span className="font-mono">destroy-competition.py</span> against this range's explicit workspace — the VMs it created are removed.</>,
     })
     if (ok) return submit({ action: 'destroy' })
   }
   const cancel = async () => {
     const ok = await ask({
-      title: 'Cancel this run?', danger: true, confirm: 'Cancel run',
+      title: 'Cancel this run?', danger: true, confirm: 'Cancel run', dismiss: 'Keep running',
       body: "Kills the run's process group. The range may be left half-built.",
     })
     if (!ok) return
@@ -452,10 +460,14 @@ export function ArtifactsList({ runId }) {
   const [err, setErr] = useState(null)
   const [preview, setPreview] = useState(null) // {path, name}
   useEffect(() => {
+    // Switching runs while a slow artifact fetch is in flight used to paint the previous
+    // run's list under the new run's header.
+    let active = true
     setRows(null); setErr(null)
     api.runArtifacts(runId)
-      .then((d) => setRows(flattenArtifacts(d?.artifacts ?? d?.files ?? d?.items ?? d?.tree ?? d?.children ?? d)))
-      .catch(setErr)
+      .then((d) => { if (active) setRows(flattenArtifacts(d?.artifacts ?? d?.files ?? d?.items ?? d?.tree ?? d?.children ?? d)) })
+      .catch((e) => { if (active) setErr(e) })
+    return () => { active = false }
   }, [runId])
   if (err) return <ErrorBanner error={err} />
   if (!rows) return <Spinner />
@@ -505,18 +517,23 @@ export function ArtifactPreview({ runId, file, onClose, onDownload }) {
   const [err, setErr] = useState(null)
   const name = file?.path?.split('/').pop() || ''
   useEffect(() => {
+    // Same selection race as the list: a slow file must not render over the one picked next.
+    let active = true
     setState(null); setErr(null)
-    if (!file) return
+    if (!file) return () => { active = false }
     ;(async () => {
       try {
         const blob = await api.runArtifactFile(runId, file.path)
+        if (!active) return
         const pretty = file.path.endsWith('.json') || file.path.endsWith('.jsonc')
         if (!TEXTY.test(file.path) && !blob.type.startsWith('text/')) { setState({ kind: 'binary' }); return }
         const text = await blob.text()
+        if (!active) return
         if (text.length > 2_000_000) { setState({ kind: 'binary' }); return } // preview limit; download still works
         setState({ kind: pretty ? 'json' : file.path.endsWith('.md') ? 'md' : 'text', text })
-      } catch (e) { setErr(e) }
+      } catch (e) { if (active) setErr(e) }
     })()
+    return () => { active = false }
   }, [file, runId]) // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <Modal wide open={!!file} onClose={onClose} title={name}>
@@ -562,12 +579,15 @@ function DeployRangeModal({ open, onClose, comps, initial = {}, onSubmitted }) {
   const [form, setForm] = useState({ comp_id: '', engine_ref: '', teams: 2, scoring_vmid: '', start_after_deploy: false, engine_node: '', team_node: '', nodes: [] })
   const [catalog, setCatalog] = useState([])
   const [detail, setDetail] = useState(null)
+  const [activeRuns, setActiveRuns] = useState([])
   const [err, setErr] = useState(null)
+  const [submitting, setSubmitting] = useState(false)
+  const busy = useRef(false)
   useEffect(() => {
     if (!open) return
     setForm({ comp_id: '', engine_ref: '', teams: 2, scoring_vmid: '', start_after_deploy: false,
       engine_node: '', team_node: '', nodes: [], ...initial, action: undefined })
-    setErr(null); setDetail(null)
+    setErr(null); setDetail(null); setSubmitting(false); busy.current = false
     api.nodes().then((c) => {
       setCatalog(c.nodes || [])
       setForm((f) => ({ ...f, nodes: (c.nodes || []).map((n) => n.name) }))
@@ -581,6 +601,20 @@ function DeployRangeModal({ open, onClose, comps, initial = {}, onSubmitted }) {
     api.comp(form.comp_id).then((c) => { if (active) setDetail(c) }).catch(() => { if (active) setDetail(null) })
     return () => { active = false }
   }, [open, form.comp_id])
+  useEffect(() => {
+    if (!open || !form.comp_id) { setActiveRuns([]); return undefined }
+    // The competition page's panel warns about a concurrent deploy; this modal (the Live and
+    // run pages' entry point) used to submit a second one silently.
+    let active = true
+    const load = () => api.runs().then((rows) => {
+      if (!active) return
+      setActiveRuns((rows || []).filter((r) => r.comp_id === form.comp_id
+        && ['queued', 'running', 'pausing', 'paused'].includes(r.state)))
+    }).catch(() => {})
+    load()
+    const timer = setInterval(load, 15000)
+    return () => { active = false; clearInterval(timer) }
+  }, [open, form.comp_id])
   const teams = Number(form.teams) || 0
   const boxes = detail?.boxes || []
   const sum = (key) => boxes.reduce((total, box) => total + (Number(box[key]) || 0), 0)
@@ -591,6 +625,9 @@ function DeployRangeModal({ open, onClose, comps, initial = {}, onSubmitted }) {
   }))
   const submit = async (e) => {
     e.preventDefault()
+    // A double-click submitted two deploys before the first response closed the dialog.
+    if (busy.current) return
+    busy.current = true; setSubmitting(true)
     try {
       const run = await api.submitRun({
         comp_id: form.comp_id, action: 'deploy', engine_ref: form.engine_ref, teams,
@@ -602,11 +639,19 @@ function DeployRangeModal({ open, onClose, comps, initial = {}, onSubmitted }) {
       onSubmitted?.(run)
       onClose()
     } catch (e2) { setErr(e2) }
+    finally { busy.current = false; setSubmitting(false) }
   }
   return (
     <Modal wide open={open} onClose={onClose} title="Deploy range">
       <form onSubmit={submit} className="space-y-4">
         <ErrorBanner error={err} />
+        {!!activeRuns.length && (
+          <div className="rounded-2xl bg-accent-soft px-4 py-2.5 text-xs text-accent">
+            <span className="font-semibold">{ACTION_LABEL[activeRuns[0].action] || activeRuns[0].action}</span>{' '}
+            ({activeRuns[0].id}) is still in flight for this competition — a second concurrent
+            deploy may collide on the engine.
+          </div>
+        )}
         <div className="grid gap-5 sm:grid-cols-2">
           <div className="space-y-4">
             <Field label="Competition">
@@ -674,8 +719,8 @@ function DeployRangeModal({ open, onClose, comps, initial = {}, onSubmitted }) {
         </div>
         <div className="flex justify-end gap-3 pt-1">
           <Button type="button" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" disabled={!form.comp_id || (!!detail && !boxes.length)}>
-            <Icon name="rocket" />Deploy {teams} team{teams === 1 ? '' : 's'}
+          <Button variant="primary" disabled={submitting || !form.comp_id || (!!detail && !boxes.length)}>
+            <Icon name="rocket" />{submitting ? 'Deploying…' : `Deploy ${teams} team${teams === 1 ? '' : 's'}`}
           </Button>
         </div>
       </form>
@@ -688,17 +733,21 @@ function DeployRangeModal({ open, onClose, comps, initial = {}, onSubmitted }) {
 function GenericRunModal({ open, onClose, comps, initial = {}, onSubmitted, allowedActions }) {
   const [form, setForm] = useState({ comp_id: '', action: 'deploy', engine_ref: '', teams: 2, scoring_vmid: '' })
   const [err, setErr] = useState(null)
+  const [submitting, setSubmitting] = useState(false)
+  const busy = useRef(false)
   useEffect(() => {
     if (open) {
       setForm({ comp_id: '', engine_ref: '', teams: 2, scoring_vmid: '', ...initial,
         action: allowedActions.includes(initial.action) ? initial.action : allowedActions[0] || 'deploy',
       })
-      setErr(null)
+      setErr(null); setSubmitting(false); busy.current = false
     }
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value })
   const submit = async (e) => {
     e.preventDefault()
+    if (busy.current) return
+    busy.current = true; setSubmitting(true)
     try {
       const run = await api.submitRun({
         comp_id: form.comp_id,
@@ -710,6 +759,7 @@ function GenericRunModal({ open, onClose, comps, initial = {}, onSubmitted, allo
       onSubmitted?.(run)
       onClose()
     } catch (e2) { setErr(e2) }
+    finally { busy.current = false; setSubmitting(false) }
   }
   return (
     <Modal open={open} onClose={onClose} title="New run">
@@ -738,7 +788,7 @@ function GenericRunModal({ open, onClose, comps, initial = {}, onSubmitted, allo
         </div>
         <div className="flex justify-end gap-3 pt-2">
           <Button type="button" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" disabled={!form.comp_id}><Icon name="rocket" />Submit run</Button>
+          <Button variant="primary" disabled={submitting || !form.comp_id}><Icon name="rocket" />{submitting ? 'Submitting…' : 'Submit run'}</Button>
         </div>
       </form>
     </Modal>
@@ -767,17 +817,19 @@ function teamChoices(run, inventoryTeams) {
   return n > 0 ? Array.from({ length: n }, (_, i) => ({ value: String(i + 1), label: `team ${i + 1}` })) : []
 }
 
-export function ResetBoxModal({ open, onClose, run, range, initial = {}, teams, onSubmitted }) {
+export function ResetBoxModal({ open, onClose, run, range, initial = {}, teams, onSubmitted, disabled = false }) {
   const [form, setForm] = useState({ box: '', team: '', mode: 'reset' })
   const [boxes, setBoxes] = useState([])
   const [err, setErr] = useState(null)
+  const [submitting, setSubmitting] = useState(false)
+  const busy = useRef(false)
   const toast = useToast()
   const compId = range?.comp_id || run?.comp_id
   useEffect(() => {
     if (!open) return
     let active = true
     setForm({ box: '', team: '', mode: 'reset', ...initial })
-    setErr(null); setBoxes([])
+    setErr(null); setBoxes([]); setSubmitting(false); busy.current = false
     const recorded = [...new Set((teams || []).flatMap((team) => (team.boxes || []).map((box) => box.name)))].map((name) => ({ name }))
     if (teams) setBoxes(recorded)
     else if (compId) api.comp(compId)
@@ -785,6 +837,14 @@ export function ResetBoxModal({ open, onClose, run, range, initial = {}, teams, 
       .catch((e) => { if (active) setErr(e) })
     return () => { active = false }
   }, [open, compId]) // eslint-disable-line react-hooks/exhaustive-deps
+  // engine-recovery recovers the engine VM, not a team box: it cannot be combined with a
+  // team/box target (the per-team recovery menu excludes it for the same reason).
+  useEffect(() => {
+    if (open && (form.team || form.box) && form.mode === 'engine-recovery') {
+      setForm((f) => ({ ...f, mode: 'reset' }))
+    }
+  }, [open, form.team, form.box, form.mode])
+  const modes = form.team || form.box ? REDEPLOY_MODES.filter((m) => m !== 'engine-recovery') : REDEPLOY_MODES
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value })
   const toggle = (k, v) => {
     const cur = form[k] ? form[k].split(',').filter(Boolean) : []
@@ -794,6 +854,10 @@ export function ResetBoxModal({ open, onClose, run, range, initial = {}, teams, 
   const picked = (k) => (form[k] ? form[k].split(',').filter(Boolean) : [])
   const submit = async (e) => {
     e.preventDefault()
+    // The range can start deploying/tearing down (or retire) while this modal is open.
+    if (disabled) { setErr(new Error('This range is busy or retired; close this and try again once it settles.')); return }
+    if (busy.current) return
+    busy.current = true; setSubmitting(true)
     try {
       const r = await api.submitRun(rangeActionBody(actionRange(run, range), 'redeploy', {
         boxes: form.box, teams: form.team, mode: form.mode,
@@ -803,6 +867,7 @@ export function ResetBoxModal({ open, onClose, run, range, initial = {}, teams, 
       onClose()
       return r
     } catch (e2) { setErr(e2) }
+    finally { busy.current = false; setSubmitting(false) }
   }
   const boxNames = boxes.map((b) => b.name)
   const teamOpts = teamChoices(run, teams)
@@ -816,13 +881,17 @@ export function ResetBoxModal({ open, onClose, run, range, initial = {}, teams, 
     <Modal open={open} onClose={onClose} title="Reset a box">
       <form onSubmit={submit} className="space-y-4">
         <ErrorBanner error={err} />
-        <Field label="Boxes" hint={picked('box').length ? `--boxes ${form.box}` : 'None picked — every box of the selected teams is reset.'}>
+        <Field label="Boxes" hint={picked('box').length ? `--boxes ${form.box}`
+          : picked('team').length ? 'None picked — every box of the selected teams is reset.'
+            : 'None picked — pick a box and/or a team to scope the reset.'}>
           <div className="flex flex-wrap gap-2 rounded-2xl bg-sunken p-3 shadow-inset">
             {boxNames.map((n) => <Chip key={n} k="box" v={n} />)}
             {!boxNames.length && <span className="text-xs text-faint">No boxes available in this inventory.</span>}
           </div>
         </Field>
-        <Field label="Teams" hint={picked('team').length ? `--teams ${form.team}` : 'None picked — the redeploy covers the whole range.'}>
+        <Field label="Teams" hint={picked('team').length ? `--teams ${form.team}`
+          : picked('box').length ? 'None picked — the picked boxes are reset for every team.'
+            : 'None picked — pick at least one box or team.'}>
           <div className="flex flex-wrap gap-2 rounded-2xl bg-sunken p-3 shadow-inset">
             {teamOpts.map((t) => <Chip key={t.value} k="team" v={t.value} label={t.label} />)}
             {!teamOpts.length && (
@@ -832,12 +901,12 @@ export function ResetBoxModal({ open, onClose, run, range, initial = {}, teams, 
         </Field>
         <Field label="Mode" hint={MODE_HINT[form.mode]}>
           <select className={inputCls} value={form.mode} onChange={set('mode')}>
-            {REDEPLOY_MODES.map((m) => <option key={m} value={m}>{m}</option>)}
+            {modes.map((m) => <option key={m} value={m}>{m}</option>)}
           </select>
         </Field>
         <div className="flex justify-end gap-3 pt-2">
           <Button type="button" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" disabled={!form.box && !form.team}><Icon name="play" />Submit redeploy</Button>
+          <Button variant="primary" disabled={disabled || submitting || (!form.box && !form.team)}><Icon name="play" />{submitting ? 'Submitting…' : 'Submit redeploy'}</Button>
         </div>
       </form>
     </Modal>

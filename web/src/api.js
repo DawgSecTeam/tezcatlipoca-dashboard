@@ -11,7 +11,7 @@ export const setToken = (t) => {
   try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY) } catch { /* storage blocked */ }
 }
 
-async function request(method, path, body) {
+async function request(method, path, body, { background = false } = {}) {
   const res = await fetch(`/api${path}`, {
     method,
     headers: {
@@ -22,7 +22,12 @@ async function request(method, path, body) {
   })
   const data = await res.json().catch(() => null)
   if (!res.ok) {
-    if (res.status === 401) window.dispatchEvent(new CustomEvent('tez-unauthorized'))
+    // A background poll (the bell, the range board) must never end the session: one 401 from a
+    // poller used to pop the token dialog and wipe the stored token mid-run (2026-11-06 audit).
+    // Foreground requests still announce it — that is how the dialog collects a token.
+    if (res.status === 401 && !background) {
+      window.dispatchEvent(new CustomEvent('tez-unauthorized'))
+    }
     const d = data?.detail
     const msg = Array.isArray(d) ? d.map((e) => `${(e.loc || []).join('.')}: ${e.msg}`).join('\n') : d
     const error = new Error(msg ? String(msg) : `${res.status} ${res.statusText}`)
@@ -60,8 +65,8 @@ export const api = {
   putNodes: (body) => request('PUT', '/nodes', body),
 
   // Ranges: one entry per range workspace, live while its infrastructure is up.
-  ranges: () => request('GET', '/ranges'),
-  rangeBoard: () => request('GET', '/ranges/board'),
+  ranges: () => request('GET', '/ranges', undefined, { background: true }),
+  rangeBoard: () => request('GET', '/ranges/board', undefined, { background: true }),
   range: (id) => request('GET', `/ranges/${enc(id)}`),
   // One range's deterministic triage answer (state + its runs' diagnoses). Same JSON the
   // MCP `diagnose_range` tool returns.
@@ -87,7 +92,7 @@ export const api = {
   // The range's deployed infrastructure, projected server-side from its workspace.
   runInventory: (id) => request('GET', `/runs/${enc(id)}/inventory`),
   // Reset requests (pushed by deployed portals; approve submits a redeploy-reset run).
-  requests: () => request('GET', '/requests'),
+  requests: () => request('GET', '/requests', undefined, { background: true }),
   approveRequest: (id) => request('POST', `/requests/${id}/approve`),
   denyRequest: (id) => request('POST', `/requests/${id}/deny`),
   // A single artifact file as a Blob (request() parses JSON, so this fetches raw).

@@ -64,7 +64,12 @@ function RangeCard({ range }) {
         <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-faint">
           <span className="font-mono">{shortRangeId(range)}</span>
           {range.engine_ip && <span className="font-mono">{range.engine_ip}</span>}
-          <span>{range.deployed_at ? `deployed ${agoMs(range.deployed_at)}` : 'deploy time not recorded'}</span>
+          {/* deployed_at is the deploy run's created_at: while the deploy is still running,
+              "deployed 4 min ago" claimed a finished build that had only started. */}
+          <span>{!range.deployed_at ? 'deploy time not recorded'
+            : range.state === 'building' ? `deploy started ${agoMs(range.deployed_at)}`
+              : range.deploy_failed ? `last deploy failed ${agoMs(range.deployed_at)}`
+                : `deployed ${agoMs(range.deployed_at)}`}</span>
         </p>
       </header>
 

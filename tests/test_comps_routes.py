@@ -95,3 +95,37 @@ class CompsRoutesTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(TestClient is None, "fastapi/httpx not installed")
+@unittest.skipIf(not (ENGINE / "common").is_dir(), "no sibling ../tezcatlipoca engine checkout")
+class MissingCheckoutTest(unittest.TestCase):
+    """A fresh install has no competitions clone (the runner makes it on the first run).
+
+    Before 2026-11-06 every read raised FileNotFoundError, the SPA showed a bare
+    "internal server error", and /api/health still said ok — so a broken install looked healthy.
+    """
+
+    def setUp(self):
+        sys.path.insert(0, str(ENGINE))
+        sys.path.insert(0, str(ENGINE / "vendor" / "nakon"))
+        self.addCleanup(lambda: sys.path.remove(str(ENGINE / "vendor" / "nakon")))
+        self.addCleanup(lambda: sys.path.remove(str(ENGINE)))
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+        env = patch.dict(os.environ, {"TEZ_DASHBOARD_DATA": str(root),
+                                      "TEZ_PROXMOX_ENDPOINT": "",
+                                      "TEZ_PROXMOX_API_TOKEN": ""})
+        env.start()
+        self.addCleanup(env.stop)
+        self.server = _load_server()
+        self.server.COMPS = root / "competitions"   # deliberately never created
+        self.client = TestClient(self.server.app)
+
+    def test_comps_names_the_missing_checkout_instead_of_500ing(self):
+        r = self.client.get("/api/comps")
+        assert r.status_code == 503, r.status_code
+        detail = r.json()["detail"]
+        assert "competitions checkout is missing" in detail
+        assert str(self.server.COMPS) in detail

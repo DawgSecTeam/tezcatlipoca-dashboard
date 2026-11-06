@@ -410,14 +410,40 @@ def _run_findings(run, events, tail, cause, stage, now):
             "resubmitting.",
             run_id=run.get("id"), evidence=ev)]
 
-    if state in ("paused", "pausing"):
+    if state == "pausing":
+        # `pausing` means the request is on disk and the driver has NOT reached a phase boundary
+        # yet (the runner only writes `paused` once it parks — runner.py). Reporting "held" here
+        # told an operator a stalled deploy was safely parked when it was still stuck in an API
+        # call (2026-11-06 audit).
+        idle = now - _last_activity(run, events)
+        if idle >= STALL_SECONDS:
+            return [_finding(
+                "run_pause_pending_stalled", "warning",
+                f"Pause requested, no phase boundary yet — and nothing has moved for "
+                f"{_duration(idle)}",
+                "The pause request is a file the driver reads at its next phase boundary. It has "
+                "not reached one, and neither the log nor the stage events have moved since, so "
+                "the driver is still inside the phase in progress (often a Proxmox API call).",
+                "Nothing is parked yet, so `Resume` cannot help. Check the log tail and the node's "
+                "task list; a phase that is genuinely hung needs `Cancel run` — which leaves the "
+                "phase's VMs behind.",
+                run_id=run.get("id"), evidence=ev)]
+        return [_finding(
+            "run_pause_pending", "info", "Pause requested — waiting for the phase boundary",
+            "Pause-after-next-stage parks the driver at the NEXT phase boundary. The phase in "
+            "progress is still running; the range stays `building` and the deploy lock stays held.",
+            "Wait for the current phase to finish. `Resume` withdraws the request if you change "
+            "your mind.",
+            run_id=run.get("id"), evidence=ev)]
+
+    if state == "paused":
         after = (stage or {}).get("index")
         return [_finding(
-            "run_held", "info", "The deploy is held at a phase boundary",
-            "Pause-after-next-stage parks the driver at the next phase boundary; the range "
-            "stays `building` and the deploy lock stays held.",
-            "Resume from the run page (or `resume_run` over MCP) to carry on in the same "
-            "process.",
+            "run_held", "info",
+            f"The deploy is held after phase {after}" if after else "The deploy is held at a phase boundary",
+            "Pause-after-next-stage parked the driver at a phase boundary; the range stays "
+            "`building` and the deploy lock stays held.",
+            "Resume from the run page (or `resume_run` over MCP) to carry on in the same process.",
             run_id=run.get("id"), evidence=ev)]
 
     if state == "running":

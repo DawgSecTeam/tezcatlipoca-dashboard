@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, Navigate, useParams } from 'react-router-dom'
 import { api } from '../api'
 import { Button, Card, ErrorBanner, SearchInput, Spinner } from '../components/ui'
-import { Crumbs, Icon, agoMs, fmtSpan, toMs, useTick, useToast } from '../components/kit'
+import { Crumbs, Icon, agoMs, copyText, fmtSpan, toMs, useTick, useToast } from '../components/kit'
 import {
   ACTION_LABEL, ArtifactPreview, LogView, NewRunModal, ResetBoxModal, StageStrip, StatePill, eventText,
   useRunActions, useRunEvents, useRunLog,
@@ -53,7 +53,8 @@ function CopyPath({ path }) {
   const toast = useToast()
   if (!path) return null
   const copy = async () => {
-    try { await navigator.clipboard.writeText(path); toast('Path copied') } catch { toast('Copy failed', 'error') }
+    if (await copyText(path)) toast('Path copied')
+    else toast('Copy failed', 'error')
   }
   return (
     <button onClick={copy} title={`Copy ${path}`}
@@ -336,10 +337,25 @@ export default function Run() {
 
   const boxes = comp?.boxes || []
   const range = inventory?.range || null
+  // This range's engine is not settled while any non-scrim operation is in flight: a deploy
+  // builds it, a destroy removes it, a verify/redeploy/start moves the workspace under it.
+  // The range's own `settled` fact covers operations started elsewhere; the current run is
+  // the fallback while the inventory is still loading. A NEW deploy is allowed (it builds a
+  // separate range) and destroy stays available (it cancels the deploy).
+  const rangeBusy = range?.settled === false || !!range?.deploying || !!range?.tearing_down
+    || (live && run.action !== 'scrim')
+  // Verify/reset act on the range itself: nothing to verify once retired, and a deploy or
+  // teardown in flight means the workspace is still moving under them.
+  const rangeActionsBlocked = rangeBusy || range?.state === 'retired'
+  const rangeBlockedReason = range?.state === 'retired'
+    ? 'This range is retired; its live actions are done.'
+    : rangeBusy ? 'The range is deploying or being torn down; try again after that finishes.' : undefined
   // A retired range has no teardown left unless it still records kept templates, in which
   // case the same button is the reclaim.
   const reclaimKept = !!(range?.reclaimable_templates && range?.state === 'retired')
-  const destroyOffered = !range || range.state !== 'retired' || reclaimKept
+  // No inventory yet means no range to tear down: a plan/no-workspace run must not offer a
+  // destroy, and a slow inventory fetch must not flash one over the page.
+  const destroyOffered = !!range && (range.state !== 'retired' || reclaimKept)
   // A live range has no teardown journal at all; the journal line exists only once a destroy
   // touched the range, and there red01's absence is what separates "retired" from "a VM
   // holding the LLM key is still up".
@@ -390,7 +406,11 @@ export default function Run() {
           </Link>
           <span className="chip shrink-0 bg-sunken px-2.5 py-1 font-mono text-muted">{ACTION_LABEL[run.action] || run.action}</span>
           <StatePill state={run.state} />
-          {range?.id && <Link to={`/ranges/${range.id}`} className="ml-auto shrink-0 text-sm font-semibold text-accent hover:underline">Open range</Link>}
+          {/* Only offer the range when this run actually has one: a plan/verify workspace is not a
+              range, and "Open range" on a dry run led to a page describing VMs that never existed
+              (2026-11-06 audit). */}
+          {range?.id && !['plan', 'verify'].includes(run.action)
+            && <Link to={`/ranges/${range.id}`} className="ml-auto shrink-0 text-sm font-semibold text-accent hover:underline">Open range</Link>}
           {range?.state === 'teardown_failed' && (
             <span className="chip shrink-0 bg-danger-soft px-2.5 py-1 text-danger" title="The estate's own machines are gone, but a VM it never owned survived">range teardown failed</span>
           )}
@@ -451,11 +471,17 @@ export default function Run() {
               <div className="mt-4 rounded-2xl bg-danger-soft px-4 py-2.5 text-xs text-danger">{String(run.error)}</div>
             )}
             <div className="mt-6 flex flex-wrap gap-2">
-              <Button onClick={() => submit({ action: 'verify' })}><Icon name="check" />Verify</Button>
+              <Button onClick={() => submit({ action: 'verify' })} disabled={rangeActionsBlocked}
+                title={rangeBlockedReason}>
+                <Icon name="check" />Verify
+              </Button>
               <Button onClick={() => { setNewRun(true); api.comps().then(setComps).catch(() => {}) }}>
                 <Icon name="rocket" />New run (re-deploy)
               </Button>
-              <Button onClick={() => setResetBox({})}><Icon name="box" />Reset a box…</Button>
+              <Button onClick={() => setResetBox({})} disabled={rangeActionsBlocked}
+                title={rangeBlockedReason}>
+                <Icon name="box" />Reset a box…
+              </Button>
               {destroyOffered && <Button variant="danger" onClick={destroy}><Icon name="trash" />{reclaimKept ? 'Reclaim kept templates' : 'Destroy / teardown'}</Button>}
               {canPause && <Button onClick={pause}><Icon name="pause" />Pause after next stage</Button>}
               {held && <Button variant="primary" onClick={resume}><Icon name="play" />Resume</Button>}
@@ -492,7 +518,8 @@ export default function Run() {
         }}
         onSubmitted={reload} />
       <ResetBoxModal open={resetBox !== null} onClose={() => setResetBox(null)} run={run} range={range}
-        teams={inventory?.teams} initial={resetBox || {}} onSubmitted={reload} />
+        teams={inventory?.teams} initial={resetBox || {}} onSubmitted={reload}
+        disabled={rangeActionsBlocked} />
     </div>
   )
 }

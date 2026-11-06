@@ -75,11 +75,20 @@ export function rangeIssues(range) {
 
 const ACTION_NAME = { deploy: 'Deploying', scrim: 'Scrim running', verify: 'Verifying', destroy: 'Tearing down', redeploy: 'Resetting boxes', delete_team: 'Removing a team', start: 'Starting competition', freeze: 'Pausing scoring', resume: 'Resuming scoring', end: 'Ending competition' }
 
+// Operations after which the cached scoring observation is guaranteed stale. A verify,
+// redeploy or team removal does not change the clock, so its chip stays.
+const SCORING_OPERATIONS = new Set(['deploy', 'start', 'freeze', 'resume', 'end', 'destroy'])
+
 // The board's cached engine observation (scoring_cache): what a card's scoring
 // chip says. Null when there is nothing to show — no poll, or the range is retired.
 export function scoringChip(range) {
   const scoring = range.scoring
   if (!scoring || range.state === 'retired') return null
+  // The cache lags a state change by up to its TTL, so during a deploy or a lifecycle
+  // operation it can still say "ready"/"scoring" while the card's hero says "Deploying" or
+  // "Starting competition". Two contradictory labels on one card is worse than one: the
+  // hero already names the operation, and the first poll after it lands tells the truth.
+  if ((range.active_runs || []).some((run) => SCORING_OPERATIONS.has(run.action))) return null
   if (scoring.state === 'running') return { tone: 'active', label: scoring.round > 0 ? `Scoring · round ${scoring.round}` : 'Scoring' }
   if (scoring.state === 'paused') return { tone: 'muted', label: 'Scoring paused' }
   if (scoring.state === 'ready') return { tone: 'ok', label: 'Ready to start' }

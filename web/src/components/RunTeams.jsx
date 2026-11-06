@@ -208,7 +208,8 @@ export default function RunTeams({ run, comp, inventory, disabled = false, onSub
   const rangeKey = range?.key || ''
   const compId = range?.comp_id || run?.comp_id || comp?.id
   const engineRef = range?.engine_ref ?? run?.engine_ref
-  const actionDisabled = disabled || range?.state === 'retired' || !rangeKey || !compId || !engineRef
+  const actionDisabled = disabled || range?.state === 'retired' || range?.settled === false
+    || !!range?.deploying || !!range?.tearing_down || !rangeKey || !compId || !engineRef
   const specs = new Map((comp?.boxes || []).map((box) => [box.name, box]))
   const teams = inventory?.teams || []
   const boxCount = teams.reduce((total, team) => total + (team.boxes || []).length, 0)
@@ -243,6 +244,9 @@ export default function RunTeams({ run, comp, inventory, disabled = false, onSub
         </label>}
         <p className="w-full text-xs text-faint">Workspace records, not live presence or power checks. Missing records do not prove that a machine is gone.</p>
         {range?.state === 'retired' && <p className="w-full text-xs text-muted">This range is retired. Historical records are shown; recovery actions are disabled.</p>}
+        {range?.deploying && <p className="w-full text-xs text-muted">This range is still deploying; recovery actions unlock when the deploy finishes.</p>}
+        {range?.tearing_down && <p className="w-full text-xs text-muted">This range is being torn down; recovery actions unlock when the teardown finishes.</p>}
+        {range?.settled === false && !range?.deploying && !range?.tearing_down && <p className="w-full text-xs text-muted">An operation is still running on this range; recovery actions unlock when it finishes.</p>}
         {inventory && range?.state !== 'retired' && (!rangeKey || !compId || !engineRef) && <p className="w-full text-xs text-danger">Recovery is unavailable until the range workspace, competition and originating engine ref are known.</p>}
       </Card>
       {!inventory ? <Card><EmptyState icon="boxes" title="No recorded inventory available">Competition definitions are not deployed inventory. Load this range's workspace inventory to inspect its teams and boxes.</EmptyState></Card>

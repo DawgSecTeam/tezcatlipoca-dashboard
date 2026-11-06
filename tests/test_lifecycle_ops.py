@@ -60,9 +60,14 @@ def _manager(tmp_path, monkeypatch):
     ws.mkdir(parents=True)
     (ws / "Compfile").write_text("name comp-a\n")
     (ws / "estate-state.json").write_text(json.dumps(
-        {"identity": {"comp_name": "comp-a", "run_id": "run-deploy"}}))
+        {"identity": {"comp_name": "comp-a", "run_id": "run-deploy"},
+         "resources": [{"kind": "engine", "node": "pve", "name": "scoring-engine",
+                        "vmid": 900, "bridge": None, "tags": ["tezcatlipoca"], "at": "t"}]}))
     store.create_run("run-deploy", "comp-a", "deploy", "main", {"teams": 1}, run_dir,
                      run_dir / "run.log")
+    # The workspace exists because its deploy finished; a deploy still in flight is the
+    # subject of its own test (and now correctly holds the lifecycle actions back).
+    store.update_run("run-deploy", state="succeeded", returncode=0)
     return mgr, store
 
 
@@ -79,7 +84,9 @@ def test_lifecycle_actions_resolve_a_document_workspace(tmp_path, monkeypatch):
     mgr, store = _manager(tmp_path, monkeypatch)
     ws = tmp_path / "data" / "runs" / "run-deploy" / "comp"
     (ws / "estate-state.json").write_text(json.dumps(
-        {"identity": {"comp_name": "comp-a", "run_id": "run-deploy"}, "resources": []}))
+        {"identity": {"comp_name": "comp-a", "run_id": "run-deploy"},
+         "resources": [{"kind": "engine", "node": "pve", "name": "scoring-engine",
+                        "vmid": 900, "bridge": None, "tags": ["tezcatlipoca"], "at": "t"}]}))
     run = mgr.submit("comp-a", "start", "estate-v0.3.0", {})
     assert run["params"]["_destroy_comp_dir"].endswith("run-deploy/comp")
     assert run["engine_ref"] == "estate-v0.3.0"
@@ -90,6 +97,128 @@ def test_a_deploy_mints_the_range_ops_token(tmp_path, monkeypatch):
     run = mgr.submit("comp-a", "deploy", "main", {"teams": 1})
     token = store.token_for_range(str(Path(run["run_dir"]) / "comp"))
     assert token and store.range_for_token(token)["comp_id"] == "comp-a"
+
+
+@pytest.mark.parametrize("action,params", [
+    ("start", {}), ("freeze", {}), ("resume", {}), ("end", {}),
+    ("verify", {}), ("redeploy", {}), ("delete_team", {"team": "team2"}),
+])
+def test_range_actions_are_refused_while_a_deploy_is_still_building(
+        tmp_path, monkeypatch, action, params):
+    """The engine answers /api/engine before create-competition finishes. Every action that
+    reads or rewrites the range — not just Start — must wait for the build, and destroy is
+    the one deliberate exception (it cancels the deploy)."""
+    mgr, store = _manager(tmp_path, monkeypatch)
+    store.update_run("run-deploy", state="running")
+    with pytest.raises(RunRefused, match="is still deploying"):
+        mgr.submit("comp-a", action, "main", params)
+
+
+def test_a_non_destroy_action_does_not_cancel_the_live_deploy(tmp_path, monkeypatch):
+    """Only destroy tears a range down under its deploy; every other action must leave it
+    alone. The unconditional cleanup made a start submitted during a deploy kill the deploy."""
+    mgr, _ = _manager(tmp_path, monkeypatch)
+    cancelled = []
+    monkeypatch.setattr(RunManager, "_cancel_live_runs_for_comp_dir",
+                        lambda self, comp_dir: cancelled.append(comp_dir))
+    mgr.submit("comp-a", "verify", "main", {})
+    assert cancelled == []
+
+
+def _add_range_run(store, tmp_path, run_id, action, params):
+    run_dir = tmp_path / "data" / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    store.create_run(run_id, "comp-a", action, "main", params, run_dir, None)
+    store.update_run(run_id, state="running")
+    return run_dir
+
+
+def test_a_destroy_cancels_the_resolved_deploy_workspace_even_without_comp_dir(tmp_path, monkeypatch):
+    """The API/MCP/run page may leave comp_dir out. The resolved target, not the optional
+    param, is what the owning deploy has to be matched against."""
+    mgr, store = _manager(tmp_path, monkeypatch)
+    store.update_run("run-deploy", state="running")
+    cancelled = []
+    monkeypatch.setattr(RunManager, "_cancel_live_runs_for_comp_dir",
+                        lambda self, comp_dir: cancelled.append(comp_dir))
+    mgr.submit("comp-a", "destroy", "main", {})
+    ws = (tmp_path / "data" / "runs" / "run-deploy" / "comp").resolve()
+    assert [Path(p).resolve() for p in cancelled] == [ws]
+
+
+def test_nothing_else_runs_on_a_range_that_is_being_torn_down(tmp_path, monkeypatch):
+    mgr, store = _manager(tmp_path, monkeypatch)
+    ws = str((tmp_path / "data" / "runs" / "run-deploy" / "comp").resolve())
+    _add_range_run(store, tmp_path, "run-down", "destroy", {"comp_dir": ws})
+    with pytest.raises(RunRefused, match="tearing this range down"):
+        mgr.submit("comp-a", "start", "main", {})
+    # A second destroy is a deliberate retry and stays allowed.
+    monkeypatch.setattr(RunManager, "_cancel_live_runs_for_comp_dir", lambda self, d: None)
+    assert mgr.submit("comp-a", "destroy", "main", {})["action"] == "destroy"
+
+
+def test_a_second_lifecycle_action_waits_for_the_first(tmp_path, monkeypatch):
+    mgr, store = _manager(tmp_path, monkeypatch)
+    ws = str((tmp_path / "data" / "runs" / "run-deploy" / "comp").resolve())
+    _add_range_run(store, tmp_path, "run-live", "start", {"comp_dir": ws})
+    with pytest.raises(RunRefused, match="already running the competition"):
+        mgr.submit("comp-a", "freeze", "main", {})
+
+
+@pytest.mark.parametrize("action", ["redeploy", "verify", "delete_team"])
+def test_start_waits_for_a_recovery_operation_on_the_range(tmp_path, monkeypatch, action):
+    """Starting the clock while boxes are reset (or a verify is reading them) scores a range
+    that is still moving; pause/resume/end stay available because stopping is always safe."""
+    mgr, store = _manager(tmp_path, monkeypatch)
+    ws = str((tmp_path / "data" / "runs" / "run-deploy" / "comp").resolve())
+    params = {"comp_dir": ws, **({"team": "team2"} if action == "delete_team" else {})}
+    _add_range_run(store, tmp_path, "run-op", action, params)
+    with pytest.raises(RunRefused, match="competition cannot start"):
+        mgr.submit("comp-a", "start", "main", {})
+    # Freezing/ending is a stop, not a start: it must not be held behind the recovery.
+    monkeypatch.setattr(RunManager, "_run", lambda self, *a, **k: None)
+    assert mgr.submit("comp-a", "end", "main", {})["action"] == "end"
+
+
+def test_a_deploy_cannot_be_pointed_at_an_existing_workspace(tmp_path, monkeypatch):
+    """comp_dir is for actions on a range; a deploy seeds a new workspace under its run dir."""
+    mgr, _ = _manager(tmp_path, monkeypatch)
+    ws = str((tmp_path / "data" / "runs" / "run-deploy" / "comp").resolve())
+    with pytest.raises(RunRefused, match="builds a new workspace"):
+        mgr.submit("comp-a", "deploy", "main", {"comp_dir": ws})
+
+
+def test_a_lifecycle_action_needs_a_deployed_workspace(tmp_path, monkeypatch):
+    """A Compfile-only stub is not a range: only destroy may clean it up."""
+    mgr, store = _manager(tmp_path, monkeypatch)
+    stub = tmp_path / "stub" / "comp"
+    stub.mkdir(parents=True)
+    (stub / "Compfile").write_text("name comp-a\n")
+    store.create_run("run-stub", "comp-a", "deploy", "main", {}, stub.parent, None)
+    with pytest.raises(RunRefused, match="no estate run id"):
+        mgr.submit("comp-a", "start", "main", {"comp_dir": str(stub)})
+
+
+def test_start_is_refused_while_a_scrim_drives_the_range(tmp_path, monkeypatch):
+    mgr, store = _manager(tmp_path, monkeypatch)
+    ws = str((tmp_path / "data" / "runs" / "run-deploy" / "comp").resolve())
+    _add_range_run(store, tmp_path, "run-scrim", "scrim", {"comp_dir": ws})
+    with pytest.raises(RunRefused, match="scrim harness"):
+        mgr.submit("comp-a", "start", "main", {})
+
+
+def test_lifecycle_on_a_failed_range_is_refused(tmp_path, monkeypatch):
+    mgr, store = _manager(tmp_path, monkeypatch)
+    broken = tmp_path / "data" / "runs" / "run-broken"
+    ws = broken / "comp"
+    ws.mkdir(parents=True)
+    (ws / "Compfile").write_text("name comp-a\n")
+    (ws / "estate-state.json").write_text(json.dumps(
+        {"identity": {"comp_name": "comp-a", "run_id": "run-broken"}, "resources": []}))
+    store.create_run("run-broken", "comp-a", "deploy", "main", {}, broken, None)
+    store.update_run("run-broken", state="failed", returncode=1)
+    with pytest.raises(RunRefused, match="is failed"):
+        mgr.submit("comp-a", "start", "main", {"comp_dir": str(ws)})
 
 
 # ---- the ops ingest contract ----
@@ -148,6 +277,83 @@ def test_approve_submits_the_reset_against_the_range_and_links_the_run(api):
     assert r.json()["status"] == "approved" and r.json()["approved_run"] == "run-reset"
     resolved = http.post(f"/api/requests/{req['id']}/approve")
     assert resolved.status_code == 409
+
+
+def test_a_request_is_claimed_once_and_cannot_be_denied_after_approval(api):
+    """Two tabs approving one request used to submit two redeploys; the claim is atomic."""
+    http, tmp_path = api
+    store = Store(tmp_path / "data" / "dashboard.sqlite3")
+    token = store.mint_range_token("/data/runs/run-deploy/comp", "comp-a")
+    _push(http, token, [{"id": 1, "team": "team1", "box": "web01", "status": "pending"}])
+    req = [r for r in store.list_requests() if r["portal_id"] == "1"][0]
+    assert store.claim_request(req["id"]) is True
+    assert store.claim_request(req["id"]) is False
+    assert http.post(f"/api/requests/{req['id']}/deny").status_code == 409
+
+
+def test_a_denied_request_cannot_be_approved_later(api):
+    http, tmp_path = api
+    store = Store(tmp_path / "data" / "dashboard.sqlite3")
+    token = store.mint_range_token("/data/runs/run-deploy/comp", "comp-a")
+    _push(http, token, [{"id": 1, "team": "team1", "box": "web01", "status": "pending"}])
+    req = [r for r in store.list_requests() if r["portal_id"] == "1"][0]
+    assert http.post(f"/api/requests/{req['id']}/deny").status_code == 200
+    assert http.post(f"/api/requests/{req['id']}/approve").status_code == 409
+
+
+def test_an_unexpected_approval_error_does_not_strand_the_request(api, monkeypatch):
+    http, tmp_path = api
+    store = Store(tmp_path / "data" / "dashboard.sqlite3")
+    token = store.mint_range_token("/data/runs/run-deploy/comp", "comp-a")
+    _push(http, token, [{"id": 1, "team": "team1", "box": "web01", "status": "pending"}])
+    req = [r for r in store.list_requests() if r["portal_id"] == "1"][0]
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(RunManager, "submit", boom)
+    with pytest.raises(RuntimeError, match="boom"):
+        http.post(f"/api/requests/{req['id']}/approve")
+    # The claim is rolled back, so the operator can retry instead of seeing a permanent 409.
+    assert store.get_request(req["id"])["status"] == "pending"
+
+
+def test_retirement_revokes_the_portal_token_and_closes_requests(tmp_path):
+    store = Store(tmp_path / "db.sqlite3")
+    token = store.mint_range_token("/data/ws", "comp-a")
+    store.upsert_requests("/data/ws", "comp-a", [{"id": 1, "team": "team1", "box": "web01"}])
+    store.retire_range("/data/ws", "comp-a", "test retire")
+    assert store.range_for_token(token) is None
+    assert store.list_requests()[0]["status"] == "failed"
+
+
+def test_reconcile_requests_resolves_orphaned_approvals(tmp_path, monkeypatch):
+    """A restart (or a crash before linking) left approved requests with no writer."""
+    mgr, store = _manager(tmp_path, monkeypatch)
+    ws = str(tmp_path / "data" / "runs" / "run-deploy" / "comp")
+    store.upsert_requests(ws, "comp-a", [
+        {"id": 1, "team": "team1", "box": "web01"},
+        {"id": 2, "team": "team1", "box": "web02"},
+    ])
+    first, second = store.list_requests()
+    store.claim_request(first["id"])
+    store.set_request_status(first["id"], "approved", approved_run="run-deploy")
+    store.claim_request(second["id"])          # approved, never linked to a run
+    assert sorted(mgr.reconcile_requests()) == sorted([first["id"], second["id"]])
+    assert store.get_request(first["id"])["status"] == "done"
+    assert store.get_request(second["id"])["status"] == "failed"
+
+
+def test_reconcile_requests_leaves_a_running_reset_alone(tmp_path, monkeypatch):
+    mgr, store = _manager(tmp_path, monkeypatch)
+    ws = str(tmp_path / "data" / "runs" / "run-deploy" / "comp")
+    store.upsert_requests(ws, "comp-a", [{"id": 1, "team": "team1", "box": "web01"}])
+    req = store.list_requests()[0]
+    store.claim_request(req["id"])
+    store.set_request_status(req["id"], "approved", approved_run="run-deploy")
+    store.update_run("run-deploy", state="running", returncode=None)
+    assert mgr.reconcile_requests() == []
+    assert store.get_request(req["id"])["status"] == "approved"
 
 
 def test_approval_preserves_requested_team_workspace_and_origin_ref(api, monkeypatch):
@@ -242,6 +448,19 @@ def test_finish_resolves_the_approved_request_once(tmp_path, monkeypatch):
     assert store.get_request(rid)["status"] == "done"
 
 
+def test_a_successful_destroy_revokes_the_portal_token_and_closes_its_requests(tmp_path, monkeypatch):
+    mgr, store = _manager(tmp_path, monkeypatch)
+    ws = str((tmp_path / "data" / "runs" / "run-deploy" / "comp").resolve())
+    token = store.mint_range_token(ws, "comp-a")
+    store.upsert_requests(ws, "comp-a", [{"id": 1, "team": "team1", "box": "web01"}])
+    run_dir = tmp_path / "data" / "runs" / "run-down"
+    store.create_run("run-down", "comp-a", "destroy", "main",
+                     {"_destroy_comp_dir": ws}, run_dir, None)
+    mgr._finish("run-down", 0)
+    assert store.token_for_range(ws) is None
+    assert store.list_requests()[0]["status"] == "failed"
+
+
 # ---- lifecycle state mapping ----
 
 def _ws(tmp_path, state):
@@ -280,6 +499,25 @@ def test_engine_status_polls_with_the_login_cookie(tmp_path, monkeypatch):
     assert seen["cookie"] == "session"
 
 
+def test_a_200_that_is_not_the_engine_payload_is_not_an_observation(tmp_path, monkeypatch):
+    """A proxy page or an older schema must not read as "ready" (or 500 the panel)."""
+    payload = ["not", "an", "engine"]
+
+    class Response:
+        def raise_for_status(self): pass
+        def json(self): return payload
+
+    class Session:
+        def post(self, *a, **k): return Response()
+        def get(self, *a, **k): return Response()
+
+    monkeypatch.setattr(competition.requests, "Session", Session)
+    ws = _ws(tmp_path, {"scoring_password": "s"})["key"]
+    assert competition.engine_status(ws, {"scoring_password": "s"}) is None
+    payload = {"status": "ok"}
+    assert competition.engine_status(ws, {"scoring_password": "s"}) is None
+
+
 def test_lifecycle_states_from_the_engine_api(tmp_path, monkeypatch):
     def fake_engine(ws, state):
         return state.get("_engine")
@@ -309,6 +547,8 @@ def test_an_unreachable_engine_reads_the_state_markers(tmp_path, monkeypatch):
     rng = _ws(tmp_path, {"ended": True})
     view = competition.status_for_range(None, rng)
     assert view["state"] == "ended" and not view["reachable"]
+    # The address is recorded, but a dead engine must not produce clickable admin links.
+    assert view["links"] == {}
 
 
 def test_a_range_with_no_recorded_vm_is_not_polled_and_links_nothing(tmp_path, monkeypatch):
@@ -320,6 +560,29 @@ def test_a_range_with_no_recorded_vm_is_not_polled_and_links_nothing(tmp_path, m
     view = competition.status_for_range(None, rng)
     assert view["state"] == "unknown" and not view["reachable"] and view["links"] == {}
     assert view["creds"]["admin"] == {"user": "admin", "password": "a"}
+
+
+def test_a_deploy_in_flight_holds_the_panel_at_deploying(tmp_path, monkeypatch):
+    """The engine answers before the range is finished: start must wait for the deploy."""
+    monkeypatch.setattr(competition, "engine_status",
+                        lambda ws, state: pytest.fail("polled an engine mid-deploy"))
+    rng = _ws(tmp_path, {"scoring_password": "s", "admin_password": "a"})
+    rng["state"] = "building"
+    rng["runs"] = [{"id": "run-d", "action": "deploy", "state": "running"}]
+    view = competition.status_for_range(None, rng)
+    assert view["deploying"] is True and view["state"] == "deploying" and not view["reachable"]
+    # Credentials stay recorded: a client can use them once the deploy ends.
+    assert view["creds"]["admin"] == {"user": "admin", "password": "a"}
+
+
+def test_a_verify_does_not_hide_a_live_competition(tmp_path, monkeypatch):
+    """Only a deploy means "not ready"; verify/redeploy run against an existing engine."""
+    monkeypatch.setattr(competition, "engine_status",
+                        lambda ws, state: {"competition_started": False})
+    rng = _ws(tmp_path, {"scoring_password": "s"})
+    rng["runs"] = [{"id": "run-v", "action": "verify", "state": "running"}]
+    view = competition.status_for_range(None, rng)
+    assert view["deploying"] is False and view["state"] == "ready" and view["reachable"]
 
 
 def test_the_engine_ip_comes_from_the_documents_identity(tmp_path):

@@ -42,6 +42,16 @@ SINGLE_STEP_STAGES = {"verify": "verify", "destroy": "teardown", "redeploy": "re
 # seeding their own.
 RANGE_ACTIONS = ("verify", "destroy", "redeploy", "start", "freeze", "resume", "end",
                  "delete_team")
+# Actions that drive the competition itself. They have nothing to drive while a deploy on the
+# same workspace is still building it (the engine can already answer /api/engine before the
+# later phases seed teams and bring the portal up), and submitting one used to cancel the
+# deploy through the live-run cleanup that only destroy should do.
+LIFECYCLE_ACTIONS = ("start", "freeze", "resume", "end")
+# Range actions that need a settled engine. Refused while a deploy is in flight: verify reads
+# a half-built document, redeploy resets VMs the deploy is still creating, delete_team removes
+# a team the deploy has not seeded yet. Destroy is exempt deliberately — it cancels the deploy
+# that owns the workspace.
+SETTLED_RANGE_ACTIONS = LIFECYCLE_ACTIONS + ("verify", "redeploy", "delete_team")
 
 # Third-party packages the engine drivers import in-process. The service's own interpreter IS
 # the drivers' interpreter, so a venv that predates a dependency fails deep inside a deploy
@@ -172,6 +182,9 @@ class RunManager:
         self.comps_repo = self.data / "competitions"
         self._procs = {}  # run_id -> Popen
         self._lock = threading.Lock()
+        # Serializes the lifecycle check with its run insert: two simultaneous Starts both
+        # read "no lifecycle operation" and both created a row.
+        self._submit_lock = threading.Lock()
 
     # ---- startup reconciliation ----
 
@@ -197,6 +210,31 @@ class RunManager:
             log.warning("closed orphaned run %s (%s/%s): %s", run_id, run["comp_id"],
                         run["action"], error)
         return [run["id"] for run in orphans]
+
+    def reconcile_requests(self):
+        """Resolve reset requests left `approved` by a crash, a restart or a fast run.
+
+        A request is approved before its redeploy is submitted and linked, and the run's
+        _finish is what normally resolves it. A crash in that window, or an orphaned run
+        closed by reconcile_orphans, left `approved` with no writer: the team could not ask
+        again and the dashboard offered no action. Resolve against the linked run's terminal
+        state; an approved request with no run at all never got submitted.
+        """
+        resolved = []
+        for req in self.store.list_requests():
+            if req["status"] != "approved":
+                continue
+            run = self.store.get_run(req["approved_run"]) if req.get("approved_run") else None
+            if run is None:
+                outcome = "failed"
+            elif run["state"] in ("succeeded", "failed", "cancelled"):
+                outcome = "done" if run["state"] == "succeeded" else "failed"
+            else:
+                continue                     # still running: _finish will resolve it
+            if self.store.resolve_request_if_approved(req["id"], outcome):
+                resolved.append(req["id"])
+                log.warning("resolved orphaned reset request %s as %s", req["id"], outcome)
+        return resolved
 
     # ---- repo checkouts ----
 
@@ -255,6 +293,13 @@ class RunManager:
         comp_src = self.comps_repo / comp_id
         if not (comp_src / "Compfile").exists():
             raise RunRefused(f"no such competition: {comp_id}")
+        # A deploy/plan seeds a NEW workspace under its own run dir; letting comp_dir point
+        # it at an existing range made the deploy write into that range (and mint its portal
+        # token for the wrong path). comp_dir belongs to actions on an existing range.
+        if action in ("deploy", "plan") and params.get("comp_dir"):
+            raise RunRefused(
+                f"{action} builds a new workspace — comp_dir is only for actions on an "
+                f"existing range")
         selected = [str(x) for x in (params.get("nodes") or [])]
         if selected:
             try:
@@ -294,12 +339,73 @@ class RunManager:
             params["_destroy_comp_dir"] = str(target)
             if params.get("comp_dir"):
                 params["comp_dir"] = str(target)
+            # The UI hides lifecycle controls on a failed/incomplete range (`torn`), but the
+            # API and MCP reach the same workspace. The engine may answer from a leftover VM;
+            # the range has no infrastructure the lifecycle can drive.
+            if action in LIFECYCLE_ACTIONS:
+                rng = next((r for r in ranges.build_ranges(self.store)
+                            if r["key"] == str(target)), None)
+                if rng and rng["state"] in ("failed", "teardown_failed"):
+                    raise RunRefused(
+                        f"range {rng['deploy_run_id']} is {rng['state']} — retry its teardown "
+                        f"before driving the competition")
+            if action in SETTLED_RANGE_ACTIONS:
+                live_deploy = self._live_deploy_for(target)
+                if live_deploy is not None:
+                    raise RunRefused(
+                        f"{live_deploy['id']} is still deploying this range — the engine is "
+                        f"not ready to {action} it until that deploy finishes")
+            # Starting the clock in the middle of a box reset or a verify would score a range
+            # that is still moving under it. Pause/resume/end remain available: stopping is
+            # always safe, and an operator may need it while a recovery run is in flight.
+            if action == "start":
+                live_range_op = self._live_run_for(target, ("redeploy", "verify", "delete_team"))
+                if live_range_op is not None:
+                    raise RunRefused(
+                        f"{live_range_op['id']} is still running a "
+                        f"{live_range_op['action']} on this range — the competition cannot "
+                        f"start until it finishes")
+                # A scrim starts the competition itself; during its deploy phase the engine
+                # can already answer "ready", and a manual start would race the harness.
+                live_scrim = self._live_run_for(target, ("scrim",))
+                if live_scrim is not None:
+                    raise RunRefused(
+                        f"{live_scrim['id']} is running a scrim on this range — the scrim "
+                        f"harness starts the competition itself")
+            # A teardown is removing the very VMs these actions need. Let it finish; only a
+            # second destroy (a deliberate retry) may overlap it.
+            if action != "destroy":
+                live_destroy = self._live_run_for(target, ("destroy",))
+                if live_destroy is not None:
+                    raise RunRefused(
+                        f"{live_destroy['id']} is tearing this range down — "
+                        f"nothing else can run against it until that finishes")
+            # Two lifecycle operations on one workspace race each other (the second start
+            # used to queue behind the first and drive a competition that was already
+            # started). One at a time is enough: the engine is not polling us for feeds.
+            # The check is repeated under the submit lock just before the row is created.
             # A destroy tears the range down under the deploy that owns it; the deploy then
             # hangs on a dead box and keeps the engine lock (live: run-084bf18b was refused
             # while the destroyed run's create-competition still held the lock, pid orphaned).
-            self._cancel_live_runs_for_comp_dir(params.get("comp_dir"))
-        record = self.store.create_run(run_id, comp_id, action, engine_ref, params,
-                                       run_dir, run_dir / "run.log")
+            # Every other action must leave that deploy alone: cancelling it was how a
+            # "start" submitted during a deploy killed the deploy. Cancel the RESOLVED
+            # workspace, not params["comp_dir"]: a destroy submitted without an explicit
+            # comp_dir (the API, MCP, the run page) used to pass None and cancel nothing.
+            if action == "destroy":
+                self._cancel_live_runs_for_comp_dir(target)
+        if action in LIFECYCLE_ACTIONS:
+            with self._submit_lock:
+                live_lifecycle = self._live_run_for(params.get("_destroy_comp_dir"),
+                                                    LIFECYCLE_ACTIONS)
+                if live_lifecycle is not None:
+                    raise RunRefused(
+                        f"{live_lifecycle['id']} is already running the competition "
+                        f"{live_lifecycle['action']} — wait for it to finish")
+                record = self.store.create_run(run_id, comp_id, action, engine_ref, params,
+                                               run_dir, run_dir / "run.log")
+        else:
+            record = self.store.create_run(run_id, comp_id, action, engine_ref, params,
+                                           run_dir, run_dir / "run.log")
         if action == "deploy":
             # A deployed portal needs a channel back to THIS dashboard (the reset-request
             # sync): a per-range token minted once per range, keyed on the workspace the
@@ -349,6 +455,13 @@ class RunManager:
             # cross-comp follow-up must not grant access to the original range.
             if rng is None or any(run["comp_id"] != comp_id for run in rng["runs"]):
                 raise RunRefused(f"workspace {ws} does not belong to competition {comp_id}")
+            # The same ownership proof the auto branch requires: a seeded stub with a
+            # Compfile but no estate run id is not a deployed range, and an explicit path
+            # used to be enough to drive competition-ops against it. Destroy is exempt: it
+            # is the operation that cleans such a stub up.
+            if action != "destroy" and not estate.load_flat(ws).get("run_id"):
+                raise RunRefused(
+                    f"workspace {ws} carries no estate run id — it is not a deployed range")
             if rng["state"] == "retired":
                 if action == "destroy" and ranges.reclaimable_templates(rng["key"],
                                                                         rng["state"]):
@@ -395,42 +508,69 @@ class RunManager:
                 f"nothing to {action} (a fresh deploy builds a new range)")
         return None
 
+    def _live_deploy_for(self, comp_dir):
+        """The deploy still building this workspace, or None."""
+        return self._live_run_for(comp_dir, ("deploy",))
+
+    def _live_run_for(self, comp_dir, actions):
+        """The newest in-flight run of `actions` on this workspace, or None.
+
+        Read from the run records, not the process table: a deploy that has not been picked up
+        by a worker yet is queued, and an operator reaching for another action in that window
+        has the same race as one reaching for it during the build.
+        """
+        if not comp_dir:
+            return None
+        wanted = str(Path(comp_dir).resolve())
+        for run in self.store.list_runs():          # newest first
+            if run.get("action") in actions and run.get("state") in ranges.IN_FLIGHT \
+                    and ranges.range_key(run) == wanted:
+                return run
+        return None
+
     def _cancel_live_runs_for_comp_dir(self, comp_dir):
-        """Stop the live run that owns this workspace before its range is destroyed."""
+        """Stop every live run on this workspace before its range is destroyed.
+
+        Reads the run records, not only the process table: a deploy that is still queued or
+        provisioning has no Popen yet, and cancelling only spawned processes let it continue
+        into the teardown the destroy started (and then hold the engine lock it was meant to
+        release). `cancel` records a request for that window; `_run` honours it.
+        """
         if not comp_dir:
             return
-        wanted = Path(comp_dir).resolve()
-        with self._lock:
-            live = dict(self._procs)
-        for run_id, proc in live.items():
-            if proc.poll() is not None:
+        wanted = str(Path(comp_dir).resolve())
+        for run in self.store.list_runs():          # newest first
+            if run["state"] not in ranges.IN_FLIGHT or ranges.range_key(run) != wanted:
                 continue
-            run = self.store.get_run(run_id)
-            if run is None or run["state"] not in ranges.IN_FLIGHT:
-                continue
-            params = run.get("params") or {}
-            other = params.get("comp_dir") or params.get("_destroy_comp_dir")
-            if not other and run.get("run_dir"):
-                other = str(Path(run["run_dir"]) / "comp")
-            if other and Path(other).resolve() == wanted:
-                try:
-                    self.cancel(run_id)
-                    log.info("destroy of %s: cancelled the live run on that workspace", comp_dir)
-                except RunRefused:
-                    pass
+            try:
+                self.cancel(run["id"])
+                log.info("destroy of %s: cancelled %s on that workspace", comp_dir, run["id"])
+            except RunRefused:
+                pass
 
     def cancel(self, run_id):
+        run = self.store.get_run(run_id)
+        if run is None:
+            raise RunRefused(f"no such run: {run_id}")
         with self._lock:
             proc = self._procs.get(run_id)
-        if proc is None or proc.poll() is not None:
-            raise RunRefused(f"run {run_id} is not running")
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        self._emit(run_id, "lifecycle", data={"state": "cancelling"})
-        log.info("cancel requested for %s (pid %s)", run_id, proc.pid)
-        return self.store.get_run(run_id)
+        if proc is not None and proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            self._emit(run_id, "lifecycle", data={"state": "cancelling"})
+            log.info("cancel requested for %s (pid %s)", run_id, proc.pid)
+            return self.store.get_run(run_id)
+        # The worker may still be provisioning (git fetch, worktree) before it spawns the
+        # driver: the record already says queued/running but there is no process to signal.
+        # Record the request; _run refuses to spawn, or kills the driver the moment it does.
+        if run["state"] in ranges.IN_FLIGHT:
+            if not self._cancel_requested(run_id):
+                self._emit(run_id, "lifecycle", data={"state": "cancelling"})
+            log.info("cancel requested for %s before its driver started", run_id)
+            return self.store.get_run(run_id)
+        raise RunRefused(f"run {run_id} is not running")
 
     def pause(self, run_id):
         """Ask this run's driver to hold at its next phase boundary (deploy_lib/pause.py).
@@ -454,7 +594,13 @@ class RunManager:
         request = run_dir / "pause"
         if not request.exists():        # a second click is the same request, not a second event
             request.touch()
-            self.store.update_run(run_id, state="pausing")
+            # Conditional: a deploy can finish between the read above and this write. Writing
+            # `pausing` over `succeeded` left a state with no worker in it, so the range
+            # boarded as building forever and every lifecycle action was refused.
+            if not self.store.update_run_if_state(run_id, ("queued", "running", "pausing"),
+                                                  state="pausing"):
+                request.unlink(missing_ok=True)
+                raise RunRefused(f"run {run_id} finished before the pause request landed")
             self._emit(run_id, "lifecycle", stage="pause requested",
                        data={"state": "pausing"})
             log.info("pause requested for %s", run_id)
@@ -471,7 +617,10 @@ class RunManager:
         (Path(run["run_dir"]) / "pause").unlink(missing_ok=True)
         if run["state"] == "pausing":
             # The driver never reached a boundary, so no tracker will announce this one.
-            self.store.update_run(run_id, state="running")
+            # Conditional for the same reason as pause: a run that finished in this window
+            # must not be resurrected into `running` (it would stay building forever).
+            if not self.store.update_run_if_state(run_id, ("pausing",), state="running"):
+                raise RunRefused(f"run {run_id} finished before it could be resumed")
             self._emit(run_id, "lifecycle", data={"state": "running", "resumed": True})
         else:
             # A parked driver clears its marker within the second; the stage tracker sees that
@@ -602,6 +751,11 @@ class RunManager:
         proc = None
         log_fh = None
         try:
+            # A cancel can land while the worker is still provisioning (before Popen): do not
+            # spend a worktree on a run the operator already asked to stop.
+            if self._cancel_requested(run_id):
+                self._finish(run_id, None, cancelling=True)
+                return
             ws = self._workspace(record, comp_src)
             worktree = run_dir / "engine"
             engine_used = self._provision_worktree(worktree, engine_ref, run_dir)
@@ -645,6 +799,13 @@ class RunManager:
             with self._lock:
                 self._procs[run_id] = proc
             self.store.update_run(run_id, pid=proc.pid)
+            # The cancel may have landed between the pre-flight check and Popen; signal the
+            # process now instead of letting a full deploy run under a teardown.
+            if self._cancel_requested(run_id):
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
             self._track_stages(run_id, ws, proc, record["action"])
             rc = proc.wait()
             self._finish(run_id, rc, cancelling=rc < 0)
@@ -712,18 +873,23 @@ class RunManager:
             log.warning("run %s %s/%s %s", run_id, run.get("comp_id"), run.get("action"), detail)
         else:
             log.info("run %s %s/%s %s", run_id, run.get("comp_id"), run.get("action"), detail)
+        # A clean teardown retires the range: close its portal channel (a destroyed range's
+        # portal kept pushing reset requests) and resolve the requests it can never action.
+        if state == "succeeded" and run.get("action") == "destroy":
+            key = ranges.range_key(run)
+            self.store.revoke_range_token(key)
+            self.store.close_requests_for_range(key)
         # An approved reset request rides the redeploy run that resolves it: a clean exit
         # is `done`, anything else is `failed` (the team's chip frees the box either way —
-        # done/denied/failed all allow a new request). Only `approved` resolves, so the
-        # resolution is one-shot even if the same run id were finished twice.
+        # done/denied/failed all allow a new request). The update is conditional so the
+        # approval route (which links approved_run after submit returns) can never overwrite
+        # a resolution that already happened.
         for req in self.store.requests_for_run(run_id):
-            if req["status"] != "approved":
-                continue
             outcome = "done" if state == "succeeded" else "failed"
-            self.store.set_request_status(req["id"], outcome)
-            self._emit(run_id, "request", data={"request": req["id"],
-                                                "status": outcome, "team": req["team"],
-                                                "box": req["box"]})
+            if self.store.resolve_request_if_approved(req["id"], outcome):
+                self._emit(run_id, "request", data={"request": req["id"],
+                                                    "status": outcome, "team": req["team"],
+                                                    "box": req["box"]})
 
     def _cancel_requested(self, run_id):
         _, events = self.store.get_events(run_id, 0)

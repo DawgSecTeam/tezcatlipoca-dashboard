@@ -22,6 +22,13 @@ function InfoEditor({ comp, onSaved, onCancel }) {
   const set = (k, v) => setItems(items.some(([key]) => key === k) ? items.map(([key, val]) => [key, key === k ? v : val]) : [...items, [k, v]])
   const extra = items.filter(([k]) => !KNOWN.some(([kk]) => kk === k))
   const save = async () => {
+    // A blank name used to be silently dropped from the Compfile, so the competition fell back to
+    // its directory id with no error and no toast (2026-11-06 audit). Validate here, and say so.
+    if (!get('name').trim()) {
+      setErr(new Error('Name is required — a competition without one falls back to its folder id.'))
+      return
+    }
+    setErr(null)
     try { await api.putCompfile(comp.id, items.filter(([, v]) => v !== '')); toast('Competition info saved'); onSaved() } catch (e) { setErr(e) }
   }
   useSaveHotkey(save, true)

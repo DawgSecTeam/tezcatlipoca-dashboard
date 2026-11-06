@@ -57,11 +57,91 @@ it('renders the engine round record as its round number', () => {
   expect(screen.getByText(/round 3/)).toBeTruthy()
 })
 
+it('does not offer dead engine links while the engine is not answering', () => {
+  useCompetitionData.mockReturnValue({
+    view: {
+      state: 'unknown', reachable: false, links: { scoreboard: 'http://dead', portal: 'http://portal' },
+      creds: { admin: { user: 'admin', password: 'ADMIN-SECRET' } },
+    }, error: null,
+  })
+  open()
+  expect(screen.queryByRole('link', { name: 'Scoreboard ↗' })).toBeNull()
+  expect(screen.getByRole('link', { name: 'Team portal ↗' })).toBeTruthy()
+  expect(screen.getByText(/its admin links open once it does/)).toBeTruthy()
+})
+
+it('does not offer recorded passwords for a range with no infrastructure', () => {
+  useRangeData.mockReturnValue({
+    data: { ...fixture, has_recorded_vms: false },
+    error: null, refresh: vi.fn(),
+  })
+  useCompetitionData.mockReturnValue({
+    view: { state: 'unknown', reachable: false, links: {}, creds: { admin: { user: 'admin', password: 'ADMIN-SECRET' } } },
+    error: null,
+  })
+  open()
+  expect(screen.getByText('No engine recorded')).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'Copy admin password' })).toBeNull()
+})
+
 it('surfaces an in-flight operation with its controls on the overview', () => {
   useRangeData.mockReturnValue({ data: { ...fixture, state: 'building', runs: [{ id: 'deploy-one', action: 'deploy', state: 'paused', stage: 'phase 4/8' }] }, error: null, refresh: vi.fn() })
   open()
   expect(screen.getByRole('heading', { name: 'deploy in progress' })).toBeTruthy()
   expect(screen.getAllByRole('link', { name: 'View output' }).some((link) => link.getAttribute('href').endsWith('operation=deploy-one'))).toBe(true)
+})
+
+it('does not offer competition controls until the deploy that builds the engine finishes', () => {
+  // The engine can answer /api/engine mid-build, so a "ready" view arrives while the deploy
+  // is still running. Nothing in the competition bar is usable then — least of all Start.
+  useRangeData.mockReturnValue({ data: { ...fixture, state: 'building', runs: [{ id: 'deploy-one', action: 'deploy', state: 'running', stage: 'phase 5/8' }] }, error: null, refresh: vi.fn() })
+  useCompetitionData.mockReturnValue({
+    view: { state: 'ready', deploying: true, links: { scoreboard: 'http://192.0.2.10' }, creds: { admin: { user: 'admin', password: 'ADMIN-SECRET' } } },
+    error: null,
+  })
+  open()
+  expect(screen.queryByRole('button', { name: 'Start the competition' })).toBeNull()
+  expect(screen.queryByRole('region', { name: 'Tools and credentials' })).toBeNull()
+  expect(screen.queryByText('ADMIN-SECRET')).toBeNull()
+  expect(screen.queryByRole('link', { name: 'Scoreboard ↗' })).toBeNull()
+})
+
+it('withholds range actions while the range is being torn down', () => {
+  useRangeData.mockReturnValue({
+    data: { ...fixture, state: 'building', runs: [{ id: 'down-one', action: 'destroy', state: 'running' }] },
+    error: null, refresh: vi.fn(),
+  })
+  useCompetitionData.mockReturnValue({ view: { state: 'ready', links: {}, creds: {} }, error: null })
+  open()
+  expect(screen.queryByRole('button', { name: 'Start the competition' })).toBeNull()
+  expect(screen.getByRole('button', { name: 'Verify range' }).disabled).toBe(true)
+  expect(screen.getByRole('button', { name: 'Reset a box' }).disabled).toBe(true)
+})
+
+it('does not offer competition controls while a verify or box reset is in flight', () => {
+  for (const action of ['verify', 'redeploy']) {
+    useRangeData.mockReturnValue({
+      data: { ...fixture, state: 'building', runs: [{ id: 'op-one', action, state: 'running' }] },
+      error: null, refresh: vi.fn(),
+    })
+    useCompetitionData.mockReturnValue({ view: { state: 'ready', links: {}, creds: {} }, error: null })
+    const view = open()
+    expect(screen.queryByRole('button', { name: 'Start the competition' })).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Tools and credentials' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Verify range' }).disabled).toBe(true)
+    view.unmount()
+  }
+})
+
+it('withholds the competition bar while a lifecycle action is still running', () => {
+  useRangeData.mockReturnValue({
+    data: { ...fixture, state: 'building', runs: [{ id: 'start-one', action: 'start', state: 'running' }] },
+    error: null, refresh: vi.fn(),
+  })
+  useCompetitionData.mockReturnValue({ view: { state: 'ready', links: { scoreboard: 'http://192.0.2.10' }, creds: {} }, error: null })
+  open()
+  expect(screen.queryByRole('button', { name: 'Start the competition' })).toBeNull()
+  expect(screen.queryByRole('region', { name: 'Tools and credentials' })).toBeNull()
 })
 
 it('keeps controls tied to range origin even when an old operation is selected', async () => {

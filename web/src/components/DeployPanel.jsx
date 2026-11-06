@@ -30,14 +30,16 @@ function Footprint({ comp, teams }) {
 
 export default function DeployPanel({ comp }) {
   const [nodes, setNodes] = useState(null)
-  const [form, setForm] = useState({ engine_ref: '', teams: 2, scoring_vmid: '', engine_node: '', team_node: '', nodes: [], start_after_deploy: false })
+  const [form, setForm] = useState({ engine_ref: '', teams: 2, scoring_vmid: '', engine_node: '', team_node: '', nodes: [], start_after_deploy: false, team_identifiers: '', engine_mgmt_ip: '' })
   const [runs, setRuns] = useState([])
   const [viewing, setViewing] = useState(null)
   const [confirm, setConfirm] = useState(false)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState([])
   const [err, setErr] = useState(null)
+  const [submitting, setSubmitting] = useState(false)
   const toast = useToast()
+  const busy = useRef(false)
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value })
   const viewingLog = useRunLog(viewing?.id)
   const prevRunning = useRef(null)
@@ -51,6 +53,10 @@ export default function DeployPanel({ comp }) {
       setForm((f) => ({ ...f, nodes: (c.nodes || []).map((n) => n.name) }))
     }).catch(() => {})
     refreshRuns()
+    // Another operator's deploy can start while this panel is open: without a poll the
+    // collision warning below stayed silent even though the engine lock was already held.
+    const timer = setInterval(refreshRuns, 15000)
+    return () => clearInterval(timer)
   }, [comp.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggleNode = (name) => setForm((f) => ({
@@ -81,7 +87,10 @@ export default function DeployPanel({ comp }) {
 
   const noBoxes = comp.boxes.length === 0
   const submit = async (action) => {
-    setErr(null)
+    // The confirm dialog closes before the request lands; a second click used to submit a
+    // second deploy/plan for the same form.
+    if (busy.current) return
+    busy.current = true; setSubmitting(true); setErr(null)
     try {
       const run = await api.submitRun({
         comp_id: comp.id,
@@ -92,12 +101,17 @@ export default function DeployPanel({ comp }) {
         engine_node: form.engine_node,
         team_node: form.team_node,
         nodes: form.nodes,
+        // The per-run estate gates: both are submit params the preflight reads, and without them
+        // a second range on a shared node cannot be submitted at all (2026-11-06 audit).
+        team_identifiers: form.team_identifiers.trim() || null,
+        engine_mgmt_ip: form.engine_mgmt_ip.trim() || null,
         // deploy and start are separate steps; the checkbox buys the one-shot back
         ...(form.start_after_deploy ? { params: { start_after_deploy: true } } : {}),
       })
       setViewing(run)
       refreshRuns()
     } catch (e) { setErr(e) }
+    finally { busy.current = false; setSubmitting(false) }
   }
 
   return (
@@ -111,10 +125,14 @@ export default function DeployPanel({ comp }) {
         {/* The engine preflight is the real collision authority, but a second deploy while
             one is running deserves a visible heads-up before the operator burns a build. */}
         {(() => {
-          const busy = runs.find((r) => r.state === 'running' || r.state === 'queued')
+          // A held deploy is still in flight and still owns the workspace/engine lock; only
+          // counting running/queued made the collision warning vanish exactly when the
+          // operator parked a build.
+          const busy = runs.find((r) => ['running', 'queued', 'pausing', 'paused'].includes(r.state))
+          const held = busy && (busy.state === 'pausing' || busy.state === 'paused')
           return busy ? (
             <div className="rounded-2xl bg-accent-soft px-4 py-2.5 text-xs text-accent">
-              <span className="font-semibold">{ACTION_LABEL[busy.action] || busy.action}</span> is running now
+              <span className="font-semibold">{ACTION_LABEL[busy.action] || busy.action}</span> is {held ? 'held' : 'running now'}
               ({busy.id}, {agoMs(busy.started_at || busy.created_at)}) —
               a second concurrent run may collide on the engine.{' '}
               <Link to={`/c/${comp.id}/runs/${busy.id}`} className="underline">Open it</Link>.
@@ -162,13 +180,30 @@ export default function DeployPanel({ comp }) {
         <Field label="Engine VM ID" hint="A free Proxmox VMID for the scoring engine. Preflight refuses collisions.">
           <input inputMode="numeric" className={`${inputCls} font-mono`} value={form.scoring_vmid} onChange={(e) => setForm({ ...form, scoring_vmid: e.target.value.replace(/\D/g, '') })} placeholder="auto" />
         </Field>
+        {/* The two per-run estate gates. Both are submit params the API has always accepted, but
+            the panel never exposed them, so a second range on a shared node could not be submitted
+            in a form the preflight accepts (2026-11-06 audit). */}
+        <Field label="Team identifiers" hint="Comma list, e.g. 120,121. Drives BOTH the box vmids (200 + id*10 + box) and the team subnet (192.168.<id>.0/24) — it must match what the competition's DNAT rules assume, not merely be free. Empty uses TEZ_TEAM_IDENTIFIERS.">
+          <input className={`${inputCls} font-mono`} value={form.team_identifiers}
+            onChange={(e) => setForm({ ...form, team_identifiers: e.target.value.replace(/[^\d,]/g, '') })}
+            placeholder="120,121" />
+        </Field>
+        <Field label="Engine management IP" hint="The engine's mgmt address on the flat 10.0.0.0/24. Contested cluster-wide, so a deploy must pin one you have checked yourself — the preflight refuses the unverifiable default. Empty uses the node catalog's value.">
+          <input className={`${inputCls} font-mono`} value={form.engine_mgmt_ip}
+            onChange={(e) => setForm({ ...form, engine_mgmt_ip: e.target.value.replace(/[^\d.]/g, '') })}
+            placeholder="10.0.0.252" />
+        </Field>
         <div className="space-y-3 pt-1">
-          <Button variant="primary" className="w-full !py-2.5" disabled={noBoxes} onClick={() => setConfirm(true)}>
-            <Icon name="rocket" />Deploy {form.teams || 0} team{Number(form.teams) === 1 ? '' : 's'}
+          <Button variant="primary" className="w-full !py-2.5" disabled={noBoxes || submitting} onClick={() => setConfirm(true)}>
+            <Icon name="rocket" />{submitting ? 'Submitting…' : `Deploy ${form.teams || 0} team${Number(form.teams) === 1 ? '' : 's'}`}
           </Button>
-          <Button disabled={noBoxes} onClick={() => submit('plan')} title="create-competition.py --plan-only: prints the plan, touches nothing">
-            <Icon name="play" />Dry run
+          <Button disabled={noBoxes || submitting} onClick={() => submit('plan')} title="create-competition.py --plan-only: renders the plan and touches nothing. It does NOT contact the node, so it proves the definition is buildable, not that the estate can host it.">
+            <Icon name="play" />Dry run (plan only)
           </Button>
+          <p className="text-center text-[11px] leading-relaxed text-faint">
+            A dry run renders the plan from the competition definition. It never contacts Proxmox,
+            so a green dry run does not mean the estate can build it.
+          </p>
           {/* Verify is a RANGE action, and this competition may have several ranges: the
               submit API would pick one of them implicitly. It lives on the range page. */}
           {noBoxes && <p className="text-center text-xs text-faint">Add a box before deploying.</p>}
@@ -182,11 +217,11 @@ export default function DeployPanel({ comp }) {
         </p>
         <div className="mt-4"><Footprint comp={comp} teams={form.teams} /></div>
         <code className="mt-4 block rounded-xl bg-sunken p-3 font-mono text-[11px] text-muted shadow-inset">
-          create-competition.py --competition {comp.id} --teams {form.teams} --yes{form.scoring_vmid && ` --scoring-vmid ${form.scoring_vmid}`}
+          create-competition.py --competition {comp.id} --teams {form.teams} --yes{form.scoring_vmid && ` --scoring-vmid ${form.scoring_vmid}`}{form.team_identifiers.trim() && ` --team-identifiers ${form.team_identifiers.trim()}`}{form.engine_mgmt_ip.trim() && ` --engine-mgmt-ip ${form.engine_mgmt_ip.trim()}`}
         </code>
         <div className="mt-6 flex justify-end gap-3">
           <Button onClick={() => setConfirm(false)}>Cancel</Button>
-          <Button variant="primary" autoFocus onClick={() => { setConfirm(false); submit('deploy') }}><Icon name="rocket" />Deploy</Button>
+          <Button variant="primary" autoFocus disabled={submitting} onClick={() => { setConfirm(false); submit('deploy') }}><Icon name="rocket" />Deploy</Button>
         </div>
       </Modal>
       <Modal open={editing} onClose={() => setEditing(false)} title="Proxmox nodes" wide>

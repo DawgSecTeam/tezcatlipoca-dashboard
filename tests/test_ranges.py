@@ -51,12 +51,37 @@ def test_state_building(tmp_path):
     rng = _range_of(_rec("run-b", "deploy", state="running", rc=None, created=1,
                          run_dir=tmp_path / "run-b"))
     assert rng["state"] == "building" and rng["live"] is True and rng["key"] == str(ws.resolve())
+    # The one recorded fact every surface gates competition controls on.
+    assert rng["deploying"] is True and rng["tearing_down"] is False
+
+
+def test_a_destroy_makes_the_range_busy_and_tearing_down(tmp_path):
+    _workspace(tmp_path, "run-d", vms=True)
+    rng = _range_of(
+        _rec("run-d", "deploy", created=1, run_dir=tmp_path / "run-d"),
+        _rec("run-down", "destroy", state="running", rc=None, created=2,
+             run_dir=tmp_path / "run-down",
+             params={"_destroy_comp_dir": str(tmp_path / "run-d" / "comp")}))
+    assert rng["state"] == "building" and rng["tearing_down"] is True
+    assert rng["deploying"] is False
+
+
+def test_a_verify_makes_the_range_busy_but_not_deploying(tmp_path):
+    _workspace(tmp_path, "run-v", vms=True)
+    rng = _range_of(
+        _rec("run-v", "deploy", created=1, run_dir=tmp_path / "run-v"),
+        _rec("run-check", "verify", state="running", rc=None, created=2,
+             run_dir=tmp_path / "run-check",
+             params={"comp_dir": str(tmp_path / "run-v" / "comp")}))
+    assert rng["state"] == "building" and rng["deploying"] is False
+    assert rng["tearing_down"] is False
 
 
 def test_state_live_from_the_workspaces_vms(tmp_path):
     ws = _workspace(tmp_path, "run-l", vms=True)
     rng = _range_of(_rec("run-l", "deploy", created=1, run_dir=tmp_path / "run-l"))
     assert (rng["state"], rng["live"]) == ("live", True)
+    assert rng["deploying"] is False
     assert ranges.has_vms(str(ws)) is True
 
 

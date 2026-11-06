@@ -10,17 +10,34 @@ import { Icon, useConfirm, useToast } from './kit'
 import { Cred } from './CompetitionPanel'
 import { rangeActionBody } from '../rangeModel'
 
-const STATE_TEXT = { ready: 'Ready to start', running: 'Scoring', paused: 'Scoring paused', ended: 'Competition ended', unknown: 'Engine unreachable' }
+const STATE_TEXT = { ready: 'Ready to start', running: 'Scoring', paused: 'Scoring paused', ended: 'Competition ended', unknown: 'Engine unreachable', deploying: 'Deploying' }
 const STATE_CLS = {
   ready: 'bg-accent-soft text-accent', running: 'bg-accent-soft text-accent',
   paused: 'bg-sunken text-muted', ended: 'bg-sunken text-faint', unknown: 'bg-danger-soft text-danger',
+  deploying: 'bg-accent-soft text-accent',
 }
 const TOOL_TEXT = { scoreboard: 'Scoreboard', admin: 'Admin', announcements: 'Announcements', injects: 'Injects', portal: 'Team portal' }
+const LIVE_RUN_STATES = new Set(['queued', 'running', 'pausing', 'paused'])
 
 export default function RangeCommandBar({ range, competition, onSubmitted, disabled = false }) {
   const view = competition.view
   const loading = !view && !competition.error
   const retired = range.state === 'retired'
+  // A deploy's engine answers /api/engine before the range is finished, so engine state alone
+  // once offered "Start the competition" against a half-built range. The server reports
+  // `deploying`; the run records provide the same answer before the first poll lands. While a
+  // deploy owns this range there is no competition to drive, so the bar is not rendered at
+  // all — the overview's in-progress card is the whole story, and its Copy buttons cannot be
+  // pressed against a password that is not final.
+  const deploying = !!range.deploying || !!view?.deploying || view?.state === 'deploying'
+    || (range.runs || []).some((run) => run.action === 'deploy' && LIVE_RUN_STATES.has(run.state))
+  // One server-recorded fact covers every operation except a scrim: no competition controls
+  // while the range is mid-write. Older payloads fall back to the run list.
+  const settled = range.settled !== undefined
+    ? !!range.settled
+    : !deploying && !(range.runs || []).some((run) => LIVE_RUN_STATES.has(run.state))
+  // A scrim drives the competition itself; Start during its build phase would race it.
+  const scrimRunning = (range.runs || []).some((run) => run.action === 'scrim' && LIVE_RUN_STATES.has(run.state))
   // A range that records no VM has no engine to poll: showing "Engine unreachable" there
   // invents a failure (a dead engine) where the truth is "nothing was built". Only a range
   // that is still provisioning gets the benefit of the doubt.
@@ -66,8 +83,19 @@ export default function RangeCommandBar({ range, competition, onSubmitted, disab
 
   const state = view?.state
   const round = view?.engine?.last_round?.ID
-  const links = Object.entries(view?.links || {}).filter(([name]) => TOOL_TEXT[name])
-  const creds = [view?.creds?.admin && ['admin', view.creds.admin], view?.creds?.inject && ['inject', view.creds.inject]].filter(Boolean)
+  // A recorded address is not a reachable engine: hide the admin links while the engine is
+  // not answering (the portal may be on another host, so it stays). Two contradictory claims
+  // on one card — "Engine unreachable" and a clickable Scoreboard — is how dead links ship.
+  const links = Object.entries(view?.links || {})
+    .filter(([name]) => TOOL_TEXT[name] && (name === 'portal' || view?.reachable !== false))
+  // Passwords in a workspace with no VM left are history, not logins for a live machine.
+  const creds = range.has_recorded_vms === false ? []
+    : [view?.creds?.admin && ['admin', view.creds.admin], view?.creds?.inject && ['inject', view.creds.inject]].filter(Boolean)
+
+  // While any non-scrim operation owns the range there is no competition to drive: not
+  // rendering the bar is clearer than a row of disabled buttons, and the operation card on
+  // the overview is the whole story.
+  if (deploying || !settled) return null
 
   if (retired) {
     // A retired range that still records this competition's kept templates has one
@@ -101,7 +129,8 @@ export default function RangeCommandBar({ range, competition, onSubmitted, disab
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           {pending && <p className="text-sm text-accent" role="status">Submitting {pending}…</p>}
-          {!noEngine && state === 'ready' && <Button variant="primary" disabled={blocked} onClick={() => submit('start')}><Icon name="play" />Start the competition</Button>}
+          {!noEngine && state === 'ready' && !scrimRunning && <Button variant="primary" disabled={blocked} onClick={() => submit('start')}><Icon name="play" />Start the competition</Button>}
+          {!noEngine && state === 'ready' && scrimRunning && <p className="text-sm text-muted">A scrim is running this range; its harness starts the competition itself.</p>}
           {!noEngine && state === 'running' && <Button disabled={blocked} onClick={() => submit('freeze')}><Icon name="pause" />Pause scoring</Button>}
           {!noEngine && state === 'paused' && <Button variant="primary" disabled={blocked} onClick={() => submit('resume')}><Icon name="play" />Resume scoring</Button>}
           {!noEngine && (state === 'running' || state === 'paused') && <Button variant="danger" disabled={blocked} onClick={end}><Icon name="warn" />End</Button>}
@@ -110,6 +139,7 @@ export default function RangeCommandBar({ range, competition, onSubmitted, disab
           {noEngine && <p className="text-sm text-muted">This range records no infrastructure, so there is no engine to drive.</p>}
         </div>
         <ErrorBanner error={submitError || competition.error} onClose={submitError ? () => setSubmitError(null) : undefined} />
+        {range.deploy_failed && !torn && <p className="mt-2 text-xs text-danger">The last deploy did not finish. Verify the range before starting the competition.</p>}
         {torn && <p className="mt-2 text-xs text-danger">This range's infrastructure is incomplete — its last teardown did not finish. Retry the teardown before driving the competition.</p>}
         {!torn && !noEngine && missingIdentity && <p className="mt-2 text-xs text-danger">Lifecycle actions require the range's competition identity and originating engine ref. Refresh the range details before submitting.</p>}
         {!noEngine && view && !view.reachable && state !== 'unknown' && state !== 'ended' && <p className="mt-2 text-xs text-muted">The engine is not answering. What shows here is recorded workspace state, not a current engine observation.</p>}
@@ -126,7 +156,16 @@ export default function RangeCommandBar({ range, competition, onSubmitted, disab
           ))}
         </div>
         {!noEngine && loading && <p className="text-sm text-muted">Checking access details…</p>}
-        {!loading && !links.length && <p className="text-xs text-muted">{range.has_recorded_vms === false ? 'This range records no infrastructure, so there is no live engine to open.' : 'No engine addresses are recorded.'}</p>}
+        {/* The portal may survive while the engine does not, leaving exactly one link and no
+            "no links" note to explain the missing admin entries. */}
+        {!loading && view?.reachable === false && range.has_recorded_vms !== false && !!links.length && (
+          <p className="mb-2 text-xs text-muted">The engine is not answering; its admin links open once it does.</p>
+        )}
+        {!loading && !links.length && <p className="text-xs text-muted">{range.has_recorded_vms === false
+          ? 'This range records no infrastructure, so there is no live engine to open.'
+          : view && view.reachable === false
+            ? 'The engine is not answering; its admin links open once it does.'
+            : 'No engine addresses are recorded.'}</p>}
         {!!creds.length && <div className="flex flex-wrap gap-2">{creds.map(([label, cred]) => <Cred key={`${label}-${cred.password}`} label={label} {...cred} />)}</div>}
       </section>
     </Card>

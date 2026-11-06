@@ -88,6 +88,10 @@ export default function Bell() {
             {rows.slice(0, 20).map((request) => {
               const range = byWorkspace.get(request.range_key)
               const stableId = range?.comp_id === request.comp_id ? range.id : null
+              // Approving submits a redeploy; the queue refuses one while the range is
+              // deploying or being torn down, so do not offer it here either.
+              const rangeBusy = !!range && (range.settled === false
+                || !!range.deploying || !!range.tearing_down)
               return (
                 <li key={request.id} className="rounded-xl bg-sunken px-3 py-2.5 text-sm shadow-inset">
                   <div className="flex flex-wrap items-center gap-2">
@@ -103,9 +107,10 @@ export default function Bell() {
                   </div>
                   <details className="mt-1 text-[11px] text-faint"><summary className="cursor-pointer">Workspace</summary><p className="mt-1 break-all font-mono">{request.range_key || 'Unknown'}</p></details>
                   {(request.status === 'pending' || request.status === 'failed') && <div className="mt-2 flex justify-end gap-2">
-                    <Button variant="ghost" className="!py-1 text-xs" disabled={pending != null || range?.state === 'retired'} onClick={act(request, true)}>{pending === request.id ? 'Submitting…' : request.status === 'failed' ? 'Retry reset' : 'Approve'}</Button>
+                    <Button variant="ghost" className="!py-1 text-xs" disabled={pending != null || rangeBusy || range?.state === 'retired'} onClick={act(request, true)}>{pending === request.id ? 'Submitting…' : request.status === 'failed' ? 'Retry reset' : 'Approve'}</Button>
                     <Button variant="ghost" className="!py-1 text-xs" disabled={pending != null} onClick={act(request, false)}>Deny</Button>
                   </div>}
+                  {rangeBusy && <p className="mt-1 text-[11px] text-faint">This range is still working; approve once it settles.</p>}
                 </li>
               )
             })}

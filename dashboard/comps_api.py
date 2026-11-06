@@ -138,6 +138,17 @@ def comp_summary(d: Path) -> dict:
 
 @app.get("/api/comps")
 def list_comps():
+    # A fresh install has no competitions checkout: the runner clones it on the FIRST run, so
+    # before that every read here would raise FileNotFoundError and the SPA would show a bare
+    # "internal server error" with no hint (2026-11-06 audit). Name the missing path instead —
+    # 503 with an actionable detail, and let /api/health report the same dependency.
+    if not COMPS.is_dir():
+        raise HTTPException(
+            503,
+            f"competitions checkout is missing: {COMPS} does not exist. "
+            f"Clone {config.competitions_repo_url()} there, or submit any run — the runner "
+            f"clones it on first use.",
+        )
     out = []
     for d in sorted(COMPS.iterdir()):
         if d.is_dir() and (d / "Compfile").exists():
@@ -191,6 +202,11 @@ class CompfileBody(BaseModel):
 @app.put("/api/comps/{comp_id}/compfile")
 def put_compfile(comp_id: str, body: CompfileBody):
     d = comp_dir(comp_id)
+    # The Compfile's `name` is what every list, breadcrumb and run record shows; without it the
+    # competition silently falls back to the directory id. Refuse rather than write a nameless
+    # definition (2026-11-06 audit: an empty name saved with no error and no toast).
+    if not any(k == "name" and str(v).strip() for k, v in body.items):
+        raise HTTPException(400, "the Compfile needs a non-empty 'name'")
     write_compfile(d / "Compfile", body.items)
     return read_compfile(d / "Compfile")
 

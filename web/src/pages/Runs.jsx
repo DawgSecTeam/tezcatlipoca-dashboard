@@ -1,6 +1,7 @@
 // Every run the service has executed: filterable table plus a detail drawer with the
 // stage timeline, event list, live log and collected artifacts.
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 import TopNav from '../components/Nav'
 import { Button, Card, ErrorBanner, SearchInput, Spinner } from '../components/ui'
@@ -23,7 +24,11 @@ function Row({ r, selected, onPick }) {
       <tr onClick={() => onPick(r.id)} className={`cursor-pointer transition hover:bg-sunken ${selected ? 'bg-sunken' : ''}`}>
         <td className="px-4 py-2.5"><StatePill state={r.state} /></td>
         <td className="px-4 py-2.5 font-mono text-sm">{r.comp_id}</td>
-        <td className="px-4 py-2.5 font-mono text-xs text-muted" title={r.id}>{r.id.replace(/^run-/, '')}</td>
+        <td className="px-4 py-2.5 font-mono text-xs text-muted" title={r.id}>
+          <a href={`/c/${encodeURIComponent(r.comp_id)}/runs/${encodeURIComponent(r.id)}`}
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onPick(r.id) }}
+            className="transition hover:text-accent hover:underline">{r.id.replace(/^run-/, '')}</a>
+        </td>
         <td className="px-4 py-2.5 text-sm text-muted">{ACTION_LABEL[r.action] || r.action}</td>
         <td className="max-w-40 truncate px-4 py-2.5 text-xs text-muted" title={r.stage || ''}>{stageLabel(r) || '—'}</td>
         <td className="px-4 py-2.5 text-xs text-muted">{agoMs(r.started_at || r.created_at) || '—'}</td>
@@ -194,19 +199,39 @@ export default function Runs() {
   const [filter, setFilter] = useState('all')
   const [runs, setRuns] = useState(null)
   const [err, setErr] = useState(null)
-  const [sel, setSel] = useState(null)
+  // The open run lives in the URL (?run=<id>): a run is then shareable, survives a reload, and
+  // the browser's back button closes the drawer. Click-only rows made a run impossible to link to
+  // even though /c/{comp}/runs/{run} is a real route (2026-11-06 audit).
+  const [params, setParams] = useSearchParams()
+  const sel = params.get('run')
+  const setSel = (id) => {
+    const next = new URLSearchParams(params)
+    if (id) next.set('run', id); else next.delete('run')
+    setParams(next, { replace: !id })
+  }
   const [q, setQ] = useState('')
   const [comp, setComp] = useState('')
-  const refresh = useCallback(
-    () => api.runs(filter === 'all' ? undefined : filter).then(setRuns).catch(setErr),
-    [filter],
-  )
+  const [attempt, setAttempt] = useState(0)
   useEffect(() => {
+    // Effect-local: a filter switch used to leave the previous filter's request in flight,
+    // and its slower response then replaced the new filter's rows. One in-flight request per
+    // effect, and an inactive effect never writes.
+    let active = true
+    let busy = false
+    const load = async () => {
+      if (busy) return
+      busy = true
+      try {
+        const next = await api.runs(filter === 'all' ? undefined : filter)
+        if (active) { setRuns(next); setErr(null) }
+      } catch (nextError) { if (active) setErr(nextError) }
+      finally { busy = false }
+    }
     setRuns(null)
-    refresh()
-    const t = setInterval(refresh, 8000)
-    return () => clearInterval(t)
-  }, [refresh])
+    load()
+    const t = setInterval(load, 8000)
+    return () => { active = false; clearInterval(t) }
+  }, [filter, attempt])
 
   const comps = useMemo(() => [...new Set((runs || []).map((r) => r.comp_id))].sort(), [runs])
   const groups = useMemo(() => {
@@ -235,7 +260,7 @@ export default function Runs() {
         </select>
         <SearchInput value={q} onChange={setQ} placeholder="Search runs" className="w-64" />
       </div>
-      <ErrorBanner error={err} onRetry={() => { setErr(null); refresh() }} />
+      <ErrorBanner error={err} onRetry={() => { setErr(null); setAttempt((value) => value + 1) }} />
       <Card className="rise rise-2 overflow-hidden p-2">
         {!runs && !err && <div className="flex justify-center p-10"><Spinner /></div>}
         {runs && !runs.length && (

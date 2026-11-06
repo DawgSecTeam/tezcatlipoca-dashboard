@@ -3,7 +3,7 @@ import { Link, Navigate, NavLink, useParams, useSearchParams } from 'react-route
 import { api } from '../api'
 import TopNav from '../components/Nav'
 import { Button, Card, ErrorBanner, Spinner } from '../components/ui'
-import { EmptyState, Icon, agoMs, fmtSpan, useConfirm, useTick, useToast } from '../components/kit'
+import { EmptyState, Icon, agoMs, copyText, fmtSpan, useConfirm, useTick, useToast } from '../components/kit'
 import { ACTION_LABEL, LogTail, ResetBoxModal, StageStrip, StatePill, useRunActions, useRunEvents, useRunLog } from '../components/runui'
 import RangeCommandBar from '../components/RangeCommandBar'
 import Diagnosis from '../components/Diagnosis'
@@ -43,11 +43,12 @@ function ActionsMenu({ onDestroy }) {
   </div>
 }
 
-function CopyText({ text }) {
+function CopyText({ text, label = 'copy' }) {
   const toast = useToast()
-  return <button type="button" className="text-accent hover:underline" onClick={async () => {
-    try { await navigator.clipboard.writeText(text); toast('Copied') } catch { toast('Copy failed', 'error') }
-  }}>copy</button>
+  return <button type="button" className="shrink-0 text-accent hover:underline" onClick={async () => {
+    if (await copyText(text)) toast('Copied')
+    else toast('Copy failed', 'error')
+  }}>{label}</button>
 }
 
 function OperationRow({ run, range }) {
@@ -116,12 +117,16 @@ function RangeFacts({ range, summary }) {
   const facts = [
     // "Deployed" is only true once something is up; a range still building has started its
     // deploy run, and the range page claimed it had deployed 5 minutes ago.
-    [range.state === 'building' ? 'Deploy started' : 'Deployed', range.deployed_at || origin?.created_at ? agoMs(range.deployed_at || origin?.created_at) : '—'],
+    [range.state === 'building' ? 'Deploy started' : range.deploy_failed ? 'Deploy failed' : 'Deployed', range.deployed_at || origin?.created_at ? agoMs(range.deployed_at || origin?.created_at) : '—'],
     ['Deployed by', range.deploy_run_id ? <Link to={`/ranges/${range.id}/activity?operation=${range.deploy_run_id}`} className="text-accent hover:underline">{range.deploy_run_id}</Link> : '—'],
     ['Engine ref', range.engine_ref || '—'],
     ['Engine IP', summary.engine_ip || '—'],
     ['Nodes', summary.nodes.join(', ') || '—'],
     ['Recorded', `${summary.counts.teams ?? '—'} teams · ${summary.counts.boxes ?? '—'} boxes · ${summary.counts.networks ?? '—'} networks`],
+    // The workspace path is the operator's handle on this range everywhere else (logs,
+    // commands, the evidence dir): it belongs with the range's facts, not in a debug strip
+    // under the competition controls.
+    ['Workspace', <span className="inline-flex max-w-full items-center gap-2"><span className="min-w-0 break-all">{range.key}</span><CopyText text={range.key} /></span>],
   ]
   return <Card className="p-5">
     <div className="mb-3 flex items-center justify-between"><h2 className="text-base font-semibold">Range</h2><Link to={`/ranges/${range.id}/infrastructure`} className="text-xs font-medium text-accent">Infrastructure</Link></div>
@@ -215,7 +220,7 @@ function RangeActivity({ range, refresh }) {
 
 export default function Range() {
   const { rangeId, '*': section = '' } = useParams()
-  const { data: range, error, updated, refresh } = useRangeData(rangeId)
+  const { data: range, error, refresh } = useRangeData(rangeId)
   const [competitionRevision, setCompetitionRevision] = useState(0)
   const competition = useCompetitionData(range?.state === 'retired' ? null : range?.key, competitionRevision)
   const [submitted, setSubmitted] = useState(null)
@@ -237,7 +242,19 @@ export default function Range() {
   // A retired range records nothing but this competition's kept templates; reclaiming them
   // is the one operation left, and a full teardown is the only path that can do it.
   const reclaimable = !!range.reclaimable_templates
-  const usable = !retired && !pending && !error
+  // The range's own runs say whether anything currently owns the engine. `settled` is the
+  // server's single answer (any non-scrim operation in flight); older payloads fall back to
+  // the run list. While it is false the header's Verify/Reset, the Teams recovery actions and
+  // the competition bar are all held back — a deploy is only one of the operations that move
+  // the workspace under them.
+  const settled = range.settled !== undefined
+    ? !!range.settled
+    : !summary.active_runs.some((run) => run.action !== 'scrim')
+  // rangeActionBody needs the workspace's competition and the revision that built it; a
+  // legacy range missing either would throw from the click handler as a toast after the
+  // button already looked usable.
+  const missingIdentity = !range.comp_id || !range.engine_ref
+  const usable = !retired && !pending && !error && settled && !missingIdentity
   const canDestroy = !pending && !error && (!retired || reclaimable)
   const activeRun = summary.active_runs[0]
   // A range whose newest destroy failed is not necessarily torn down (`teardown_failed`
@@ -263,7 +280,15 @@ export default function Range() {
         <div className="min-w-0">
           <h1 className="display break-words text-4xl sm:text-5xl">{rangeTitle(range)}</h1>
           <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
-            <span className={`chip px-2.5 py-1 ${RANGE_CLS[range.state] || 'bg-sunken text-muted'}`}>{RANGE_LABEL[range.state] || range.state}</span>
+            <span className={`chip px-2.5 py-1 ${range.state === 'retired' ? RANGE_CLS.retired
+              : ['failed', 'teardown_failed'].includes(range.state) ? RANGE_CLS[range.state]
+                : range.deploy_failed ? RANGE_CLS.failed
+                  : RANGE_CLS[range.state] || 'bg-sunken text-muted'}`}>
+              {range.state === 'retired' ? RANGE_LABEL.retired
+                : ['failed', 'teardown_failed'].includes(range.state) ? RANGE_LABEL[range.state]
+                  : range.deploy_failed ? 'Deploy failed'
+                    : RANGE_LABEL[range.state] || range.state}
+            </span>
             <span className="font-mono text-faint">{shortRangeId(range)}</span>
             {range.name && range.comp_id !== range.name && <span className="font-mono text-faint">{range.comp_id}</span>}
             {summary.engine_ip && <span className="font-mono text-faint" title="Recorded engine address">{summary.engine_ip}</span>}
@@ -273,18 +298,6 @@ export default function Range() {
         <div className="flex flex-wrap gap-2"><Button onClick={() => submit('verify')} disabled={!usable}><Icon name="check" />Verify range</Button><Button onClick={() => setReset(true)} disabled={!usable || !range.inventory?.teams?.length}><Icon name="box" />Reset a box</Button>{canDestroy && <ActionsMenu onDestroy={() => submit('destroy')} />}</div>
       </div>
       <div className="mt-4"><RangeCommandBar range={range} competition={competition} onSubmitted={onSubmitted} disabled={!usable} /></div>
-      <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-faint">
-        <details className="min-w-0">
-          <summary className="cursor-pointer hover:text-accent">Identity: <span className="font-mono">{shortRangeId(range)}</span></summary>
-          <dl className="mt-2 grid grid-cols-[6rem_minmax(0,1fr)] gap-x-3 gap-y-1 font-mono">
-            <dt className="font-sans">Range ID</dt><dd className="break-all">{range.id}</dd>
-            <dt className="font-sans">Competition</dt><dd className="break-all">{range.comp_id}</dd>
-            <dt className="font-sans">Engine ref</dt><dd className="break-all">{range.engine_ref || '—'}</dd>
-            <dt className="font-sans">Workspace</dt><dd className="break-all">{range.key} <CopyText text={range.key} /></dd>
-          </dl>
-        </details>
-        <button onClick={reload} className="ml-auto self-start text-faint hover:text-accent">{error ? 'Refresh failed · ' : ''}{updated ? `Fetched ${agoMs(updated)} · ` : ''}Refresh</button>
-      </div>
     </header>
     <ErrorBanner error={error} onRetry={reload} />
     {submitted && <div role="status" className="mb-5 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-accent-soft px-4 py-3 text-sm"><span>Submitted <span className="font-mono text-xs">{submitted.id}</span></span><Link className="font-semibold text-accent hover:underline" to={`/ranges/${range.id}/activity?operation=${submitted.id}`}>View operation</Link></div>}
@@ -294,7 +307,7 @@ export default function Range() {
     {section === 'infrastructure' && <RunInfra run={origin} inventory={scopedInventory} teardownFailed={teardownIssue} />}
     {section === 'activity' && <RangeActivity range={range} refresh={reload} />}
     {section === 'evidence' && <Evidence runId={origin.id} range={range} />}
-    <ResetBoxModal open={reset} onClose={() => setReset(false)} run={origin} range={range} teams={range.inventory?.teams} onSubmitted={onSubmitted} />
+    <ResetBoxModal open={reset} onClose={() => setReset(false)} run={origin} range={range} teams={range.inventory?.teams} onSubmitted={onSubmitted} disabled={!usable} />
   </main>
 }
 
