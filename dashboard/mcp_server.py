@@ -70,7 +70,7 @@ def build_mcp(manager):
 
     @mcp.tool()
     def submit_run(comp_id: str, action: str, engine_ref: str = "", teams: int = 2,
-                   scoring_vmid: int = 0, team_identifiers: str = "",
+                   platform: str = "", scoring_vmid: int = 0, team_identifiers: str = "",
                    engine_mgmt_ip: str = "", engine_node: str = "", team_node: str = "",
                    nodes: list[str] = [], params: dict = {}) -> dict:
         """Queue a run: action is deploy|plan|verify|destroy|scrim|redeploy, or one of the
@@ -85,7 +85,8 @@ def build_mcp(manager):
         p = dict(params or {})
         # Defaults, not overrides: an explicit params entry (a redeploy's teams selector, a
         # pinned scoring vmid) must survive the tool's own argument defaults.
-        for key, val in (("teams", teams), ("scoring_vmid", scoring_vmid),
+        for key, val in (("teams", teams), ("platform", platform),
+                         ("scoring_vmid", scoring_vmid),
                          ("team_identifiers", team_identifiers),
                          ("engine_mgmt_ip", engine_mgmt_ip),
                          ("engine_node", engine_node), ("team_node", team_node),

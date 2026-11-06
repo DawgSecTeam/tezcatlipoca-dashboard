@@ -129,3 +129,61 @@ def test_a_persistent_fetch_failure_still_refuses(monkeypatch):
                         lambda cmd, **kw: SimpleNamespace(returncode=128, stderr="reset"))
     monkeypatch.setattr(runner.time, "sleep", lambda s: None)
     assert runner._fetch_origin("/repo").returncode == 128
+
+
+def test_deploy_carries_the_platform_and_refuses_unknown_ones():
+    gcp = build_command("deploy", "c", "/ws", {"teams": 1, "platform": "gcp"})
+    assert gcp[gcp.index("--platform") + 1] == "gcp"
+    # absent -> proxmox stays the default and the flag stays out (existing runs unchanged)
+    assert "--platform" not in build_command("deploy", "c", "/ws", {"teams": 1})
+    with pytest.raises(RunRefused):
+        build_command("deploy", "c", "/ws", {"teams": 1, "platform": "vmware"})
+
+
+def test_a_gcp_node_name_cannot_be_selected_into_a_nodes_file(tmp_path, monkeypatch):
+    from dashboard import config, nodes as nodes_mod
+    monkeypatch.setattr(config, "data_dir", lambda: tmp_path)
+    nodes_mod.save([
+        {"name": "node-a", "endpoint": "https://a:8006", "node": "pve", "datastore": "s"},
+        {"name": "gc-one", "platform": "gcp", "project": "p", "zone": "us-central1-a",
+         "credentials": "{}"},
+    ], {})
+    with pytest.raises(ValueError) as caught:
+        nodes_mod.run_list(nodes_mod.load(), ["gc-one"])
+    assert "take no node list" in str(caught.value)
+
+
+def test_driver_env_materializes_the_gcp_credentials_per_run(tmp_path, monkeypatch):
+    from dashboard import config, nodes as nodes_mod
+    from dashboard.runner import RunManager
+    monkeypatch.setattr(config, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(config, "engine_proxmox_file", lambda: "")
+    nodes_mod.save([
+        {"name": "gc-one", "platform": "gcp", "project": "p", "zone": "us-central1-a",
+         "credentials": "{\"project_id\": \"t\"}"},
+    ], {})
+    (tmp_path / "run").mkdir()
+    mgr = RunManager(store=None, bus=None)
+    env = mgr._driver_env({"platform": "gcp"}, tmp_path / "run")
+    sa = tmp_path / "run" / "gcp-sa.json"
+    assert env["TEZ_GCP_CREDENTIALS_PATH"] == str(sa)
+    assert env["TEZ_GCP_ZONE"] == "us-central1-a"
+    assert sa.read_text() == "{\"project_id\": \"t\"}"
+    assert (sa.stat().st_mode & 0o777) == 0o600
+    # a proxmox run must not materialize anything gcp-shaped
+    plain = mgr._driver_env()
+    assert "TEZ_GCP_CREDENTIALS_PATH" not in plain
+
+
+def test_driver_env_refuses_a_gcp_run_without_a_catalog_entry(tmp_path, monkeypatch):
+    from dashboard import config, nodes as nodes_mod
+    from dashboard.runner import RunManager
+    monkeypatch.setattr(config, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(config, "engine_proxmox_file", lambda: "")
+    nodes_mod.save([
+        {"name": "node-a", "endpoint": "https://a:8006", "node": "pve", "datastore": "s"},
+    ], {})
+    (tmp_path / "run").mkdir()
+    with pytest.raises(RunRefused) as caught:
+        RunManager(store=None, bus=None)._driver_env({"platform": "gcp"}, tmp_path / "run")
+    assert "no gcp target" in str(caught.value)

@@ -87,6 +87,13 @@ def build_command(action, comp_id, ws, params, nodes_file=None):
                "--teams", str(params.get("teams") or 2), "--yes"]
         if nodes_file:
             cmd += ["--nodes", str(nodes_file)]
+        # One range, one platform: the engine records it in the state document, so every
+        # later action (verify, destroy, scrim) follows the run's own record.
+        platform = str(params.get("platform") or nodes.PROXMOX)
+        if platform not in nodes.KNOWN:
+            raise RunRefused(f"unknown platform {platform!r} (known: {', '.join(nodes.KNOWN)})")
+        if platform != nodes.PROXMOX:
+            cmd += ["--platform", platform]
         for flag, key in (("--scoring-vmid", "scoring_vmid"),
                           ("--team-identifiers", "team_identifiers"),
                           ("--engine-mgmt-ip", "engine_mgmt_ip"),
@@ -235,6 +242,14 @@ class RunManager:
             except (TypeError, ValueError) as exc:
                 raise RunRefused(f"teams must be a number for a {action}: "
                                  f"{params['teams']!r}") from exc
+        # One range, one platform (recorded by the engine in its state document); a gcp
+        # run gets its zone from the catalog entry, so a node selection is meaningless.
+        platform = str(params.get("platform") or nodes.PROXMOX)
+        if platform not in nodes.KNOWN:
+            raise RunRefused(f"unknown platform {platform!r} (known: {', '.join(nodes.KNOWN)})")
+        if platform == nodes.GCP and params.get("nodes"):
+            raise RunRefused("a gcp run takes no node selection — its zone comes from the "
+                             "gcp catalog entry")
         self.ensure_repos()
         self.refresh_comps()
         comp_src = self.comps_repo / comp_id
@@ -480,7 +495,7 @@ class RunManager:
              f"{self._resolve_ref(run['engine_ref'])}:deploy_lib/pause.py"], capture_output=True)
         return probe.returncode == 0
 
-    def _driver_env(self):
+    def _driver_env(self, params=None, run_dir=None):
         """The environment a driver child gets.
 
         PATH carries the user-space tool dirs (opencode, sshpass). The ssh key path is forced
@@ -494,6 +509,24 @@ class RunManager:
         # Catalog tokens ride the child env: the engine reads them by token_env name, so
         # no secret is written into the worktree, the run record or the comp workspace.
         env.update(nodes.token_env(nodes.load()))
+        # A gcp run's service-account key materializes as a per-run 0600 file inside the
+        # run dir (it dies with the run's retention) and the engine reads its PATH via
+        # TEZ_GCP_CREDENTIALS_PATH — no secret in the worktree or the run record either.
+        if str((params or {}).get("platform") or nodes.PROXMOX) == nodes.GCP:
+            entry = nodes.gcp_entry()
+            if not entry or not entry.get("credentials"):
+                raise RunRefused(
+                    "no gcp target in the node catalog (needs project, zone and the "
+                    "service-account key) — add one before submitting a gcp run")
+            if not entry.get("zone"):
+                raise RunRefused("the gcp catalog entry is missing its zone")
+            if not run_dir:
+                raise RunRefused("a gcp run needs its run dir to place the credentials")
+            creds_path = Path(run_dir) / "gcp-sa.json"
+            creds_path.write_text(entry["credentials"])
+            os.chmod(creds_path, 0o600)
+            env["TEZ_GCP_CREDENTIALS_PATH"] = str(creds_path)
+            env["TEZ_GCP_ZONE"] = str(entry["zone"])
         key = config.engine_proxmox_file()
         if key and Path(key).is_file():
             key = Path(key).resolve()
@@ -578,7 +611,7 @@ class RunManager:
             nodes_file = self._run_nodes_file(record["params"], run_dir)
             cmd = build_command(record["action"], record["comp_id"], ws, record["params"],
                                 nodes_file)
-            child_env = self._driver_env()
+            child_env = self._driver_env(record["params"], run_dir)
             # The run's own control file (deploy_lib/pause.py reads it): a per-run path, so a
             # request cannot outlive its run into a shared workspace.
             child_env["TEZ_PAUSE_FILE"] = str(run_dir / "pause")
