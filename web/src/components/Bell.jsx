@@ -2,7 +2,7 @@
 // a competition ID alone is never enough to pick one of its concurrent ranges.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api } from '../api'
+import { api, onTokenChanged } from '../api'
 import { Button, ErrorBanner } from './ui'
 import { Icon, agoMs, useToast } from './kit'
 
@@ -42,6 +42,9 @@ export default function Bell() {
     tick()
     return () => { stopped = true; mounted.current = false; clearTimeout(timer) }
   }, [reload])
+  // The bell polls in the background: a token saved mid-session must refill it at once,
+  // not after the next interval or page load (2026-11-06 audit).
+  useEffect(() => onTokenChanged(() => { void reload() }), [reload])
   useEffect(() => {
     if (!open) return undefined
     const close = (event) => { if (box.current && !box.current.contains(event.target)) setOpen(false) }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cleanMessage, degradationMessage, detailSummary, filterRanges, heroStatus, infrastructureLabel, rangeIssues, rangeStatus, scoringChip } from './rangeView'
+import { cleanMessage, degradationMessage, detailSummary, filterRanges, heroStatus, infrastructureLabel, rangeIssues, rangeStatus, reconcileBoard, scoringChip } from './rangeView'
 
 const base = { id: 'range-a', comp_id: 'same', live: true, state: 'live', has_recorded_vms: true, active_runs: [], latest_run: { id: 'deploy-a', action: 'deploy', state: 'succeeded' } }
 
@@ -74,5 +74,33 @@ describe('range presentation', () => {
     // verify and a box reset do not move the clock, so their observation is still current
     expect(scoringChip({ ...base, active_runs: [{ id: 'v', action: 'verify', state: 'running' }], scoring }).label).toBe('Ready to start')
     expect(scoringChip({ ...base, scoring }).label).toBe('Ready to start')
+  })
+})
+
+describe('reconcileBoard: the run queue outranks a cached board observation', () => {
+  const boardRange = (active) => ({ id: 'r', live: true, state: 'building', active_runs: active })
+  it('drops runs the queue reports terminal and follows the states it still has', () => {
+    const board = [boardRange([
+      { id: 'run-a', action: 'deploy', state: 'running' },
+      { id: 'run-b', action: 'verify', state: 'running' },
+    ])]
+    // The driver for run-a exited while the board's background poll was stale; run-b is
+    // genuinely held.
+    const out = reconcileBoard(board, [
+      { id: 'run-a', state: 'succeeded' },
+      { id: 'run-b', state: 'paused' },
+    ])
+    expect(out[0].active_runs.map((r) => r.id)).toEqual(['run-b'])
+    expect(out[0].active_runs[0].state).toBe('paused')
+  })
+  it('changes nothing when the queue never loaded or does not carry the run', () => {
+    const board = [boardRange([{ id: 'run-a', action: 'deploy', state: 'running' }])]
+    expect(reconcileBoard(board, null)).toBe(board)
+    expect(reconcileBoard(board, [])).toBe(board)
+    expect(reconcileBoard(board, [{ id: 'other', state: 'succeeded' }])[0].active_runs).toHaveLength(1)
+  })
+  it('is identity-stable when nothing reconciles', () => {
+    const board = [boardRange([{ id: 'run-a', action: 'deploy', state: 'running' }])]
+    expect(reconcileBoard(board, [{ id: 'run-a', state: 'running' }])[0]).toBe(board[0])
   })
 })

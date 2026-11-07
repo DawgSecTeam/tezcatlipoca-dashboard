@@ -288,10 +288,93 @@ def _match_rule(haystack):
     return None
 
 
+# ── preflight collisions: who owns the contested resource ──────────────────────────────
+# The engine's preflight refusal names the collided vmids/bridges but never their owner,
+# and its advice ("sync templates, free capacity, or raise max_teams/weight") is plain
+# wrong when the holder is one of THIS dashboard's own ranges — that operator can simply
+# open or destroy the range (2026-11-06 audit: a vmid collision cost a 13-minute failed
+# deploy whose diagnosis sent the operator to Proxmox instead of the other range's page).
+_COLLISION_VMID = re.compile(r"(?i)\bvmids?[^:;\n]*collis\w*\s*[:=]\s*([^\n;]+)")
+_COLLISION_BRIDGE = re.compile(r"(?i)\bbridges?[^:;\n]*collis\w*\s*[:=]\s*([^\n;]+)")
+
+
+def _collision_values(haystack, pattern, keep):
+    """The resource names a `vmid/bridge collisions: [a, b]` clause lists.
+
+    The engine prints the list bracketed, but a refusal written without brackets (or a
+    second clause following on the same line) must not swallow the next section, so the
+    capture stops at the first `]`, a new `... collisions:` clause, or end of line.
+    """
+    out = set()
+    for match in pattern.finditer(haystack):
+        chunk = match.group(1)
+        bracketed = re.match(r"\s*\[([^\]]*)\]", chunk)
+        chunk = bracketed.group(1) if bracketed else re.split(r",\s*\w+[^,]*collis\w*", chunk)[0]
+        for token in chunk.split(","):
+            token = token.strip().rstrip(".")
+            if keep(token):
+                out.add(token)
+    return out
+
+
+def _collision_holders(store, run, haystack):
+    """`[(range_view, [vmid...], [bridge...])]`: our ranges that RECORD the contested names.
+
+    The estate document's `resources` list is each range's ownership inventory (the same
+    list the teardown walks), so a recorded vmid/bridge IS the proof the range holds it.
+    The failing run's own workspace is skipped: a partial build records its own vmids, and
+    the preflight collides against OTHER ranges. A store without the range ledger (a bare
+    event store in tests or an MCP stub) simply yields no holders — the generic advice
+    then stands, which is the honest answer when we cannot attribute the collision.
+    """
+    vmids = _collision_values(haystack, _COLLISION_VMID, lambda t: t.isdigit())
+    bridges = _collision_values(haystack, _COLLISION_BRIDGE, lambda t: re.fullmatch(r"vm\w+", t))
+    if not (vmids or bridges) or not (hasattr(store, "list_runs") and hasattr(store, "list_range_retires")):
+        return []
+    own = ranges.range_key(run) if (run.get("run_dir") or run.get("params")) else ""
+    holders = []
+    for rng in ranges.build_ranges(store):
+        if own and rng["key"] == own:
+            continue
+        rows = estate.resources(rng["key"])
+        recorded_vms = {str(row["vmid"]) for row in rows if row.get("vmid") is not None}
+        recorded_bridges = {str(row.get("bridge")) for row in rows if row.get("bridge")}
+        held_v, held_b = sorted(vmids & recorded_vms, key=int), sorted(bridges & recorded_bridges)
+        if held_v or held_b:
+            holders.append((rng, held_v, held_b))
+    return holders
+
+
+def _collision_findings(store, run, haystack):
+    """One finding per owned resource: name the holder, and say what the holder unlocks."""
+    findings = []
+    for rng, held_v, held_b in _collision_holders(store, run, haystack):
+        for what in [f"vmid {v}" for v in held_v] + [f"bridge {b}" for b in held_b]:
+            findings.append(_finding(
+                "collision_held_by_range", "error",
+                f"{what} is held by range {rng['id']} ({rng['comp_id']})",
+                f"The contested {what} is recorded in the estate document of another of this "
+                f"dashboard's ranges (workspace {rng['key']}), so it is not a capacity, "
+                "template or weight problem.",
+                f"{what} is held by range {rng['id']} — open or destroy it; that releases "
+                f"the {what} for this deploy. The engine's general preflight advice (sync "
+                "templates, free capacity, raise max_teams/weight) does not apply while a "
+                "dashboard range owns it.",
+                run_id=run.get("id"), range_id=rng["id"],
+                evidence=[{"source": "estate",
+                           "quote": f"{what} recorded by range {rng['id']} ({rng['comp_id']})"}]))
+    return findings
+
+
 # ── findings ────────────────────────────────────────────────────────────────────────────
-def _finding(code, severity, title, detail, advice, *, run_id=None, evidence=None):
-    return {"code": code, "severity": severity, "title": title, "detail": detail,
-            "advice": advice, "run_id": run_id, "evidence": evidence or []}
+def _finding(code, severity, title, detail, advice, *, run_id=None, evidence=None, range_id=None):
+    out = {"code": code, "severity": severity, "title": title, "detail": detail,
+           "advice": advice, "run_id": run_id, "evidence": evidence or []}
+    # The UI links findings to their subject; a range-owning collision carries the holder's
+    # id so the diagnosis panel can point at the range that must be opened or destroyed.
+    if range_id:
+        out["range_id"] = range_id
+    return out
 
 
 def _evidence(cause, run, stage):
@@ -502,6 +585,10 @@ def diagnose_run(store, run, now=None):
     cause = find_cause(tail, from_offset, from_line)
     stage = _stage_info(run, events)
     findings = _run_findings(run, events, tail, cause, stage, now)
+    # A preflight refusal that collides with a resource one of OUR ranges records gets a
+    # second, far more actionable finding: the holder's range id and the way to release it.
+    if any(f["code"] == "preflight_refused" for f in findings):
+        findings.extend(_collision_findings(store, run, f"{run.get('error') or ''}\n{tail}"))
     primary = _primary(findings)
     return {
         "subject": {"kind": "run", "id": run["id"], "comp_id": run.get("comp_id"),
@@ -592,7 +679,24 @@ def diagnose_range(store, rng, now=None):
                 "Wait for it; a failed or stalled run will surface here with its cause.",
                 run_id=latest["id"]))
 
-    if rng.get("state") == "failed" and not findings:
+    if rng.get("state") == "failed" and rng.get("has_recorded_vms"):
+        # THE poisoning case (2026-11-06): a deploy failed mid-build and its estate document
+        # still records the engine VM and team bridge it created. They survive on the host,
+        # every later deploy refuses at preflight on exactly those names, and the engine's
+        # generic advice (sync templates / free capacity) cannot help while this range owns
+        # them. The one action that clears the block is a destroy of THIS range.
+        findings.append(_finding(
+            "failed_deploy_leftovers", "error",
+            "The failed deploy still holds its VMs and bridge on the estate",
+            "The range's estate document records infrastructure its deploy never finished "
+            "building. Those leftovers are what the next deploy's preflight collides with "
+            "(vmid / bridge checks), so a retry cannot succeed until they are reclaimed.",
+            "Destroy this range first — teardown walks the estate document and reclaims "
+            "exactly what the failed deploy created — then redeploy. Do not chase the "
+            "preflight's capacity/template advice: the resources are owned, not missing.",
+            run_id=rng.get("deploy_run_id")))
+
+    if rng.get("state") == "failed" and not rng.get("has_recorded_vms") and not findings:
         # No run explains it and nothing is recorded live: either the deploy never built a
         # range or its VMs were reclaimed outside the queue. Both leave the same question —
         # are tagged VMs still out there? — and only the nodes can answer it.
@@ -654,6 +758,10 @@ def diagnose_range(store, rng, now=None):
     state_word = {"building": "is building", "live": "is live", "retired": "is retired",
                   "teardown_failed": "has an incomplete teardown",
                   "failed": "is not deployed"}.get(rng.get("state"), rng.get("state"))
+    if rng.get("state") == "failed" and rng.get("has_recorded_vms"):
+        # Not "is not deployed": the failed deploy left real VMs allocated. Saying otherwise
+        # sends the operator past the one action that clears the next deploy's collision.
+        state_word = "failed with infrastructure still allocated"
     head = f"{rng.get('comp_id')} range {state_word}"
     if primary and primary["severity"] in ("error", "warning"):
         head = f"{head}: {primary['title']}"

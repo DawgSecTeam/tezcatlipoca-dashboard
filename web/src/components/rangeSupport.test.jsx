@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({ confirm: vi.fn(), toast: vi.fn(), modal: vi.fn
 vi.mock('../api', () => ({
   api: { ranges: vi.fn(), competition: vi.fn(), requests: vi.fn(), submitRun: vi.fn(), approveRequest: vi.fn(), denyRequest: vi.fn() },
   kindOf: () => 'linux',
+  // Bell (rendered below) subscribes to the token-saved event.
+  onTokenChanged: () => () => {},
 }))
 vi.mock('./kit', async (original) => ({ ...await original(), useToast: () => mocks.toast, useConfirm: () => mocks.confirm }))
 vi.mock('./runui', () => ({

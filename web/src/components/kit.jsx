@@ -287,6 +287,11 @@ export const fmtOffset = (m) => {
 
 export function timeAgo(epochSeconds) {
   if (!epochSeconds) return ''
+  // Clamp the uninitialized: the engine is Go, and a zero-value time arrives as
+  // '0001-01-01T00:00:00Z' — which rendered as 'last round 1065493565 min ago' and made
+  // an operator hunt for a round that never happened (2026-11-06 audit). Anything older
+  // than the year 2000 is not history, it is an unset field: say so.
+  if (epochSeconds < 946684800) return 'never'
   const s = Date.now() / 1000 - epochSeconds
   if (s < 60) return 'just now'
   const units = [[60, 'min'], [3600, 'h'], [86400, 'd'], [604800, 'w'], [2592000, 'mo'], [31536000, 'y']]

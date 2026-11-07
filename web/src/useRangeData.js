@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api } from './api'
+import { api, onTokenChanged } from './api'
+
+// Every hook here re-runs its loader on `tez-token-changed` (dispatched by the token dialog
+// after a successful Save): a page that fetched with the old or missing token kept showing
+// the unauthorized banner and blank counts until a manual reload (2026-11-06 audit).
 
 export function useRangeData(id) {
   const [state, setState] = useState({ id, data: null, error: null, updated: null })
@@ -20,7 +24,8 @@ export function useRangeData(id) {
     }
     load()
     const timer = setInterval(load, 10000)
-    return () => { active = false; clearInterval(timer) }
+    const unwatch = onTokenChanged(load)
+    return () => { active = false; clearInterval(timer); unwatch() }
   }, [id, revision])
   return { ...(state.id === id ? state : { data: null, error: null, updated: null }), refresh }
 }
@@ -43,7 +48,8 @@ export function useCompetitionData(key, revision) {
     }
     load()
     const timer = setInterval(load, 10000)
-    return () => { active = false; clearInterval(timer) }
+    const unwatch = onTokenChanged(load)
+    return () => { active = false; clearInterval(timer); unwatch() }
   }, [key, revision])
   return state.key === key ? state : { view: null, error: null, updated: null }
 }
@@ -69,7 +75,8 @@ export function useRangeDiagnosis(id) {
     }
     load()
     const timer = setInterval(load, 10000)
-    return () => { active = false; clearInterval(timer) }
+    const unwatch = onTokenChanged(load)
+    return () => { active = false; clearInterval(timer); unwatch() }
   }, [id])
   return diagnosis
 }

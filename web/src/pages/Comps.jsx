@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { api } from '../api'
+import { api, onTokenChanged } from '../api'
 import TopNav from '../components/Nav'
 import { Button, ErrorBanner, Field, Modal, SearchInput, inputCls } from '../components/ui'
 import { DifficultyMeter, EmptyState, Icon, timeAgo, useSlashFocus } from '../components/kit'
@@ -70,6 +70,12 @@ export default function Comps() {
   // Which competitions currently have a range on the board — the card grid otherwise gives
   // no way to tell a deployed comp from a dormant one without visiting each page.
   useEffect(() => { api.ranges().then(setRanges).catch(() => {}) }, [])
+  // Both lists fetched with whatever token existed at mount; a token saved from the dialog
+  // must refill them now (2026-11-06 audit).
+  useEffect(() => onTokenChanged(() => {
+    api.comps().then(setComps).catch(setErr)
+    api.ranges().then(setRanges).catch(() => {})
+  }), [])
   const rangeState = useMemo(() => {
     const map = {}
     for (const r of ranges) {

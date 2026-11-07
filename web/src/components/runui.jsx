@@ -190,7 +190,16 @@ function stageDurations(stageEvents, endedAt) {
 // bar, because a destroy's stage string never matched "Teardown" (2026-10-14).
 function currentStep(action, stage, state, stageEvents) {
   const stages = stagesFor(action)
-  const current = stage || stageEvents.at(-1)?.stage || ''
+  // The events are the wire truth: the runner stamps one per phase transition, while the
+  // record's `stage` string only moves when the store write lands. The chip sat at
+  // "1/8 · Cleanup" for twelve minutes beside a log in phases 2-3 because the record won
+  // (2026-11-06 audit). With events present they decide `current` — but only events the
+  // step list can place (an indexed or name-matching one); an unplaceable note must not
+  // reset a chip the record already knows how to draw.
+  const placeable = [...stageEvents].reverse().find((e) => Number.isFinite(e.index)
+    || (e.stage && stages.some((s) => norm(s) === norm(e.stage)
+      || norm(e.stage).includes(norm(s)) || norm(s).includes(norm(e.stage)))))
+  const current = placeable?.stage || stage || ''
   const indexed = [...stageEvents].reverse().find((e) => Number.isFinite(e.index))
   const total = stages.length || indexed?.total || 0
   let idx = -1

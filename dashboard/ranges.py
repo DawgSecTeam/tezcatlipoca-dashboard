@@ -7,11 +7,16 @@ on; a deploy/scrim run's own workspace is `<run_dir>/comp` (see runner._range_wo
 """
 
 import hashlib
+import re
 from pathlib import Path
 
 from dashboard import comps_api, estate
 
 IN_FLIGHT = ("queued", "running", "pausing", "paused")
+
+# `phase 4/8 golden_set`-style stamps: the runner's stage string for a deploy run. The
+# estate document records the same fact as `last_phase`; whichever is further wins.
+_PHASE_IN_STAGE = re.compile(r"phase\s+(\d+)\s*/\s*\d+", re.IGNORECASE)
 
 # The actions that cannot build infrastructure. `plan` renders a definition and `verify` inspects
 # an existing range; a workspace whose ONLY runs are these never held a range, so it must not get a
@@ -79,13 +84,19 @@ def retired_by(runs):
                  if r["action"] in ("destroy", "scrim") and r["returncode"] == 0), None)
 
 
-def range_state(key, runs, recorded=None, retired=False):
+def range_state(key, runs, recorded=None, retired=False, origin_failed=False):
     if any(r["state"] in IN_FLIGHT for r in runs):
         return "building"
     if recorded is None:
         recorded = has_vms(key)
     if recorded:
-        return "live"
+        # A deploy that FAILED and left its engine VM + bridge behind is not `live`: those
+        # VMs exist BECAUSE the build died, and calling the range live hid the one action
+        # that clears them (2026-11-06: run-90f48b3a failed at phase 3, its range reported
+        # live, and every later deploy refused at preflight on vmid 1420 / bridge vmbr121).
+        # Report `failed` with the leftover inventory still attached; a range that really
+        # completed (the estate document says seeded or last_phase 8) keeps `live`.
+        return "live" if not origin_failed else "failed"
     if retired:
         return "retired"
     if any(r["action"] == "destroy" for r in runs):
@@ -96,24 +107,60 @@ def range_state(key, runs, recorded=None, retired=False):
     return "failed"
 
 
+def _phase_reached(origin, key, flat=None):
+    """The furthest deploy phase this range's OWN records show (1..8), or None.
+
+    Two local sources agree on one number: the origin run's stage stamp (`phase 5/8
+    firewall_bootstrap`) and the estate document's `last_phase`. Verify and Reset act on
+    boxes that phase 4 onward creates — a deploy that died at phase 2 has nothing to
+    verify, and offering the action produced a run of meaningless check failures
+    (2026-11-06 audit). None means neither record says: an old workspace or a range with
+    no deploy run, where the caller must fall back rather than pretend.
+    """
+    phases = []
+    match = _PHASE_IN_STAGE.search((origin or {}).get("stage") or "")
+    if match:
+        phases.append(int(match.group(1)))
+    last = (flat if flat is not None else estate.load_flat(key)).get("last_phase")
+    if isinstance(last, (int, float)) and not isinstance(last, bool):
+        phases.append(int(last))
+    return max(phases) if phases else None
+
+
 def range_view(key, runs, reclaim=None):
     origin = next((r for r in runs if r["action"] in ("deploy", "scrim")
                    and str((Path(r["run_dir"]) / "comp").resolve()) == key), None)
     retiring = retired_by(runs)
+    # The range's own records of how far its deploy got, read once: `last_phase` feeds
+    # deploy_phase below, `seeded` says the build effectively finished even if the run row
+    # came back non-zero (an operator completed it by hand, a late phase-only crash).
+    flat = estate.load_flat(key)
+    # A failed deploy only poisons a range when it never went on to complete: the estate
+    # document is the completion authority, not the exit code alone.
+    completed = bool(flat.get("seeded")) or (
+        isinstance(flat.get("last_phase"), (int, float))
+        and not isinstance(flat.get("last_phase"), bool) and flat["last_phase"] >= 8)
+    origin_failed = bool(origin and origin.get("state") in ("failed", "cancelled")
+                         and not completed)
     # A range reclaimed by `destroy-competition.py --orphan-comp/--orphan-run` is retired in
     # the store: its workspace document still lists the VMs a teardown never got to forget, so
     # the recorded inventory must not win (the board kept a phantom `live` for crimson-relay
-    # range-b289904cf2d5ccdf while a Proxmox sweep found zero tagged VMs).
+    # range-b289904cf2d5ccdf while a Proxmox sweep found zero tagged VMs). A failed deploy, in
+    # contrast, still OWNS its leftovers: destroy must be able to reach that workspace.
     live_vms = has_vms(key)
     recorded = live_vms and reclaim is None
-    state = range_state(key, runs, recorded, retired=bool(retiring or reclaim))
+    state = range_state(key, runs, recorded, retired=bool(retiring or reclaim),
+                        origin_failed=origin_failed)
     kept = estate.kept_vms(Path(key))
     return {
         "id": range_id(key),
         "key": key,
         "comp_id": runs[0]["comp_id"],
         "state": state,
-        "live": state in ("building", "live", "teardown_failed"),
+        # `live` means "this range still has a claim on the estate": a failed deploy holding
+        # leftover VMs stays on the board (its leftovers collide with every later deploy),
+        # while a failed range that owns nothing drops off.
+        "live": state in ("building", "live", "teardown_failed") or (state == "failed" and recorded),
         # A deploy still owns this range: its engine may answer /api/engine but the range is
         # not ready to drive. The board, the range page and the run page all gate their
         # competition controls on this one recorded fact instead of guessing from `building`
@@ -132,6 +179,10 @@ def range_view(key, runs, reclaim=None):
                            for run in runs),
         "deploy_state": origin.get("state") if origin else None,
         "deploy_failed": bool(origin and origin.get("state") in ("failed", "cancelled")),
+        # How far the deploy actually got (see _phase_reached): the page gates Verify/Reset
+        # on this so a deploy that died before the boxes existed cannot offer actions that
+        # only fail against them.
+        "deploy_phase": _phase_reached(origin, key, flat=flat),
         # The recorded infrastructure is what the range's engine address and its recovery
         # actions hang on, so every view of a range carries it.
         "has_recorded_vms": recorded,
@@ -187,7 +238,7 @@ _RUN_FIELDS = ("id", "action", "state", "stage", "returncode", "created_at", "st
                "ended_at", "engine_head")
 _PARAM_FIELDS = ("teams", "team", "boxes", "mode", "comp_dir", "_destroy_comp_dir", "nodes",
                  "engine_node", "team_node", "engine_mgmt_ip", "team_identifiers",
-                 "scoring_vmid", "start_after_deploy")
+                 "scoring_vmid", "start_after_deploy", "auto_reclaim")
 
 
 def run_view(run, detail=False):
@@ -232,6 +283,7 @@ def range_summary(rng, inventory, requests):
     summary = {field: rng[field] for field in ("id", "key", "comp_id", "state", "live",
                                                "deploying", "tearing_down", "settled",
                                                "deploy_state", "deploy_failed",
+                                               "deploy_phase",
                                                "deploy_run_id", "has_recorded_vms",
                                                "kept_templates", "reclaimable_templates",
                                                "workspace_missing", "teams")}

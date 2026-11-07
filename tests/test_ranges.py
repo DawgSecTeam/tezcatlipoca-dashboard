@@ -85,12 +85,19 @@ def test_state_live_from_the_workspaces_vms(tmp_path):
     assert ranges.has_vms(str(ws)) is True
 
 
-def test_failed_build_with_vms_still_up_is_live(tmp_path):
-    """run-df29374d ended rc=1 while its range stayed deployed; the board must show it."""
+def test_failed_build_with_vms_still_up_stays_on_the_board(tmp_path):
+    """run-df29374d ended rc=1 while its range stayed deployed; the board must show it.
+
+    2026-11-06 refined this: VMs left by a FAILED origin are leftovers, not a live range —
+    they collide with every later deploy's preflight. The range now reads `failed` while
+    `live` stays true, so the board shows it and destroy can reach it. A build that really
+    completed (the document says seeded/last_phase 8) keeps `live` — see
+    test_a_completed_deploy_that_crashed_afterwards_stays_live in test_failed_deploy_reclaim.
+    """
     _workspace(tmp_path, "run-f", vms=True)
     rng = _range_of(_rec("run-f", "scrim", state="failed", rc=1, created=1,
                          run_dir=tmp_path / "run-f"))
-    assert (rng["state"], rng["live"]) == ("live", True)
+    assert (rng["state"], rng["live"], rng["has_recorded_vms"]) == ("failed", True, True)
 
 
 def test_state_retired(tmp_path):
@@ -324,15 +331,20 @@ def test_a_retired_document_retires(tmp_path):
     assert (rng["state"], rng["live"]) == ("retired", False)
 
 
-def test_a_failed_teardown_that_still_records_a_vm_stays_live(tmp_path):
-    """A refusal leaves its resource recorded, so the board must keep showing the range."""
+def test_a_failed_teardown_that_still_records_a_vm_stays_on_the_board(tmp_path):
+    """A refusal leaves its resource recorded, so the board must keep showing the range.
+
+    The origin here also failed, so the 2026-11-06 rule applies: recorded VMs from a dead
+    deploy are `failed` leftovers (destroy is the way out — and `live` keeps the workspace
+    resolvable for it), not a `live` range somebody could score.
+    """
     _workspace(tmp_path, "run-doc", vms=True)
     rng = _range_of(
         _rec("run-doc", "deploy", state="failed", rc=1, created=1, run_dir=tmp_path / "run-doc"),
         _rec("run-down", "destroy", state="failed", rc=1, created=2,
              run_dir=tmp_path / "run-down",
              params={"_destroy_comp_dir": str(tmp_path / "run-doc" / "comp")}))
-    assert (rng["state"], rng["live"]) == ("live", True)
+    assert (rng["state"], rng["live"], rng["has_recorded_vms"]) == ("failed", True, True)
 
 
 def test_a_teardown_that_empties_the_document_and_fails_is_teardown_failed(tmp_path):
@@ -753,3 +765,34 @@ def test_comp_defined_follows_the_definitions_checkout(tmp_path, monkeypatch):
     assert ranges.range_summary(rng, _EMPTY_INVENTORY, [])["comp_defined"] is False
     (tmp_path / "competitions" / "c").mkdir(parents=True)
     assert ranges.range_summary(rng, _EMPTY_INVENTORY, [])["comp_defined"] is True
+
+
+def test_deploy_phase_records_how_far_the_deploy_got(tmp_path):
+    """Verify/Reset need boxes; boxes arrive at phase 4 — the range must say how far it got.
+
+    A deploy that died before phase 4 offered both actions on the range page, and each
+    click answered with a run of meaningless check failures (2026-11-06 audit).
+    """
+    _workspace(tmp_path, "run-p2", vms=True)  # records the engine VM only, no last_phase
+    run = _rec("run-p2", "deploy", state="failed", rc=1, created=1, run_dir=tmp_path / "run-p2")
+    run["stage"] = "phase 2/8 prepare_engine"
+    rng = _range_of(run)
+    assert rng["deploy_phase"] == 2
+    assert ranges.range_summary(rng, _EMPTY_INVENTORY, [])["deploy_phase"] == 2
+
+
+def test_deploy_phase_prefers_the_further_of_run_stage_and_estate_document(tmp_path):
+    """Two local records of the same fact: the estate document may lead the run row."""
+    ws = _workspace(tmp_path, "run-p5", vms=True)
+    (ws / "estate-state.json").write_text(json.dumps(
+        {"identity": {}, "run": {"last_phase": 5}, "resources": [
+            {"kind": "engine", "vmid": 1000}]}))
+    run = _rec("run-p5", "deploy", created=1, run_dir=tmp_path / "run-p5")
+    run["stage"] = "phase 3/8 repair_sweep"
+    assert _range_of(run)["deploy_phase"] == 5
+
+
+def test_deploy_phase_is_none_when_nothing_says(tmp_path):
+    """An old workspace or a scrim origin: absent, not zero — the caller falls back."""
+    _workspace(tmp_path, "run-px")
+    assert _range_of(_rec("run-px", "deploy", created=1, run_dir=tmp_path / "run-px"))["deploy_phase"] is None

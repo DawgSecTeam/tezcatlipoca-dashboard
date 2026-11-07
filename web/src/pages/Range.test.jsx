@@ -6,7 +6,7 @@ import Range from './Range'
 import { ConfirmProvider } from '../components/kit'
 import { api } from '../api'
 import { useCompetitionData, useRangeData, useRangeDiagnosis } from '../useRangeData'
-vi.mock('../api', () => ({ api: { submitRun: vi.fn(), run: vi.fn(), runEvents: vi.fn(), requests: vi.fn().mockResolvedValue([]), ranges: vi.fn().mockResolvedValue([]) } }))
+vi.mock('../api', () => ({ api: { submitRun: vi.fn(), run: vi.fn(), runEvents: vi.fn(), requests: vi.fn().mockResolvedValue([]), ranges: vi.fn().mockResolvedValue([]) }, onTokenChanged: () => () => {} }))
 vi.mock('../useRangeData', () => ({ useRangeData: vi.fn(), useCompetitionData: vi.fn(), useRangeDiagnosis: vi.fn() }))
 vi.mock('../components/RunTeams', () => ({ default: () => <div>Team inventory</div>, ResetRequests: () => <section><h3>Reset requests</h3></section> }))
 vi.mock('../components/RunInfra', () => ({ default: () => <div>Technical inventory</div> }))
@@ -233,4 +233,42 @@ it('leads with the server diagnosis when the range has a real problem', () => {
   expect(screen.getByText(/failed to deploy/)).toBeTruthy()
   expect(screen.getByText(/No module named 'toml'/)).toBeTruthy()
   expect(screen.queryByRole('region', { name: 'Attention needed' })).toBeNull()
+})
+
+it('holds Verify and Reset back until the deploy reached phase 4', () => {
+  // (2026-11-06 audit) A deploy that died at phase 2 has no boxes: both offered actions
+  // produced strings of meaningless check failures instead.
+  useRangeData.mockReturnValue({
+    data: { ...fixture, state: 'failed', deploy_failed: true, deploy_phase: 2 },
+    error: null, refresh: vi.fn(),
+  })
+  open()
+  const verify = screen.getByRole('button', { name: /Verify range/ })
+  expect(verify.disabled).toBe(true)
+  expect(verify.getAttribute('title')).toMatch(/never reached phase 4 .*stopped at phase 2/)
+  expect(screen.getByRole('button', { name: /Reset a box/ }).disabled).toBe(true)
+})
+
+it('lets Verify and Reset through once the deploy is recorded at phase 4 or beyond', () => {
+  useRangeData.mockReturnValue({
+    data: { ...fixture, state: 'failed', deploy_failed: true, deploy_phase: 4 },
+    error: null, refresh: vi.fn(),
+  })
+  open()
+  expect(screen.getByRole('button', { name: /Verify range/ }).disabled).toBe(false)
+})
+
+it('names the reclaim for a failed deploy that still holds its VMs', () => {
+  // The poisoned case: leftovers collide with every later preflight, so the destroy
+  // becomes a named header button and an overview banner, not an item behind the ⋯ menu.
+  useRangeData.mockReturnValue({
+    data: { ...fixture, state: 'failed', deploy_failed: true, deploy_phase: 3, has_recorded_vms: true },
+    error: null, refresh: vi.fn(),
+  })
+  open()
+  expect(screen.getByRole('button', { name: /Destroy leftover VMs/ })).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'More range actions' })).toBeNull()
+  expect(screen.getByText(/still holds its VMs and bridge/)).toBeTruthy()
+  // And the command bar tells the truth about which step failed (not 'retry the teardown').
+  expect(screen.getByText(/last deploy did not finish, and this range still holds/)).toBeTruthy()
 })

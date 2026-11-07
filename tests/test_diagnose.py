@@ -398,3 +398,75 @@ def test_a_pause_request_that_has_gone_silent_is_a_warning(tmp_path):
     assert f["code"] == "run_pause_pending_stalled"
     assert f["severity"] == "warning"
     assert "Cancel run" in f["advice"]
+
+
+class LedgerStore(FakeStore):
+    """FakeStore plus the run ledger, so a diagnosis can cross-reference /api/ranges."""
+
+    def __init__(self, runs, events=None):
+        super().__init__(events=events)
+        self._runs = sorted(runs, key=lambda r: r["created_at"], reverse=True)
+
+    def list_runs(self, state=None, comp_id=None):
+        return self._runs
+
+    def list_range_retires(self):
+        return {}
+
+
+def _holder_run(tmp_path, rid="run-holder", comp="crimson-relay", vmid=1420, bridge="vmbr121"):
+    """A succeeded deploy whose estate document RECORDS the contested vmid and bridge."""
+    run = _run(tmp_path, rid=rid, state="succeeded", rc=0, log="deployed\n")
+    run["comp_id"] = comp
+    (Path(run["run_dir"]) / "comp" / "estate-state.json").write_text(json.dumps({
+        "identity": {"comp_name": comp, "run_id": rid},
+        "resources": [
+            {"kind": "team_box", "node": "pve", "name": "web01", "vmid": vmid, "bridge": None},
+            {"kind": "bridge", "node": "pve", "name": bridge, "vmid": None, "bridge": bridge},
+        ]}))
+    return run
+
+
+def test_a_preflight_collision_names_the_owning_range(tmp_path):
+    """The engine's refusal sends the operator to Proxmox; the range ledger names the holder.
+
+    A vmid/bridge held by one of OUR ranges is released by opening or destroying that range
+    — 'sync templates, free capacity, raise max_teams/weight' is the wrong advice there
+    (2026-11-06 audit: a 13-minute failed deploy diagnosed against capacity while range
+    X sat on 1420 the whole time).
+    """
+    holder = _holder_run(tmp_path)
+    failing = _run(tmp_path, error="preflight refused: vmid collisions: [1420], "
+                                   "bridge collisions: [vmbr121] — sync templates, free "
+                                   "capacity, or raise max_teams/weight")
+    out = diagnose.diagnose_run(LedgerStore([holder, failing]), failing)
+    codes = [f["code"] for f in out["findings"]]
+    assert "preflight_refused" in codes
+    collisions = [f for f in out["findings"] if f["code"] == "collision_held_by_range"]
+    assert {f["title"] for f in collisions} == {
+        f"vmid 1420 is held by range {ranges.range_id(str(Path(holder['run_dir']) / 'comp'))} (crimson-relay)",
+        f"bridge vmbr121 is held by range {ranges.range_id(str(Path(holder['run_dir']) / 'comp'))} (crimson-relay)",
+    }
+    f = collisions[0]
+    assert "held by range" in f["advice"] and "open or destroy it" in f["advice"]
+    assert f["range_id"] == ranges.range_id(str(Path(holder["run_dir"]) / "comp"))
+    assert f["severity"] == "error"
+
+
+def test_a_collision_the_ledger_cannot_attribute_keeps_the_engine_advice(tmp_path):
+    """Nobody of ours records it: the preflight rule's own advice must stand alone."""
+    failing = _run(tmp_path, error="preflight refused: vmid collisions: [1499] — "
+                                   "sync templates, free capacity, or raise max_teams/weight")
+    out = diagnose.diagnose_run(LedgerStore([failing]), failing)
+    codes = [f["code"] for f in out["findings"]]
+    assert "preflight_refused" in codes
+    assert "collision_held_by_range" not in codes
+    rule = next(f for f in out["findings"] if f["code"] == "preflight_refused")
+    assert "team_identifiers" in rule["advice"]
+
+
+def test_a_diagnosis_without_a_run_ledger_still_answers(tmp_path):
+    """A bare event store (no list_runs) must not crash the collision cross-reference."""
+    failing = _run(tmp_path, error="preflight refused: vmid collisions: [1420]")
+    out = diagnose.diagnose_run(FakeStore(), failing)
+    assert out["findings"][0]["code"] == "preflight_refused"

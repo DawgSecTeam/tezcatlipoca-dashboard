@@ -879,6 +879,16 @@ class RunManager:
             key = ranges.range_key(run)
             self.store.revoke_range_token(key)
             self.store.close_requests_for_range(key)
+        # A deploy that failed holding recorded VMs poisons its own retry: the next
+        # preflight collides on exactly those vmids/bridges (2026-11-06: run-90f48b3a
+        # failed at phase 3 and every later deploy refused on vmid 1420 / bridge vmbr121
+        # until a destroy ran). `auto_reclaim` is the per-deploy opt-in that closes the
+        # loop the moment the failed deploy comes to rest. Deliberately opt-in: an
+        # operator debugging a half-built range must never lose it to an automatic
+        # teardown, and a cancel is the operator's own hand on the wheel.
+        if (state == "failed" and run.get("action") == "deploy"
+                and (run.get("params") or {}).get("auto_reclaim")):
+            self._auto_reclaim(run, rc)
         # An approved reset request rides the redeploy run that resolves it: a clean exit
         # is `done`, anything else is `failed` (the team's chip frees the box either way —
         # done/denied/failed all allow a new request). The update is conditional so the
@@ -890,6 +900,34 @@ class RunManager:
                 self._emit(run_id, "request", data={"request": req["id"],
                                                     "status": outcome, "team": req["team"],
                                                     "box": req["box"]})
+
+    def _auto_reclaim(self, run, rc):
+        """Submit the destroy that reclaims a failed deploy's leftovers (per-deploy opt-in).
+
+        Reuses the one reclaim path that is proven against these workspaces — a destroy run
+        walking the estate document — rather than reaching for Proxmox from the dashboard.
+        Reclaim failures are logged onto the failed run itself: the deploy already failed,
+        and a second traceback from the cleanup must not bury the first cause.
+        """
+        run_id = run["id"]
+        ws = Path(run["run_dir"]) / "comp" if run.get("run_dir") else None
+        if not ws or not ws.is_dir() or not ranges.has_vms(ws):
+            # Nothing recorded to reclaim: a phase-1 crash touched no VM, and a destroy
+            # run over an empty workspace would only add noise to the ledger.
+            log.info("auto-reclaim for %s: workspace records no VMs, nothing to reclaim", run_id)
+            return
+        try:
+            created = self.submit(run["comp_id"], "destroy", run.get("engine_ref"),
+                                  {"comp_dir": str(ws),
+                                   "reason": f"auto-reclaim after {run_id} failed (rc={rc})"})
+        except Exception as exc:  # the deploy already failed: a refused reclaim is a note,
+            log.warning("auto-reclaim for %s refused: %s", run_id, exc)
+            self._append_run_log(run, f"auto-reclaim refused: {exc}")
+            return
+        log.warning("auto-reclaim destroy %s submitted for failed deploy %s",
+                    created["id"], run_id)
+        self._append_run_log(run, f"auto-reclaim destroy submitted: {created['id']}")
+        self._emit(run_id, "lifecycle", data={"state": "failed", "auto_reclaim_run": created["id"]})
 
     def _cancel_requested(self, run_id):
         _, events = self.store.get_events(run_id, 0)

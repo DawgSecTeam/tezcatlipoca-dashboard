@@ -28,9 +28,36 @@ function Footprint({ comp, teams }) {
   )
 }
 
+// The engine derives every team box's vmid as `200 + identifier*10 + boxIndex`. A vmid the
+// operator picks "because it's free" can therefore collide with a box THIS deploy creates
+// (identifier 121 puts box 0 on 1410), and preflight only says so after a 13-minute build.
+// These two helpers make the arithmetic visible and refuse the submit up front
+// (2026-11-06 audit). Exported for tests.
+export function derivedBoxVmids(identifiers, teams, boxCount) {
+  const ids = String(identifiers || '').split(',').map((s) => s.trim()).filter(Boolean).map(Number)
+  const n = Number(teams) || 0
+  return ids.filter(Number.isFinite).slice(0, n).map((id) => ({
+    identifier: id,
+    vmids: Array.from({ length: Math.max(0, Number(boxCount) || 0) }, (_, i) => 200 + id * 10 + i),
+  }))
+}
+
+// The collision itself, or null: `{vmid, identifier, boxIndex}` naming the box the Engine
+// VM ID would overwrite. An empty vmid is "auto" — nothing to check.
+export function engineVmidConflict(identifiers, teams, boxCount, vmid) {
+  const raw = String(vmid || '').trim()
+  if (!raw || !/^\d+$/.test(raw)) return null
+  const v = Number(raw)
+  for (const team of derivedBoxVmids(identifiers, teams, boxCount)) {
+    const boxIndex = team.vmids.indexOf(v)
+    if (boxIndex >= 0) return { vmid: v, identifier: team.identifier, boxIndex }
+  }
+  return null
+}
+
 export default function DeployPanel({ comp }) {
   const [nodes, setNodes] = useState(null)
-  const [form, setForm] = useState({ engine_ref: '', teams: 2, scoring_vmid: '', engine_node: '', team_node: '', nodes: [], start_after_deploy: false, team_identifiers: '', engine_mgmt_ip: '' })
+  const [form, setForm] = useState({ engine_ref: '', teams: 2, scoring_vmid: '', engine_node: '', team_node: '', nodes: [], start_after_deploy: false, auto_reclaim: false, team_identifiers: '', engine_mgmt_ip: '' })
   const [runs, setRuns] = useState([])
   const [viewing, setViewing] = useState(null)
   const [confirm, setConfirm] = useState(false)
@@ -86,10 +113,23 @@ export default function DeployPanel({ comp }) {
   }, [viewingLog.running, viewing]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const noBoxes = comp.boxes.length === 0
+  // The derived box vmids, so the arithmetic is visible, and the collision the panel used
+  // to leave to a 13-minute preflight (see engineVmidConflict above).
+  const boxVmids = derivedBoxVmids(form.team_identifiers, form.teams, comp.boxes.length)
+  const vmidConflict = engineVmidConflict(form.team_identifiers, form.teams, comp.boxes.length, form.scoring_vmid)
+  const conflictCopy = vmidConflict
+    ? `VMID ${vmidConflict.vmid} collides with this deploy's own boxes: team ${vmidConflict.identifier} `
+      + `box ${vmidConflict.boxIndex + 1}${comp.boxes[vmidConflict.boxIndex]?.name ? ` (${comp.boxes[vmidConflict.boxIndex].name})` : ''} `
+      + `lands on ${vmidConflict.vmid} (200 + ${vmidConflict.identifier}×10 + ${vmidConflict.boxIndex}). `
+      + 'Choose a different Engine VM ID or team identifiers.'
+    : null
   const submit = async (action) => {
     // The confirm dialog closes before the request lands; a second click used to submit a
     // second deploy/plan for the same form.
     if (busy.current) return
+    // The up-front guard behind the disabled buttons: a self-colliding vmid is arithmetic,
+    // not a race — never spend a deploy discovering it.
+    if (action === 'deploy' && vmidConflict) return
     busy.current = true; setSubmitting(true); setErr(null)
     try {
       const run = await api.submitRun({
@@ -105,9 +145,28 @@ export default function DeployPanel({ comp }) {
         // a second range on a shared node cannot be submitted at all (2026-11-06 audit).
         team_identifiers: form.team_identifiers.trim() || null,
         engine_mgmt_ip: form.engine_mgmt_ip.trim() || null,
-        // deploy and start are separate steps; the checkbox buys the one-shot back
-        ...(form.start_after_deploy ? { params: { start_after_deploy: true } } : {}),
+        // deploy and start are separate steps; the checkbox buys the one-shot back.
+        // auto_reclaim (the other checkbox): on failure the runner submits the destroy that
+        // reclaims the engine VM + bridge this deploy leaves behind — the leftovers that
+        // otherwise collide with every retry at preflight (2026-11-06: run-90f48b3a poisoned
+        // the estate twice until a destroy ran).
+        ...(form.start_after_deploy || form.auto_reclaim
+          ? {
+            params: {
+              ...(form.start_after_deploy ? { start_after_deploy: true } : {}),
+              ...(form.auto_reclaim ? { auto_reclaim: true } : {}),
+            },
+          }
+          : {}),
       })
+      // A deploy that closed with no toast, no link and no redirect left the operator
+      // staring at an unchanged panel (2026-11-06 audit). The range-page actions already
+      // toast `Operation run-… submitted`; match that pattern and make the run one click
+      // away — /runs?run=<id> opens the run drawer directly.
+      toast(<>
+        {ACTION_LABEL[action] || action} submitted ·{' '}
+        <Link className="underline" to={`/runs?run=${encodeURIComponent(run.id)}`}>{run.id}</Link>
+      </>)
       setViewing(run)
       refreshRuns()
     } catch (e) { setErr(e) }
@@ -150,6 +209,17 @@ export default function DeployPanel({ comp }) {
             Start the competition right after deploying
           </label>
         </Field>
+        {/* The failed-deploy trap (2026-11-06): a deploy that dies mid-build keeps its
+            engine VM and bridge, and every later deploy then collides on them. On, the
+            runner submits the reclaiming destroy automatically when this deploy fails;
+            off (default) leaves the half-built range for inspection, as before. */}
+        <Field label="On failure" hint="Off (default): a failed deploy keeps its VMs and bridge for inspection — destroy that range before retrying, or its leftovers will collide with the retry's preflight. On: the dashboard submits the reclaiming destroy for you the moment the deploy fails.">
+          <label className="flex items-center gap-3 rounded-xl bg-sunken px-3 py-2 text-sm shadow-inset">
+            <input type="checkbox" checked={form.auto_reclaim}
+              onChange={(e) => setForm({ ...form, auto_reclaim: e.target.checked })} />
+            Reclaim leftover VMs automatically if this deploy fails
+          </label>
+        </Field>
         <Footprint comp={comp} teams={form.teams} />
         <Field label="Proxmox nodes"
           hint={selected.length ? 'The pinned engine node hosts the engine; teams fill the selected nodes.' : 'Nothing selected — the run falls back to the service .env (single node).'}>
@@ -177,8 +247,14 @@ export default function DeployPanel({ comp }) {
             )}
           </div>
         </Field>
-        <Field label="Engine VM ID" hint="A free Proxmox VMID for the scoring engine. Preflight refuses collisions.">
+        <Field label="Engine VM ID" hint={boxVmids.length
+          // Show the derived box vmids: the collision below is invisible arithmetic otherwise.
+          ? `Box vmids are derived from the identifiers: ${boxVmids.map((t) => `team ${t.identifier} → ${t.vmids[0]}–${t.vmids[t.vmids.length - 1]}`).join(', ')}. The engine must not be one of them.`
+          : 'A free Proxmox VMID for the scoring engine. Preflight refuses collisions.'}>
           <input inputMode="numeric" className={`${inputCls} font-mono`} value={form.scoring_vmid} onChange={(e) => setForm({ ...form, scoring_vmid: e.target.value.replace(/\D/g, '') })} placeholder="auto" />
+          {conflictCopy && (
+            <p className="mt-1 text-xs font-semibold text-danger" role="alert">{conflictCopy}</p>
+          )}
         </Field>
         {/* The two per-run estate gates. Both are submit params the API has always accepted, but
             the panel never exposed them, so a second range on a shared node could not be submitted
@@ -194,7 +270,10 @@ export default function DeployPanel({ comp }) {
             placeholder="10.0.0.252" />
         </Field>
         <div className="space-y-3 pt-1">
-          <Button variant="primary" className="w-full !py-2.5" disabled={noBoxes || submitting} onClick={() => setConfirm(true)}>
+          {/* A self-colliding engine vmid is arithmetic, not a preflight secret: the
+              Deploy path stays shut while the collision stands (the Dry run touches no
+              Proxmox, so it stays available for definition debugging). */}
+          <Button variant="primary" className="w-full !py-2.5" disabled={noBoxes || submitting || !!vmidConflict} onClick={() => setConfirm(true)}>
             <Icon name="rocket" />{submitting ? 'Submitting…' : `Deploy ${form.teams || 0} team${Number(form.teams) === 1 ? '' : 's'}`}
           </Button>
           <Button disabled={noBoxes || submitting} onClick={() => submit('plan')} title="create-competition.py --plan-only: renders the plan and touches nothing. It does NOT contact the node, so it proves the definition is buildable, not that the estate can host it.">
@@ -221,7 +300,7 @@ export default function DeployPanel({ comp }) {
         </code>
         <div className="mt-6 flex justify-end gap-3">
           <Button onClick={() => setConfirm(false)}>Cancel</Button>
-          <Button variant="primary" autoFocus disabled={submitting} onClick={() => { setConfirm(false); submit('deploy') }}><Icon name="rocket" />Deploy</Button>
+          <Button variant="primary" autoFocus disabled={submitting || !!vmidConflict} onClick={() => { setConfirm(false); submit('deploy') }}><Icon name="rocket" />Deploy</Button>
         </div>
       </Modal>
       <Modal open={editing} onClose={() => setEditing(false)} title="Proxmox nodes" wide>

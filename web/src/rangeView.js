@@ -126,6 +126,27 @@ export function rangeStatus(range) {
   return { ...hero, label: `${hero.label}${held ? ' · held' : run.state === 'queued' ? ' · queued' : ''}`, detail: run.stage || '' }
 }
 
+// Reconcile the board's in-flight rows against the run queue (GET /api/runs).
+// The board poll is a BACKGROUND fetch: when its token went stale it kept serving the
+// last good observation, and a run stayed 'running' on the board after its process had
+// exited (2026-11-06 audit). The run queue is the truth for a run's state, so a board
+// row the queue reports terminal is dropped from `active_runs` (the card falls back to
+// its recorded-state hero), and rows the queue still carries take the queue's state.
+// A queue that never loaded (null) or lacks the run changes nothing — absence from the
+// queue is not proof, the queue may be filtered mid-load.
+export function reconcileBoard(board, queue) {
+  if (!queue?.length) return board
+  const stateById = new Map(queue.map((run) => [run.id, run]))
+  return board.map((range) => {
+    if (!range.active_runs?.length) return range
+    const active = range.active_runs
+      .map((run) => stateById.get(run.id) || run)
+      .filter((run) => isOperating(run))
+    if (active.length === range.active_runs.length) return range
+    return { ...range, active_runs: active }
+  })
+}
+
 export function filterCounts(ranges) {
   const live = ranges.filter((range) => range.live)
   return {

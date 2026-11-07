@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, expect, it, vi } from 'vitest'
 import Live from './Live'
 import { api } from '../api'
-vi.mock('../api', () => ({ api: { rangeBoard: vi.fn(), comps: vi.fn(), requests: vi.fn().mockResolvedValue([]), ranges: vi.fn().mockResolvedValue([]) } }))
+vi.mock('../api', () => ({ api: { rangeBoard: vi.fn(), runs: vi.fn().mockResolvedValue([]), comps: vi.fn(), requests: vi.fn().mockResolvedValue([]), ranges: vi.fn().mockResolvedValue([]) }, onTokenChanged: () => () => {} }))
 vi.mock('../components/runui', () => ({ ACTION_LABEL: { verify: 'Verify', deploy: 'Deploy' }, NewRunModal: () => null, stageProgress: (run) => ({ total: 1, idx: 0, label: run.stage || '' }) }))
 afterEach(cleanup)
 
@@ -48,4 +48,29 @@ it('identifies each range and links no engine that is not there', async () => {
   expect(screen.getByRole('link', { name: 'Teardown incomplete' }).getAttribute('href')).toBe('/ranges/range-x/activity?operation=down-x')
   expect(screen.getByRole('link', { name: 'Engine unreachable' }).getAttribute('href')).toBe('/ranges/range-y')
   expect(screen.queryByRole('link', { name: /Scoreboard/ })).toBeNull()
+})
+
+it('reconciles a board run the queue already reports as finished', async () => {
+  // (2026-11-06 audit) The board poll is background: on a stale token it kept serving the
+  // last good observation and the card held 'running' after the process exited. The run
+  // queue (GET /api/runs) is the authority the card must reconcile against.
+  api.comps.mockResolvedValue([])
+  api.rangeBoard.mockResolvedValue([
+    { id: 'range-z', deploy_run_id: 'deploy-z', comp_id: 'z', name: 'Zed', live: true, state: 'building', has_recorded_vms: true, counts: { teams: 2, boxes: 6 }, nodes: [], active_runs: [{ id: 'deploy-z', action: 'deploy', state: 'running', stage: 'phase 1/8 cleanup' }], deployed_at: Date.now() / 1000 - 60 },
+  ])
+  api.runs.mockResolvedValue([{ id: 'deploy-z', action: 'deploy', state: 'succeeded', returncode: 0 }])
+  render(<MemoryRouter><Live /></MemoryRouter>)
+  expect(await screen.findByText('Deployed')).toBeTruthy()
+  expect(screen.queryByRole('link', { name: /^Deploying/ })).toBeNull()
+})
+
+it('keeps the board row when the queue fetch itself failed', async () => {
+  // Absence of the queue is not proof of a finished run: the card keeps its observation.
+  api.comps.mockResolvedValue([])
+  api.rangeBoard.mockResolvedValue([
+    { id: 'range-q', deploy_run_id: 'deploy-q', comp_id: 'q', name: 'Queued loss', live: true, state: 'building', has_recorded_vms: true, counts: {}, nodes: [], active_runs: [{ id: 'deploy-q', action: 'deploy', state: 'running', stage: 'phase 2/8 engine_template' }], deployed_at: Date.now() / 1000 - 60 },
+  ])
+  api.runs.mockRejectedValue(new Error('offline'))
+  render(<MemoryRouter><Live /></MemoryRouter>)
+  expect(await screen.findByRole('link', { name: /^Deploying/ })).toBeTruthy()
 })

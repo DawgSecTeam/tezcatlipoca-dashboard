@@ -66,6 +66,17 @@ function OperationRow({ run, range }) {
 function ActiveOperation({ run, range, refresh }) {
   const { pause, resume, cancel, live, held, canPause } = useRunActions(run, refresh, range)
   const log = useRunLog(run.id)
+  // The strip must follow the STAGE EVENTS, not the record's `stage` string: the chip sat
+  // at "1/8 · Cleanup" for twelve minutes while the driver log was two phases further on
+  // (2026-11-06 audit). The events endpoint/SSE stream is the wire truth.
+  const [events, setEvents] = useState([])
+  useRunEvents(run.id, (event) => {
+    if (event.kind === 'stage') {
+      setEvents((old) => (old.some((item) => item.seq === event.seq)
+        ? old
+        : [...old, event].sort((a, b) => (a.seq || 0) - (b.seq || 0))))
+    }
+  })
   return <Card className="p-5 sm:p-6">
     <div className="mb-4 flex flex-wrap items-center gap-3">
       <h2 className="text-base font-semibold">{ACTION_LABEL[run.action] || run.action} in progress</h2>
@@ -73,7 +84,8 @@ function ActiveOperation({ run, range, refresh }) {
       <span className="text-xs text-faint">started {agoMs(run.started_at || run.created_at)} · {fmtSpan(run.started_at || run.created_at, run.ended_at)}</span>
       <Link to={`/ranges/${range.id}/activity?operation=${run.id}`} className="ml-auto text-xs font-semibold text-accent hover:underline">View output</Link>
     </div>
-    <StageStrip action={run.action} stage={run.stage} state={run.state} endedAt={run.ended_at} />
+    <StageStrip action={run.action} stage={run.stage} state={run.state} endedAt={run.ended_at}
+      stageEvents={events.filter((event) => event.kind === 'stage')} />
     {(canPause || held || live) && <div className="mt-4 flex flex-wrap gap-2">
       {canPause && <Button onClick={pause}><Icon name="pause" />Pause after this stage</Button>}
       {held && <Button variant="primary" onClick={resume}><Icon name="play" />Resume</Button>}
@@ -136,7 +148,7 @@ function RangeFacts({ range, summary }) {
   </Card>
 }
 
-function RangeOverview({ range, onSubmitted, refresh, disabled }) {
+function RangeOverview({ range, onSubmitted, refresh, disabled, onDestroyLeftovers }) {
   const summary = detailSummary(range)
   const issues = rangeIssues(summary).filter((issue) => issue.kind !== 'requests')
   // The server's verdict supersedes the client heuristic whenever it names a real problem:
@@ -147,6 +159,18 @@ function RangeOverview({ range, onSubmitted, refresh, disabled }) {
   const diagnosed = diagnosis && ['error', 'warning'].includes(diagnosis.severity)
   return <div className="range-overview">
     <div className="min-w-0 space-y-6">
+      {range.state === 'failed' && range.has_recorded_vms && (
+        <section role="alert" className="rounded-2xl border border-danger/30 bg-danger-soft p-5 sm:p-6">
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-danger"><Icon name="warn" />This failed deploy still holds its VMs and bridge</h2>
+          <p className="mt-3 text-sm leading-relaxed">
+            The estate document records infrastructure the deploy never finished building, and those
+            leftovers are what every later deploy collides with at preflight (“vmid collisions”,
+            “bridge collisions”) — no amount of free capacity or template syncing changes that.
+            Destroying this range reclaims exactly what the failed deploy created.
+          </p>
+          <Button variant="danger" className="mt-4" onClick={onDestroyLeftovers}><Icon name="trash" />Destroy this range to reclaim them</Button>
+        </section>
+      )}
       {diagnosed ? <Diagnosis diagnosis={diagnosis} /> : !!issues.length && <section className="rounded-2xl border border-danger/20 bg-danger-soft p-5 sm:p-6" aria-label="Attention needed">
         <h2 className="flex items-center gap-2 text-sm font-semibold text-danger"><Icon name="warn" />Attention needed</h2>
         <ul className="mt-3 space-y-3">{issues.map((issue, index) => <li key={`${issue.kind}-${index}`} className="flex flex-wrap items-baseline justify-between gap-2 text-sm leading-relaxed">
@@ -255,6 +279,18 @@ export default function Range() {
   // button already looked usable.
   const missingIdentity = !range.comp_id || !range.engine_ref
   const usable = !retired && !pending && !error && settled && !missingIdentity
+  // Verify and box-reset act on DEPLOYED boxes: a deploy that never reached phase 4
+  // (the golden set) has none, and each offered click produced a string of meaningless
+  // check failures (2026-11-06 audit). `deploy_phase` is the range's own record; older
+  // workspaces without it fall back to the failure flags.
+  const deployBuilt = range.deploy_phase != null
+    ? range.deploy_phase >= 4
+    : !range.deploy_failed && range.state !== 'failed'
+  const notBuiltReason = `This range's deploy never reached phase 4 (the golden set)${range.deploy_phase != null ? ` — it stopped at phase ${range.deploy_phase}` : ''}: there are no boxes to verify or reset. Redeploy first; destroy any leftovers the failed build recorded.`
+  // A failed deploy that still holds its engine VM + bridge is the poisoned case: the
+  // leftovers make every later deploy collide at preflight, so the reclaim is the one
+  // action that deserves a named button, not an item behind a ⋯ menu.
+  const holdingLeftovers = range.state === 'failed' && !!range.has_recorded_vms
   const canDestroy = !pending && !error && (!retired || reclaimable)
   const activeRun = summary.active_runs[0]
   // A range whose newest destroy failed is not necessarily torn down (`teardown_failed`
@@ -295,19 +331,21 @@ export default function Range() {
             {activeRun && <Link to={`/ranges/${range.id}/activity?operation=${activeRun.id}`} className="font-semibold text-accent hover:underline">{ACTION_LABEL[activeRun.action] || activeRun.action} · {activeRun.state}{activeRun.stage ? ` · ${activeRun.stage}` : ''}</Link>}
           </div>
         </div>
-        <div className="flex flex-wrap gap-2"><Button onClick={() => submit('verify')} disabled={!usable}><Icon name="check" />Verify range</Button><Button onClick={() => setReset(true)} disabled={!usable || !range.inventory?.teams?.length}><Icon name="box" />Reset a box</Button>{canDestroy && <ActionsMenu onDestroy={() => submit('destroy')} />}</div>
+        <div className="flex flex-wrap gap-2"><Button onClick={() => submit('verify')} disabled={!usable || !deployBuilt} title={!deployBuilt ? notBuiltReason : undefined}><Icon name="check" />Verify range</Button><Button onClick={() => setReset(true)} disabled={!usable || !deployBuilt || !range.inventory?.teams?.length} title={!deployBuilt ? notBuiltReason : undefined}><Icon name="box" />Reset a box</Button>{canDestroy && (holdingLeftovers
+          ? <Button variant="danger" onClick={() => submit('destroy')} disabled={pending || !!error}><Icon name="trash" />Destroy leftover VMs</Button>
+          : <ActionsMenu onDestroy={() => submit('destroy')} />)}</div>
       </div>
       <div className="mt-4"><RangeCommandBar range={range} competition={competition} onSubmitted={onSubmitted} disabled={!usable} /></div>
     </header>
     <ErrorBanner error={error} onRetry={reload} />
     {submitted && <div role="status" className="mb-5 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-accent-soft px-4 py-3 text-sm"><span>Submitted <span className="font-mono text-xs">{submitted.id}</span></span><Link className="font-semibold text-accent hover:underline" to={`/ranges/${range.id}/activity?operation=${submitted.id}`}>View operation</Link></div>}
     <nav className="mb-7 flex flex-wrap gap-1 border-b border-line" aria-label="Range sections">{SECTIONS.map(([path, label, icon]) => <NavLink key={path} end to={`/ranges/${range.id}${path ? `/${path}` : ''}`} className={({ isActive }) => `inline-flex shrink-0 items-center gap-2 border-b-2 px-3 py-3 text-sm ${isActive ? 'border-accent font-semibold text-accent' : 'border-transparent text-muted hover:text-fg'}`}><Icon name={icon} />{label}{path === 'teams' && summary.pending_requests > 0 && <span className="chip bg-danger-soft text-danger">{summary.pending_requests}</span>}</NavLink>)}</nav>
-    {section === '' && <RangeOverview range={range} onSubmitted={onSubmitted} refresh={reload} disabled={!usable} />}
+    {section === '' && <RangeOverview range={range} onSubmitted={onSubmitted} refresh={reload} disabled={!usable} onDestroyLeftovers={() => submit('destroy')} />}
     {section === 'teams' && <RunTeams run={origin} inventory={scopedInventory} disabled={!usable} onSubmitted={onSubmitted} showMachines={false} />}
     {section === 'infrastructure' && <RunInfra run={origin} inventory={scopedInventory} teardownFailed={teardownIssue} />}
     {section === 'activity' && <RangeActivity range={range} refresh={reload} />}
     {section === 'evidence' && <Evidence runId={origin.id} range={range} />}
-    <ResetBoxModal open={reset} onClose={() => setReset(false)} run={origin} range={range} teams={range.inventory?.teams} onSubmitted={onSubmitted} disabled={!usable} />
+    <ResetBoxModal open={reset} onClose={() => setReset(false)} run={origin} range={range} teams={range.inventory?.teams} onSubmitted={onSubmitted} disabled={!usable || !deployBuilt} />
   </main>
 }
 

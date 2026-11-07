@@ -2,7 +2,7 @@
 // stage timeline, event list, live log and collected artifacts.
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { api } from '../api'
+import { api, onTokenChanged } from '../api'
 import TopNav from '../components/Nav'
 import { Button, Card, ErrorBanner, SearchInput, Spinner } from '../components/ui'
 import { EmptyState, Icon, PageHeader, agoMs, fmtSpan, useTick } from '../components/kit'
@@ -232,6 +232,8 @@ export default function Runs() {
     const t = setInterval(load, 8000)
     return () => { active = false; clearInterval(t) }
   }, [filter, attempt])
+  // A token saved from the dialog refills the table immediately (2026-11-06 audit).
+  useEffect(() => onTokenChanged(() => setAttempt((n) => n + 1)), [])
 
   const comps = useMemo(() => [...new Set((runs || []).map((r) => r.comp_id))].sort(), [runs])
   const groups = useMemo(() => {

@@ -140,7 +140,12 @@ export default function RangeCommandBar({ range, competition, onSubmitted, disab
         </div>
         <ErrorBanner error={submitError || competition.error} onClose={submitError ? () => setSubmitError(null) : undefined} />
         {range.deploy_failed && !torn && <p className="mt-2 text-xs text-danger">The last deploy did not finish. Verify the range before starting the competition.</p>}
-        {torn && <p className="mt-2 text-xs text-danger">This range's infrastructure is incomplete — its last teardown did not finish. Retry the teardown before driving the competition.</p>}
+        {torn && <p className="mt-2 text-xs text-danger">{range.deploy_failed
+          // The poisoned range (2026-11-06): a failed deploy holding its VMs is not a
+          // teardown problem, and 'retry the teardown' would send the operator hunting a
+          // destroy that never ran. The reclaim IS the next step.
+          ? 'The last deploy did not finish, and this range still holds the VMs and bridge it created. Destroy the range to release them, then redeploy — lifecycle controls stay disabled.'
+          : 'This range\'s infrastructure is incomplete — its last teardown did not finish. Retry the teardown before driving the competition.'}</p>}
         {!torn && !noEngine && missingIdentity && <p className="mt-2 text-xs text-danger">Lifecycle actions require the range's competition identity and originating engine ref. Refresh the range details before submitting.</p>}
         {!noEngine && view && !view.reachable && state !== 'unknown' && state !== 'ended' && <p className="mt-2 text-xs text-muted">The engine is not answering. What shows here is recorded workspace state, not a current engine observation.</p>}
       </section>

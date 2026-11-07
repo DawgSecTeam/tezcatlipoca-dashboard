@@ -43,3 +43,22 @@ it('does not touch the document for an empty value', async () => {
   await expect(copyText('')).resolves.toBe(false)
   expect(document.execCommand).not.toHaveBeenCalled()
 })
+
+// ── timeAgo / agoMs: uninitialized timestamps ──────────────────────────────────────────
+// The engine is Go: a zero-value time arrives over the wire as '0001-01-01T00:00:00Z',
+// and an operator watched 'last round 1065493565 min ago' hunt a round that never
+// happened (2026-11-06 audit). Anything pre-2000 is an unset field, not history.
+import { agoMs, timeAgo } from './kit'
+
+it('clamps an uninitialized (Go zero-value) timestamp to never', () => {
+  expect(agoMs('0001-01-01T00:00:00Z')).toBe('never')
+  expect(timeAgo(-62135596800)).toBe('never')
+  expect(timeAgo(0)).toBe('')           // absent is still absent, not 'never'
+})
+
+it('still renders ordinary relative times', () => {
+  const now = Date.now() / 1000
+  expect(timeAgo(now - 30)).toBe('just now')
+  expect(timeAgo(now - 120)).toBe('2 min ago')
+  expect(timeAgo(now - 7200)).toBe('2h ago')
+})

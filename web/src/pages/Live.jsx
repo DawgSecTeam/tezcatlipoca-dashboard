@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api } from '../api'
+import { api, onTokenChanged } from '../api'
 import TopNav from '../components/Nav'
 import { Button, Card, ErrorBanner, SearchInput } from '../components/ui'
 import { EmptyState, Icon, agoMs, useSlashFocus, useTick } from '../components/kit'
 import { ACTION_LABEL, NewRunModal, stageProgress } from '../components/runui'
-import { filterCounts, filterRanges, heroStatus, rangeIssues, rangeTitle, scoringChip, shortRangeId } from '../rangeView'
+import { filterCounts, filterRanges, heroStatus, rangeIssues, rangeTitle, reconcileBoard, scoringChip, shortRangeId } from '../rangeView'
 
 const DOT = { danger: 'bg-danger', active: 'animate-pulse bg-accent', ok: 'bg-accent', muted: 'bg-line' }
 const HERO_TEXT = { danger: 'text-danger', active: 'text-fg', ok: 'text-fg', muted: 'text-muted' }
@@ -134,6 +134,7 @@ export default function Live() {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState('all')
   const [deploy, setDeploy] = useState(false)
+  const [queue, setQueue] = useState(null) // GET /api/runs: the authority for run states
   const search = useRef(null)
   useSlashFocus(search)
   useTick(10000)
@@ -148,15 +149,25 @@ export default function Live() {
         if (active) { setRanges(data); setError(null); setUpdated(Date.now()) }
       } catch (err) { if (active) setError(err) }
       finally { busy = false }
+      // The board poll is background: on a stale token it silently serves the last good
+      // observation, and a run stayed 'running' on its card after the process exited. The
+      // run queue is the truth, so fetch it and reconcile (see reconcileBoard).
+      try {
+        const rows = await api.runs()
+        if (active) setQueue(rows || [])
+      } catch { /* queue unavailable: the board's own rows stand until the next poll */ }
     }
     refresh()
     const timer = setInterval(refresh, 10000)
-    return () => { active = false; clearInterval(timer) }
+    // A token saved mid-session must refill the board now, not on the next manual reload.
+    const unwatch = onTokenChanged(refresh)
+    return () => { active = false; clearInterval(timer); unwatch() }
   }, [attempt])
   useEffect(() => { api.comps().then(setComps).catch(() => {}) }, [])
   useEffect(() => { document.title = 'Active ranges · tezcatlipoca' }, [])
-  const counts = filterCounts(ranges || [])
-  const visible = filterRanges(ranges || [], query, filter)
+  const board = reconcileBoard(ranges || [], queue)
+  const counts = filterCounts(board)
+  const visible = filterRanges(board, query, filter)
   const retired = (ranges || []).filter((range) => range.state === 'retired')
 
   return (

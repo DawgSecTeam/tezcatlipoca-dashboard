@@ -3,12 +3,14 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@t
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, streamRunEvents } from '../api'
 import { Evidence, Timeline } from '../pages/Run'
-import { EventList, NewRunModal, ResetBoxModal, useRunActions, useRunEvents, useRunLog } from './runui'
+import { EventList, NewRunModal, ResetBoxModal, StageStrip, useRunActions, useRunEvents, useRunLog } from './runui'
 
 const mocks = vi.hoisted(() => ({ toast: vi.fn(), confirm: vi.fn() }))
 vi.mock('../api', () => ({
   api: { submitRun: vi.fn(), comp: vi.fn(), nodes: vi.fn(), runs: vi.fn(), runEvents: vi.fn(), runLog: vi.fn(), runArtifacts: vi.fn(), runArtifactFile: vi.fn() },
   streamRunEvents: vi.fn(),
+  // pages/Run (imported below for Evidence/Timeline) subscribes to the token event.
+  onTokenChanged: () => () => {},
 }))
 vi.mock('./kit', async (original) => ({
   ...await original(), useToast: () => mocks.toast, useConfirm: () => mocks.confirm,
@@ -190,5 +192,33 @@ describe('reusable diagnostic views', () => {
     expect(screen.getByText('Workspace root · 1 files')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Download engine-generated-name/REPORT.md' }).className).not.toContain('opacity-0')
     expect(screen.queryByText(/No evidence directory named/)).toBeNull()
+  })
+})
+
+describe('StageStrip: the wire decides, not the record string', () => {
+  // (2026-11-06 audit) The chip sat at 1/8 · Cleanup for ~12 minutes while the driver
+  // log said phases 2-3: the stale record `stage` outranked the stage events.
+  it('follows the latest stage event when the record stage lags behind', () => {
+    render(<StageStrip action="deploy" state="running" stage="phase 1/8 cleanup"
+      stageEvents={[
+        { seq: 1, kind: 'stage', stage: 'phase 1/8 cleanup', index: 1, total: 8, ts: 1800000000 },
+        { seq: 2, kind: 'stage', stage: 'phase 2/8 engine_template', index: 2, total: 8, ts: 1800000060 },
+        { seq: 3, kind: 'stage', stage: 'phase 3/8 repair_sweep', index: 3, total: 8, ts: 1800000120 },
+      ]} />)
+    expect(screen.getByText(/3\/8 · Repair sweep/i)).toBeTruthy()
+    expect(screen.queryByText(/1\/8 · Cleanup/)).toBeNull()
+  })
+
+  it('still falls back to the record stage when no events have arrived', () => {
+    render(<StageStrip action="deploy" state="running" stage="phase 5/8 firewall_bootstrap" stageEvents={[]} />)
+    expect(screen.getByText(/5\/8 · Firewall bootstrap/i)).toBeTruthy()
+  })
+
+  it('ignores non-indexed events with an unknown name rather than resetting to todo', () => {
+    // Older runner records stamped only names; an event the stage list cannot name must
+    // not drop the chip below what the record already knows.
+    render(<StageStrip action="deploy" state="running" stage="phase 4/8 golden_set"
+      stageEvents={[{ seq: 9, kind: 'stage', stage: 'a driver note', ts: 1800000000 }]} />)
+    expect(screen.getByText(/4\/8 · Golden set/i)).toBeTruthy()
   })
 })

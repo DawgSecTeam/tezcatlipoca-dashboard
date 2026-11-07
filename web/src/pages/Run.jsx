@@ -3,7 +3,7 @@
 // log, its teams and infrastructure, and the evidence it produced. /scrims/:id redirects here.
 import { useEffect, useRef, useState } from 'react'
 import { Link, Navigate, useParams } from 'react-router-dom'
-import { api } from '../api'
+import { api, onTokenChanged } from '../api'
 import { Button, Card, ErrorBanner, SearchInput, Spinner } from '../components/ui'
 import { Crumbs, Icon, agoMs, copyText, fmtSpan, toMs, useTick, useToast } from '../components/kit'
 import {
@@ -316,6 +316,9 @@ export default function Run() {
     const timer = setInterval(load, 5000)
     return () => { active = false; refresh.current = null; clearInterval(timer) }
   }, [id, attempt])
+  // A token saved from the dialog refetches this run immediately: the record, inventory
+  // and diagnosis were pulled with the old (or missing) token (2026-11-06 audit).
+  useEffect(() => onTokenChanged(() => refresh.current?.()), [])
   useEffect(() => {
     if (!run?.comp_id) return
     let active = true
@@ -344,12 +347,23 @@ export default function Run() {
   // separate range) and destroy stays available (it cancels the deploy).
   const rangeBusy = range?.settled === false || !!range?.deploying || !!range?.tearing_down
     || (live && run.action !== 'scrim')
+  // Verify and box-reset act on DEPLOYED boxes: a deploy that never reached phase 4
+  // (the golden set) has none, and each offered click produced a string of meaningless
+  // check failures (2026-11-06 audit). `deploy_phase` is the range's own record of how
+  // far the build got; older workspaces without it fall back to the failure flags.
+  const deployBuilt = range
+    ? (range.deploy_phase != null ? range.deploy_phase >= 4
+      : !range.deploy_failed && range.state !== 'failed')
+    : true
   // Verify/reset act on the range itself: nothing to verify once retired, and a deploy or
   // teardown in flight means the workspace is still moving under them.
-  const rangeActionsBlocked = rangeBusy || range?.state === 'retired'
+  const rangeActionsBlocked = rangeBusy || range?.state === 'retired' || !deployBuilt
   const rangeBlockedReason = range?.state === 'retired'
     ? 'This range is retired; its live actions are done.'
-    : rangeBusy ? 'The range is deploying or being torn down; try again after that finishes.' : undefined
+    : rangeBusy ? 'The range is deploying or being torn down; try again after that finishes.'
+      : !deployBuilt
+        ? `This range's deploy never reached phase 4 (the golden set)${range?.deploy_phase != null ? ` — it stopped at phase ${range.deploy_phase}` : ''}: there are no boxes to verify or reset. Redeploy first; destroy any leftovers the failed build recorded.`
+        : undefined
   // A retired range has no teardown left unless it still records kept templates, in which
   // case the same button is the reclaim.
   const reclaimKept = !!(range?.reclaimable_templates && range?.state === 'retired')

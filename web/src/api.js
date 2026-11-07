@@ -8,7 +8,21 @@ export const getToken = () => {
   try { return localStorage.getItem(TOKEN_KEY) || '' } catch { return '' }
 }
 export const setToken = (t) => {
+  // Invariant: nothing on a 401 path may call this with ''. A client-side 401 (a foreground
+  // request, a poller, the SSE stream) only announces itself via `tez-unauthorized`; the
+  // stored token is deleted ONLY by the dialog's explicit Clear button. An empty value here
+  // is therefore a deliberate user action, never an error reaction.
   try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY) } catch { /* storage blocked */ }
+}
+
+// A saved token changes what every open page should show: the "unauthorized" banner and the
+// blank counts used to persist until a manual reload (2026-11-06 audit: six times in three
+// hours). TokenGate dispatches this after a successful Save; data-holding pages re-run
+// their loader through it.
+export const TOKEN_CHANGED_EVENT = 'tez-token-changed'
+export const onTokenChanged = (fn) => {
+  window.addEventListener(TOKEN_CHANGED_EVENT, fn)
+  return () => window.removeEventListener(TOKEN_CHANGED_EVENT, fn)
 }
 
 async function request(method, path, body, { background = false } = {}) {
@@ -25,6 +39,8 @@ async function request(method, path, body, { background = false } = {}) {
     // A background poll (the bell, the range board) must never end the session: one 401 from a
     // poller used to pop the token dialog and wipe the stored token mid-run (2026-11-06 audit).
     // Foreground requests still announce it — that is how the dialog collects a token.
+    // Either way the announcement only OPENS the dialog: a 401 never deletes the stored
+    // token, because a wrong-but-typed token is worth keeping across a retry.
     if (res.status === 401 && !background) {
       window.dispatchEvent(new CustomEvent('tez-unauthorized'))
     }
