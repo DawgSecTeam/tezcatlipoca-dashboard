@@ -18,3 +18,12 @@ data/
 /pt1.hujson
 /realm-now.json
 /run-now.json
+/tezcatlipoca-engine/
+/tezcatlipoca-competitions/
+/bench_models.py
+/rd*.json
+/s1.json
+/d1.json
+/d2.json
+/runlog.json
+/sb.py
