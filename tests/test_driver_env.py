@@ -192,3 +192,29 @@ def test_driver_env_leaves_the_path_alone_without_a_key_file(monkeypatch, tmp_pa
     monkeypatch.setenv("TEZ_SSH_PRIVATE_KEY_PATH", "/already/absolute")
     mgr = RunManager(store=None, bus=None)
     assert mgr._driver_env()["TEZ_SSH_PRIVATE_KEY_PATH"] == "/already/absolute"
+
+
+def test_driver_env_points_the_engine_flush_at_the_run_dir(tmp_path, monkeypatch):
+    # A6: the engine's teardown copies the test folder to $TEZ_EVIDENCE_DIR before
+    # destroying the comp workspace, so evidence outlives the workspace it lived in.
+    from dashboard import config
+    from dashboard.runner import RunManager
+    monkeypatch.setattr(config, "driver_path", lambda: "/usr/bin")
+    env = RunManager(store=None, bus=None)._driver_env(run_dir=tmp_path)
+    assert env["TEZ_EVIDENCE_DIR"] == str(tmp_path / "evidence")
+    assert "TEZ_EVIDENCE_DIR" not in RunManager(store=None, bus=None)._driver_env()
+
+
+def test_artifacts_root_falls_back_to_the_flushed_copy(tmp_path, monkeypatch):
+    # A6: after destroy deletes the comp workspace, get_artifacts must still find the
+    # evidence tree — the engine copied it to run_dir/evidence first.
+    from dashboard.runner import artifacts_root
+    run_dir = tmp_path / "runs" / "run-9"
+    (run_dir / "evidence" / "scrim-1").mkdir(parents=True)
+    run = {"run_dir": str(run_dir), "params": {"_destroy_comp_dir": str(tmp_path / "gone")}}
+    assert artifacts_root(run) == run_dir / "evidence"
+    # a live workspace still wins — the fallback never shadows the original
+    ws = tmp_path / "live"
+    (ws / ".automated-tests").mkdir(parents=True)
+    run["params"]["_destroy_comp_dir"] = str(ws)
+    assert artifacts_root(run) == ws / ".automated-tests"

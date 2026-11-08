@@ -66,10 +66,18 @@ def artifacts_root(run):
 
     A destroy run acts on a PRIOR run's workspace (see _destroy_target), so its own run dir
     holds no evidence — resolving through here keeps `get_artifacts` honest for both.
+
+    A6: when the workspace is gone (destroy deleted it, retention pruned the run dir),
+    fall back to the flush copy the engine wrote to `run_dir/evidence/` BEFORE the
+    wrecking ball — the tree a reader expects, from the location that outlives it.
     """
     params = run.get("params") if isinstance(run.get("params"), dict) else {}
     ws = params.get("_destroy_comp_dir") or (Path(run["run_dir"]) / "comp")
-    return Path(ws) / ".automated-tests"
+    root = Path(ws) / ".automated-tests"
+    if root.is_dir():
+        return root
+    flushed = Path(run["run_dir"]) / "evidence"
+    return flushed if flushed.is_dir() else root
 
 
 class RunRefused(Exception):
@@ -655,6 +663,12 @@ class RunManager:
         cannot be found at teardown (2026-10-14, run-3aaf37f1, four attempts).
         """
         env = {**os.environ, "PYTHONUNBUFFERED": "1", "PATH": config.driver_path()}
+        # A6: the engine's teardown_stage copies the run's test folder here BEFORE it
+        # destroys the comp workspace — the workspace is destroy-bound, the run dir outlives
+        # it, so evidence survives the range it came from (run-14ac7f14: 30MB of team logs
+        # and red state were saved only by an operator's last-minute manual archive).
+        if run_dir:
+            env["TEZ_EVIDENCE_DIR"] = str(Path(run_dir) / "evidence")
         # Catalog tokens ride the child env: the engine reads them by token_env name, so
         # no secret is written into the worktree, the run record or the comp workspace.
         env.update(nodes.token_env(nodes.load()))
