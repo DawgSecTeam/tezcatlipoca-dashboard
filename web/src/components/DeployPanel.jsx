@@ -57,7 +57,7 @@ export function engineVmidConflict(identifiers, teams, boxCount, vmid) {
 
 export default function DeployPanel({ comp }) {
   const [nodes, setNodes] = useState(null)
-  const [form, setForm] = useState({ engine_ref: '', teams: 2, scoring_vmid: '', engine_node: '', team_node: '', nodes: [], start_after_deploy: false, auto_reclaim: false, team_identifiers: '', engine_mgmt_ip: '' })
+  const [form, setForm] = useState({ engine_ref: '', teams: 2, scoring_vmid: '', engine_node: '', team_node: '', nodes: [], start_after_deploy: false, team_identifiers: '', engine_mgmt_ip: '' })
   const [runs, setRuns] = useState([])
   const [viewing, setViewing] = useState(null)
   const [confirm, setConfirm] = useState(false)
@@ -146,18 +146,9 @@ export default function DeployPanel({ comp }) {
         team_identifiers: form.team_identifiers.trim() || null,
         engine_mgmt_ip: form.engine_mgmt_ip.trim() || null,
         // deploy and start are separate steps; the checkbox buys the one-shot back.
-        // auto_reclaim (the other checkbox): on failure the runner submits the destroy that
-        // reclaims the engine VM + bridge this deploy leaves behind — the leftovers that
-        // otherwise collide with every retry at preflight (2026-11-06: run-90f48b3a poisoned
-        // the estate twice until a destroy ran).
-        ...(form.start_after_deploy || form.auto_reclaim
-          ? {
-            params: {
-              ...(form.start_after_deploy ? { start_after_deploy: true } : {}),
-              ...(form.auto_reclaim ? { auto_reclaim: true } : {}),
-            },
-          }
-          : {}),
+        // (auto_reclaim is gone as a param and a checkbox: the runner reclaims a failed
+        // deploy automatically now — boss directive 2026-11-08.)
+        ...(form.start_after_deploy ? { params: { start_after_deploy: true } } : {}),
       })
       // A deploy that closed with no toast, no link and no redirect left the operator
       // staring at an unchanged panel (2026-11-06 audit). The range-page actions already
@@ -210,16 +201,11 @@ export default function DeployPanel({ comp }) {
           </label>
         </Field>
         {/* The failed-deploy trap (2026-11-06): a deploy that dies mid-build keeps its
-            engine VM and bridge, and every later deploy then collides on them. On, the
-            runner submits the reclaiming destroy automatically when this deploy fails;
-            off (default) leaves the half-built range for inspection, as before. */}
-        <Field label="On failure" hint="Off (default): a failed deploy keeps its VMs and bridge for inspection — destroy that range before retrying, or its leftovers will collide with the retry's preflight. On: the dashboard submits the reclaiming destroy for you the moment the deploy fails.">
-          <label className="flex items-center gap-3 rounded-xl bg-sunken px-3 py-2 text-sm shadow-inset">
-            <input type="checkbox" checked={form.auto_reclaim}
-              onChange={(e) => setForm({ ...form, auto_reclaim: e.target.checked })} />
-            Reclaim leftover VMs automatically if this deploy fails
-          </label>
-        </Field>
+            engine VM and bridge, and every later deploy then collides on them. There is
+            no switch here any more (boss directive 2026-11-08): the runner submits the
+            reclaiming destroy automatically the moment a deploy fails. Cancelling stays
+            the operator's own hand on the wheel — a cancelled deploy never reclaims. */}
+        <p className="text-xs text-faint">A failed deploy automatically submits its reclaiming destroy — those leftover VMs would collide with every retry. Cancel a deploy instead if you want to keep the half-built range for inspection.</p>
         <Footprint comp={comp} teams={form.teams} />
         <Field label="Proxmox nodes"
           hint={selected.length ? 'The pinned engine node hosts the engine; teams fill the selected nodes.' : 'Nothing selected — the run falls back to the service .env (single node).'}>

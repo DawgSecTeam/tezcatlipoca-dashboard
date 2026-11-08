@@ -882,12 +882,13 @@ class RunManager:
         # A deploy that failed holding recorded VMs poisons its own retry: the next
         # preflight collides on exactly those vmids/bridges (2026-11-06: run-90f48b3a
         # failed at phase 3 and every later deploy refused on vmid 1420 / bridge vmbr121
-        # until a destroy ran). `auto_reclaim` is the per-deploy opt-in that closes the
-        # loop the moment the failed deploy comes to rest. Deliberately opt-in: an
-        # operator debugging a half-built range must never lose it to an automatic
-        # teardown, and a cancel is the operator's own hand on the wheel.
-        if (state == "failed" and run.get("action") == "deploy"
-                and (run.get("params") or {}).get("auto_reclaim")):
+        # until a destroy ran). The reclaim is AUTOMATIC (boss directive 2026-11-08): the
+        # moment a failed deploy comes to rest, the dashboard submits its destroy. The
+        # opt-in checkbox version sat unticked under time pressure and the poisoned-retry
+        # trap stayed armed. A cancel is still the operator's own hand on the wheel — it
+        # rests as `cancelled`, not `failed`, and never reclaims — and a deploy that
+        # crashed before recording any VM reclaims nothing (no-op by design below).
+        if state == "failed" and run.get("action") == "deploy":
             self._auto_reclaim(run, rc)
         # An approved reset request rides the redeploy run that resolves it: a clean exit
         # is `done`, anything else is `failed` (the team's chip frees the box either way —
@@ -902,7 +903,7 @@ class RunManager:
                                                     "box": req["box"]})
 
     def _auto_reclaim(self, run, rc):
-        """Submit the destroy that reclaims a failed deploy's leftovers (per-deploy opt-in).
+        """Submit the destroy that reclaims a failed deploy's leftovers (automatic since the 2026-11-08 directive).
 
         Reuses the one reclaim path that is proven against these workspaces — a destroy run
         walking the estate document — rather than reaching for Proxmox from the dashboard.

@@ -104,14 +104,17 @@ describe('deploy submit feedback', () => {
     expect(document.body.textContent).toContain('Deploy submitted')
   })
 
-  it('sends the auto-reclaim opt-in as a run param', async () => {
+  it('reclaims automatically: no opt-in switch and no auto_reclaim param', async () => {
     api.submitRun.mockResolvedValue({ id: 'run-reclaim', action: 'deploy', comp_id: comp.id, state: 'queued' })
     api.runLog.mockResolvedValue({ text: '', offset: 0, running: false, returncode: 0 })
     open()
-    await userEvent.click(screen.getByRole('checkbox', { name: /Reclaim leftover VMs/ }))
+    // Boss directive 2026-11-08: the checkbox is gone; the panel states the
+    // automatic behaviour instead of offering a choice.
+    expect(screen.queryByRole('checkbox', { name: /Reclaim leftover VMs/ })).toBeNull()
+    expect(document.body.textContent).toContain('automatically submits its reclaiming destroy')
     await userEvent.click(screen.getByRole('button', { name: /Deploy 2 teams/ }))
     await userEvent.click(screen.getByRole('button', { name: 'Deploy', selector: 'div[role="dialog"] button' }))
     await waitFor(() => expect(api.submitRun).toHaveBeenCalled())
-    expect(api.submitRun.mock.calls[0][0].params).toEqual({ auto_reclaim: true })
+    expect(api.submitRun.mock.calls[0][0].params ?? {}).not.toHaveProperty('auto_reclaim')
   })
 })

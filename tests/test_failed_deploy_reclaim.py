@@ -6,8 +6,10 @@ range then reported `state: live`, the board offered nothing but scoring chrome,
 every later deploy refused at preflight on exactly those names with advice ("sync
 templates, free capacity") that cannot possibly help while the leftovers are owned.
 The reclaim path that works is a destroy of the failed range; these tests pin that the
-dashboard says so, keeps the range visible, and (for deploys submitted with the
-`auto_reclaim` opt-in) submits that destroy the moment the failed deploy rests.
+dashboard says so, keeps the range visible, and — since the boss directive of
+2026-11-08 — submits that destroy automatically the moment any failed deploy rests.
+The old per-deploy `auto_reclaim` opt-in is gone; a leftover param is accepted and
+ignored, and a cancel is the only way to rest a deploy without reclaiming.
 """
 
 import json
@@ -172,8 +174,10 @@ def _deploy_run(tmp_path, params, with_vms=True, rid="run-deploy"):
             "params": params, "engine_ref": "main"}
 
 
-def test_an_opt_in_failed_deploy_submits_its_destroy(tmp_path):
-    run = _deploy_run(tmp_path, {"auto_reclaim": True})
+def test_a_failed_deploy_submits_its_reclaim_automatically(tmp_path):
+    """Boss directive 2026-11-08: no opt-in any more — a failed deploy
+    reclaiming its own leftovers is the default and only behaviour."""
+    run = _deploy_run(tmp_path, {})
     mgr = _Manager(_Store(run))
     mgr._finish(run["id"], 1, error="driver exited 1")
     assert len(mgr.submitted) == 1
@@ -187,15 +191,19 @@ def test_an_opt_in_failed_deploy_submits_its_destroy(tmp_path):
     assert any(d.get("auto_reclaim_run") == "run-reclaim-1" for _, _, d in mgr.emitted)
 
 
-def test_a_deploy_without_the_opt_in_is_left_for_the_operator(tmp_path):
-    run = _deploy_run(tmp_path, {})
+def test_the_retired_auto_reclaim_param_is_accepted_and_ignored(tmp_path):
+    """Deploys queued before the directive may still carry the opt-in param;
+    it must fire the one automatic reclaim, never a second teardown."""
+    run = _deploy_run(tmp_path, {"auto_reclaim": True})
     mgr = _Manager(_Store(run))
     mgr._finish(run["id"], 1, error="driver exited 1")
-    assert mgr.submitted == []
+    assert len(mgr.submitted) == 1
 
 
 def test_a_cancelled_deploy_never_auto_reclaims(tmp_path):
-    """Cancel is the operator's hand on the wheel: they may still want to inspect the half."""
+    """Cancel is the operator's hand on the wheel: they may still want to
+    inspect the half. Even the old opt-in param cannot force a reclaim on
+    a cancelled deploy."""
     run = _deploy_run(tmp_path, {"auto_reclaim": True})
     mgr = _Manager(_Store(run))
     mgr._finish(run["id"], -15, cancelling=True)
