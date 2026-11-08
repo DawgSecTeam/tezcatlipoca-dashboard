@@ -187,3 +187,11 @@ def test_driver_env_refuses_a_gcp_run_without_a_catalog_entry(tmp_path, monkeypa
     with pytest.raises(RunRefused) as caught:
         RunManager(store=None, bus=None)._driver_env({"platform": "gcp"}, tmp_path / "run")
     assert "no gcp target" in str(caught.value)
+
+
+def test_scrim_carries_a_per_run_cycle_cap():
+    # A real incident cycle costs 20-30 min on this endpoint, so the 600 s default cut every
+    # cycle before it could log, restore or submit. The cap has to be reachable from the queue.
+    scrim = build_command("scrim", "c", "/ws", {"teams": 2, "duration_min": 120,
+                                                "cycle_timeout": 1800})
+    assert scrim[scrim.index("--cycle-timeout") + 1] == "1800"

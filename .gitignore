@@ -5,3 +5,14 @@ node_modules
 dist/
 data/
 *.pyc
+
+# local-only: the reference clone of the estate toolkit, session helpers, scratch probes
+/quetzalcoatl-kit/
+/.session-notes.md
+/.session-known-hosts
+/.ssh-ops-host.sh
+/live-policy.json
+/probe_*.py
+/sb.py
+/r4*.json
+/pt1.hujson
