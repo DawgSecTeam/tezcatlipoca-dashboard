@@ -21,7 +21,8 @@ _TIMEOUT = 5
 # The deploy action and the range model's live run states. The states are imported at call
 # time: ranges itself imports this module for its per-range summaries, so the dependency
 # stays one-way at module load.
-_DEPLOY_ACTIONS = ("deploy",)
+# A resume_deploy is a deploy too: it builds the same range from the phase it reached.
+_DEPLOY_ACTIONS = ("deploy", "resume_deploy")
 
 
 def deploying(rng):

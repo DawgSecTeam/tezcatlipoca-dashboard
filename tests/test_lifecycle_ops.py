@@ -25,6 +25,46 @@ def test_deploy_holds_start_by_default_and_the_checkbox_buys_the_old_way_back():
     assert "--hold-start" not in oneshot
 
 
+def test_resume_deploy_continues_the_workspace_at_the_phase_that_failed(tmp_path):
+    # A failed deploy used to be destroy-only: `deploy` seeds a fresh workspace, so the
+    # plumbed --from-phase had no estate document to read. The resume acts on the workspace
+    # holding the range and enters at the phase AFTER the last one the document completed.
+    import json
+    (tmp_path / "estate-state.json").write_text(json.dumps(
+        {"schema_version": 1, "identity": {"comp_name": "c", "run_id": "run-abc12345"},
+         "run": {"last_phase": 3, "hold_start": True}}))
+    cmd = build_command("resume_deploy", "c", str(tmp_path), {})
+    assert cmd[1] == "create-competition.py"
+    assert cmd[cmd.index("--from-phase") + 1] == "4"
+    assert "--hold-start" in cmd          # the range was meant to stay held
+    assert "--teams" not in cmd           # the document already knows the roster
+    explicit = build_command("resume_deploy", "c", str(tmp_path), {"from_phase": 6})
+    assert explicit[explicit.index("--from-phase") + 1] == "6"
+
+
+def test_a_resume_of_a_preflight_failure_can_be_given_the_team_count(tmp_path):
+    # Nothing is recorded before preflight passes, so a resume at phase 1 has no roster; the
+    # driver prompts for it, which a stdin-less runner cannot answer (EOFError, live
+    # run-279a2cf7). The count rides the command instead.
+    import json
+    (tmp_path / "estate-state.json").write_text(json.dumps(
+        {"schema_version": 1, "identity": {"comp_name": "c", "run_id": "run-abc12345"},
+         "run": {"last_phase": 0, "hold_start": True}}))
+    cmd = build_command("resume_deploy", "c", str(tmp_path), {"teams": 1})
+    assert cmd[cmd.index("--from-phase") + 1] == "1"
+    assert cmd[cmd.index("--teams") + 1] == "1"
+
+
+def test_phase_label_follows_the_drivers_start_banner(tmp_path):
+    # last_phase moves only when a phase COMPLETES, so the longest phase (red01/Mythic)
+    # reported the one before it for its whole duration.
+    from dashboard.runner import RunManager
+    log = tmp_path / "run.log"
+    log.write_text("[1/8] cleanup...\nnoise\n[7/8] final\n")
+    assert RunManager._phase_from_log(log) == 7
+    assert RunManager._phase_from_log(tmp_path / "missing.log") == 0
+
+
 def test_lifecycle_action_kinds_map_to_the_engine_clis():
     assert build_command("start", "c", "/ws", {})[1:4] == ["competition-ops.py", "start", "--comp-dir"]
     assert build_command("freeze", "c", "/ws", {})[2] == "freeze"

@@ -9,6 +9,7 @@ scrim harness's run.json phases otherwise."""
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -40,6 +41,10 @@ SINGLE_STEP_STAGES = {"verify": "verify", "destroy": "teardown", "redeploy": "re
 # Actions that act on the workspace an earlier run built (ownership and the estate document
 # — which carries the run id, the secrets and the VM inventory — live there) instead of
 # seeding their own.
+# A deploy that failed mid-pipeline could only be destroyed and rebuilt: --from-phase was
+# plumbed but unreachable, because `deploy` seeds a fresh workspace (no estate document, so
+# the driver refused). resume_deploy acts on the owning workspace like a RANGE_ACTION.
+RESUME_ACTIONS = ("resume_deploy",)
 RANGE_ACTIONS = ("verify", "destroy", "redeploy", "start", "freeze", "resume", "end",
                  "delete_team")
 # Actions that drive the competition itself. They have nothing to drive while a deploy on the
@@ -100,7 +105,21 @@ def build_command(action, comp_id, ws, params, nodes_file=None):
     # The drivers an operator would type, with the workspace as the comp dir.
     py, ws = sys.executable, str(ws)
     extra = [str(a) for a in (params.get("extra_args") or [])]
-    if action in ("deploy", "plan"):
+    if action in RESUME_ACTIONS:
+        # The workspace's own document says how far it got and whether the range was meant to
+        # stay held; a resume re-enters at the phase that failed rather than at the one that
+        # completed, since a phase writes last_phase only once it finishes.
+        flat = estate.load_flat(ws)
+        phase = params.get("from_phase") or int(flat.get("last_phase") or 0) + 1
+        cmd = [py, "create-competition.py", "--comp-dir", ws, "--competition", comp_id,
+               "--from-phase", str(phase), "--yes"]
+        if params.get("teams"):
+            # Only a resume from a preflight-only failure needs this: every later phase
+            # records the roster, and the driver reuses it.
+            cmd += ["--teams", str(params["teams"])]
+        if flat.get("hold_start"):
+            cmd.append("--hold-start")
+    elif action in ("deploy", "plan"):
         cmd = [py, "create-competition.py", "--comp-dir", ws, "--competition", comp_id,
                "--teams", str(params.get("teams") or 2), "--yes"]
         if nodes_file:
@@ -282,7 +301,8 @@ class RunManager:
         engine_ref = (engine_ref or "").strip() or config.default_engine_ref()
         # Only deploy/plan/scrim take a team COUNT; a redeploy's `teams` is a selector
         # ("team2", "2" or the subnet identifier "102"), so int() there would 500.
-        if params.get("teams") and action in ("deploy", "plan", "scrim"):
+        if params.get("teams") and (action in ("deploy", "plan", "scrim")
+                                     or action in RESUME_ACTIONS):
             try:
                 params["teams"] = int(params["teams"])
             except (TypeError, ValueError) as exc:
@@ -330,7 +350,8 @@ class RunManager:
         # the harness die immediately on a missing teams.json (live 2026-10-15, run-63fb7e14).
         resume_scope = action == "scrim" and (params.get("skip_deploy")
                                               or params.get("resume_event"))
-        if action in RANGE_ACTIONS or resume_scope or params.get("comp_dir"):
+        if action in RANGE_ACTIONS + RESUME_ACTIONS or resume_scope \
+                or params.get("comp_dir"):
             # These act on the workspace that HOLDS the range: ownership (which VMs may be
             # touched) and the estate state document (run id, secrets, VM inventory) live in
             # the workspace a PRIOR run built, and a freshly seeded one has none — the
@@ -1031,9 +1052,13 @@ class RunManager:
             proc.wait()
             return
         last_phase, seen, since, held = 0, set(), time.time(), None
+        emitted = set()
         while proc.poll() is None:
-            if action in ("deploy", "plan"):
-                last_phase = self._emit_deploy_phases(run_id, ws, last_phase)
+            if action in ("deploy", "plan") or action in RESUME_ACTIONS:
+                last_phase = self._emit_deploy_phases(run_id, ws, last_phase, emitted)
+                started = self._phase_from_log(self.runs_dir / run_id / "run.log")
+                if started:
+                    self._emit_phase(run_id, started, emitted)
                 held = self._reflect_pause(run_id, ws, held)
             else:  # scrim: the harness's phases only, and only this run's manifests
                 for phase in self._scrim_phases(ws, since):
@@ -1041,14 +1066,34 @@ class RunManager:
                         seen.add(phase)
                         self._stage(run_id, str(phase))
             time.sleep(2)
-        if action in ("deploy", "plan"):
-            self._emit_deploy_phases(run_id, ws, last_phase)
+        if action in ("deploy", "plan") or action in RESUME_ACTIONS:
+            self._emit_deploy_phases(run_id, ws, last_phase, emitted)
 
-    def _emit_deploy_phases(self, run_id, ws, last_phase):
+    def _emit_deploy_phases(self, run_id, ws, last_phase, emitted=None):
         phase = self._deploy_phase(ws)
         for n in range(last_phase + 1, phase + 1):
-            self._stage(run_id, f"phase {n}/8 {PHASE_NAMES.get(n, '')}".strip(), n, 8)
+            self._emit_phase(run_id, n, emitted)
         return max(last_phase, phase)
+
+    def _emit_phase(self, run_id, n, emitted=None):
+        """One stage per phase: the driver's start banner and the document's completion both
+        fire, whichever lands first is the truthful label."""
+        if emitted is not None:
+            if n in emitted:
+                return
+            emitted.add(n)
+        self._stage(run_id, f"phase {n}/8 {PHASE_NAMES.get(n, '')}".strip(), n, 8)
+
+    @staticmethod
+    def _phase_from_log(path):
+        """The phase the driver last announced ("[7/8] ...") — last_phase only moves on
+        completion, so a long phase used to read as the one before it."""
+        try:
+            text = Path(path).read_text(errors="replace")
+        except OSError:
+            return 0
+        found = re.findall(r"^\[(\d)/8\]", text, re.M)
+        return int(found[-1]) if found else 0
 
     def _reflect_pause(self, run_id, ws, held):
         """Mirror the driver's boundary hold into the run's state and event stream.
