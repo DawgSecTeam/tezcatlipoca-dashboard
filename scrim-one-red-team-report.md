@@ -1,5 +1,36 @@
 # scrim-one × quetzalcoatl — 2-hour competition report
 
+> ## FINAL RESULT — 2026-11-09, `run-c5c6b144-run3` (this supersedes every verdict below)
+>
+> **NOT READY by one gate: 10 of 11 pass. Interaction score 51.** A full 120-minute event,
+> both teams starting 12/12 and *ending* 12/12, torn down clean.
+>
+> | gate | value | threshold | |
+> |---|---|---|---|
+> | red takedowns | 12 | ≥6 | PASS |
+> | red restore_reactions | **1** | ≥3 | **FAIL** |
+> | red distinct_tactics | 4 | ≥4 | PASS |
+> | red windows_footholds | 4 | ≥1 | PASS |
+> | red max_simultaneous_down | 4 | ≥4 | PASS |
+> | red stalls | 0 | ==0 | PASS |
+> | blue cycles_rc0 | 29 | ≥2 | PASS (29 of 29, **0 timeouts**) |
+> | blue restorations | 9 | ≥2 | PASS (TTR 1-13 min, all ≤15) |
+> | blue injects | 24 | ≥2 | PASS (12 of 12 each team) |
+> | blue notebook_entries | 82 | ≥10 | PASS |
+> | blue timeouts | 0 | ≤2 | PASS |
+>
+> Red: 12 takedowns, **all `stop_mask`** (recoverable — the posture change worked), spread over
+> 6 boxes, 4 distinct tactics (takedown, persist, block_port, implant_channel), 4 Windows
+> footholds, 42 actions with 0 failures, no stall. Blue: 29 completed cycles on `deepseek-flash`
+> with none capped, 9 restorations, 13 self-logged evictions, 82 notebook entries, and it wrote
+> its own after-action report (12/12 up, intrusion contained).
+>
+> The one failing gate is the tug-of-war itself: red punished only **1** of the 3 restores it
+> saw. That is a pacing consequence of this posture — `max_down: 4` plus `rotate_min` and the
+> 5-minute restore pause keep red from re-hitting a service blue just brought back. Closing it
+> means letting red re-kill restored services preferentially (lower `rotate_min`, or drop the
+> restore pause to 0) rather than raising the damage cap.
+
 > **CORRECTION (2026-11-08, after the readiness re-diagnosis).** The verdict below — "red did
 > not move the score" — is WRONG, and the error was mine. Every scrim after the first reused a
 > range that red had already destroyed and that no reset had touched: a fresh deploy did start
