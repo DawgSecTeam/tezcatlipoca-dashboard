@@ -8,13 +8,15 @@ data/
 
 # local-only: the reference clone of the estate toolkit, session helpers, scratch probes
 /quetzalcoatl-kit/
+/lab/
 /.session-notes.md
 /.session-known-hosts
 /.ssh-ops-host.sh
 /live-policy.json
 /probe_*.py
 /sb.py
-/r4*.json
+/r[0-9]*.json
+/r4s.json
 /pt1.hujson
 /realm-now.json
 /run-now.json
@@ -22,8 +24,7 @@ data/
 /tezcatlipoca-competitions/
 /bench_models.py
 /rd*.json
-/s1.json
-/d1.json
-/d2.json
+/s[0-9]*.json
+/d[0-9]*.json
 /runlog.json
 /sb.py
