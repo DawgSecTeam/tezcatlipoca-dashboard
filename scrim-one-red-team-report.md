@@ -25,11 +25,18 @@
 > with none capped, 9 restorations, 13 self-logged evictions, 82 notebook entries, and it wrote
 > its own after-action report (12/12 up, intrusion contained).
 >
-> The one failing gate is the tug-of-war itself: red punished only **1** of the 3 restores it
-> saw. That is a pacing consequence of this posture — `max_down: 4` plus `rotate_min` and the
-> 5-minute restore pause keep red from re-hitting a service blue just brought back. Closing it
-> means letting red re-kill restored services preferentially (lower `rotate_min`, or drop the
-> restore pause to 0) rather than raising the damage cap.
+> **CORRECTION (2026-11-10): the failing gate was a restore-detection defect, not pacing.** Blue
+> restored **9** services; red's sensor recorded **3**. `Sensors.observe` only fired on a
+> DOWN→UP edge, and red polls once per decision cycle while most restores took 1–2 minutes, so
+> six restores completed entirely between polls. `pressure_rotation` then hard-skipped every
+> service with a past kill and no restore row ("already down since our own takedown") — even
+> though `_pressure_targets` only offers services the live scoreboard scores UP. `rotate_min`
+> and the restore pause could not matter: the hard skip precedes `rotate_min`, and the ladder
+> pause only shifts the clock early in the run. Replaying the recorded 12 takedowns against
+> the real 9 restores yields 2 reactions even with perfect visibility, so the fix is to infer
+> restores from "red killed it and the scoreboard now scores it up" and to let the re-hit
+> outrank fresh work — not to loosen the posture. Fixed in the engine; this run's 1/3 stands
+> as the pre-fix baseline.
 
 > **CORRECTION (2026-11-08, after the readiness re-diagnosis).** The verdict below — "red did
 > not move the score" — is WRONG, and the error was mine. Every scrim after the first reused a
