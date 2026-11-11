@@ -63,7 +63,7 @@ SETTLED_RANGE_ACTIONS = LIFECYCLE_ACTIONS + ("verify", "redeploy", "delete_team"
 # (ModuleNotFoundError: toml, at phase 2, after minutes of work) instead of at submit —
 # checked here so a stale venv costs a refusal, not a run.
 DRIVER_DEPS = ("toml", "requests", "urllib3", "yaml", "dotenv", "PIL", "cryptography",
-               "websocket", "paramiko", "mysql.connector")
+               "websocket", "paramiko", "mysql.connector", "google.protobuf", "grpc")
 
 
 def artifacts_root(run):
