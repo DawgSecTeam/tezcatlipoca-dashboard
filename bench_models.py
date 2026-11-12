@@ -1,7 +1,8 @@
-import json, sys, time, urllib.request
+import json, os, sys, time, urllib.request
 
-KEY = "sk-icJPCq5einsShzVBwbw4Dg"
-URL = "http://10.0.0.212:4000/v1/chat/completions"
+KEY = os.environ.get("TEZ_LITELLM_API_KEY") or ""
+URL = "https://litellm.dawgsec.com/v1/chat/completions"
+MODELS = ("clef-flash", "k2", "qwen3.8-flash-next", "qwen3.8-27b")
 TOOLS = [{"type": "function", "function": {"name": "bash", "description": "run a shell command",
           "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}},
                          "required": ["cmd"]}}}]
@@ -14,7 +15,10 @@ def probe(model, tools=True):
         body["tools"] = TOOLS
     req = urllib.request.Request(URL, data=json.dumps(body).encode(),
                                  headers={"Authorization": f"Bearer {KEY}",
-                                          "Content-Type": "application/json"})
+                                          "Content-Type": "application/json",
+                                          # Cloudflare fronts the gateway; its default
+                                          # urllib UA is refused (403 error 1010)
+                                          "User-Agent": "tezcatlipoca-bench/1.0"})
     t = time.time()
     try:
         with urllib.request.urlopen(req, timeout=180) as r:
@@ -31,5 +35,7 @@ def probe(model, tools=True):
         return None, 0
 
 if __name__ == "__main__":
-    for m in sys.argv[1:]:
+    if not KEY:
+        sys.exit("TEZ_LITELLM_API_KEY is not set (the litellm gateway key)")
+    for m in sys.argv[1:] or MODELS:
         probe(m)
