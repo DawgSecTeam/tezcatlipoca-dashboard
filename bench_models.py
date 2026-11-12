@@ -2,7 +2,8 @@ import json, os, sys, time, urllib.request
 
 KEY = os.environ.get("TEZ_LITELLM_API_KEY") or ""
 URL = "https://litellm.dawgsec.com/v1/chat/completions"
-MODELS = ("clef-flash", "k2", "qwen3.8-flash-next", "qwen3.8-27b")
+# clef-flash is decisions-only (chat is refused by design), so it is not a chat probe.
+MODELS = ("k2", "qwen3.8-flash-next", "qwen3.8-27b")
 TOOLS = [{"type": "function", "function": {"name": "bash", "description": "run a shell command",
           "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}},
                          "required": ["cmd"]}}}]
