@@ -84,8 +84,20 @@ def retired_by(runs):
                  if r["action"] in ("destroy", "scrim") and r["returncode"] == 0), None)
 
 
+def _still_building(run):
+    """Whether this in-flight run still owns the build (so the range is `building`).
+
+    A scrim is one run for deploy + event: during its deploy stage the range is being
+    built, but once it reaches the event the range is LIVE. Counting the event as
+    `building` hid a running range from the dashboard's running view (2026-11-12).
+    """
+    if run.get("action") == "scrim":
+        return str(run.get("stage") or "") in ("", "queued", "deploy")
+    return True
+
+
 def range_state(key, runs, recorded=None, retired=False, origin_failed=False):
-    if any(r["state"] in IN_FLIGHT for r in runs):
+    if any(r["state"] in IN_FLIGHT and _still_building(r) for r in runs):
         return "building"
     if recorded is None:
         recorded = has_vms(key)

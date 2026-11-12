@@ -20,10 +20,11 @@ class FakeStore:
         return {}
 
 
-def _rec(rid, action, comp="c", state="succeeded", rc=0, created=0.0, run_dir=None, params=None):
+def _rec(rid, action, comp="c", state="succeeded", rc=0, created=0.0, run_dir=None, params=None,
+         stage=""):
     return {"id": rid, "comp_id": comp, "action": action, "state": state, "returncode": rc,
             "created_at": created, "ended_at": created + 1, "params": params or {},
-            "run_dir": str(run_dir), "stage": "", "log_path": None, "pid": None, "error": None}
+            "run_dir": str(run_dir), "stage": stage, "log_path": None, "pid": None, "error": None}
 
 
 def _workspace(tmp_path, rid, vms=False):
@@ -53,6 +54,24 @@ def test_state_building(tmp_path):
     assert rng["state"] == "building" and rng["live"] is True and rng["key"] == str(ws.resolve())
     # The one recorded fact every surface gates competition controls on.
     assert rng["deploying"] is True and rng["tearing_down"] is False
+
+
+def test_a_scrims_event_stage_keeps_the_range_live(tmp_path):
+    _workspace(tmp_path, "run-e", vms=True)
+    rng = _range_of(
+        _rec("run-e", "deploy", created=1, run_dir=tmp_path / "run-e"),
+        _rec("run-ev", "scrim", state="running", rc=None, created=2,
+             run_dir=tmp_path / "run-ev", stage="event",
+             params={"comp_dir": str(tmp_path / "run-e" / "comp")}))
+    assert rng["state"] == "live" and rng["live"] is True
+    assert rng["deploying"] is False
+
+
+def test_a_scrims_deploy_stage_still_reads_building(tmp_path):
+    _workspace(tmp_path, "run-b2")
+    rng = _range_of(_rec("run-b2", "scrim", state="running", rc=None, created=1,
+                         run_dir=tmp_path / "run-b2", stage="deploy"))
+    assert rng["state"] == "building" and rng["deploying"] is False
 
 
 def test_a_destroy_makes_the_range_busy_and_tearing_down(tmp_path):
