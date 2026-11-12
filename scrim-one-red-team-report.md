@@ -299,17 +299,30 @@ driver child alive holding the scoring-engine flock (blocked two resets until ki
 client time out while the run is still queued — which is how three duplicate redeploys were
 created.
 
-**Not yet proven:** a gate-passing run. The last attempt (`run-2ef1679d`, fast model, bounded
-posture, strict gate) built its range and then died in the engine's `docker compose build`
-(`go mod download`), because the lab had **no outbound HTTP/HTTPS at all** — `proxy.golang.org`,
-`registry-1.docker.io`, `archive.ubuntu.com` and `api.github.com` all timed out from the queue
-host. That is an egress outage in the lab, not a defect in this tree; the range was reclaimed
-(0 scrim-one VMs). When egress returns, the run that proves readiness is:
+**2026-11-12: the interaction gate passes; the range gate does not.** `run-b55ef799` (engine
+`7c4918f`, fresh deploy, `remote_access 0`) proved the restore-sensor fix live: 31 takedowns,
+**28 explicit blue_restore events seen by red** (was 3), **27 restore-reactions** (threshold 3,
+was 1), 17 blue restorations. The gate that drove this work now passes.
+
+The full rehearsal is still **NOT READY — 9/11 gates pass**; two red-side gates fail:
+
+| gate | measured | threshold |
+|---|---|---|
+| distinct_tactics | 3 | >= 4 |
+| max_simultaneous_down | 2 | >= 4 |
+
+Red used only `implant_channel`, `takedown` and `task_channel` (initial access: 0 techniques)
+and never held more than two services down; 65% of takedowns hit 2:web01. The reaction loop
+works, but it re-kills the same few services rather than broadening. Next levers: a breadth
+tactic that adds the fourth distinct tactic and spreads kills across boxes, and a
+simultaneous-down objective that holds 4+ pins instead of re-killing the first restored one.
+
+The command that produced it (red01 is `.242` now, not `.246`):
 
 ```
 action=scrim comp_id=scrim-one engine_ref=main teams=2
 params: duration_min=120 cycle_timeout=900 scoring_vmid=3000 team_identifiers=105,106
-        engine_mgmt_ip=10.0.0.243 red_vmid=1660 red_ip=10.0.0.246
+        engine_mgmt_ip=10.0.0.243 red_vmid=1660 red_ip=10.0.0.242
         red_model=deepseek-flash blue_model=deepseek-flash
         llm_base_url=http://10.0.0.212:4000/v1 blue_watchdog=true
 ```
