@@ -327,6 +327,29 @@ params: duration_min=120 cycle_timeout=900 scoring_vmid=3000 team_identifiers=10
         llm_base_url=http://10.0.0.212:4000/v1 blue_watchdog=true
 ```
 
+**2026-11-13: GREEN — all 11 gates pass.** `run-9a0231b4` (engine `23427d9`, fresh deploy,
+`remote_access 0`) returned interaction score 186, with 89 explicit blue_restore events seen by
+red:
+
+| side | gate | value | threshold |
+|---|---|---|---|
+| red | takedowns | 90 | >= 6 |
+| red | restore_reactions | 84 | >= 3 |
+| red | distinct_tactics | 6 | >= 4 |
+| red | windows_footholds | 4 | >= 1 |
+| red | max_simultaneous_down | 6 | >= 4 |
+| red | stalls | 0 | == 0 |
+| blue | cycles_rc0 | 29 | >= 2 |
+| blue | restorations | 63 | >= 2 |
+| blue | injects | 24 | >= 2 |
+| blue | notebook_entries | 100 | >= 10 |
+| blue | timeouts | 0 | <= 2 |
+
+The distinct tactics were `block_port`, `implant_channel`, `lockout`, `persist`, `takedown` and
+`task_channel`. The two changes that closed the 11-12 shortfall: the pressure budget now fills
+the concurrent-down cap within a cycle (max simultaneous down 2 -> 6), and an unused tactic gets
+one bid when pressure is capped or the second half opens (3 -> 6 distinct).
+
 A pass looks like: pre-T0 verify reports 12/12 on both teams and the gate lets the clock start;
 blue completes cycles rather than hitting the cap (≤2 timeouts); red takes ≥6 pins, blue restores
 ≥2 with red re-killing ≥3; ≥2 injects submitted; ≥10 notebook entries.
