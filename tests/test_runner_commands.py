@@ -212,3 +212,13 @@ def test_resume_deploy_forwards_identity_knobs(tmp_path, monkeypatch):
     assert "--scoring-vmid 1278" in joined
     assert "--team-identifiers 127,128" in joined
     assert "--engine-mgmt-ip 10.0.0.251" in joined
+
+
+def test_resume_forwards_force_from_phase(tmp_path, monkeypatch):
+    ws = tmp_path / "comp"
+    ws.mkdir()
+    monkeypatch.setattr(runner.estate, "load_flat",
+                        lambda p: {"last_phase": 0, "hold_start": False})
+    cmd = runner.build_command("resume_deploy", "cde-2026", str(ws),
+                               {"from_phase": 7, "force_from_phase": True})
+    assert cmd[cmd.index("--from-phase") + 1] == "7" and "--force-from-phase" in cmd

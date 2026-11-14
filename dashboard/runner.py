@@ -130,6 +130,10 @@ def build_command(action, comp_id, ws, params, nodes_file=None):
                           ("--team-node", "team_node")):
             if params.get(key):
                 cmd += [flag, str(params[key])]
+        if params.get("force_from_phase"):
+            # The cursor can lie when an earlier refused resume preflight zeroed it
+            # (run-5069a3bd lineage); force says: the phase reality, not the cursor.
+            cmd.append("--force-from-phase")
     elif action in ("deploy", "plan"):
         cmd = [py, "create-competition.py", "--comp-dir", ws, "--competition", comp_id,
                "--teams", str(params.get("teams") or 2), "--yes"]
