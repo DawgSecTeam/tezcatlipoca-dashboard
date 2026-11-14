@@ -1,0 +1,229 @@
+# C2 network identity for THIS inventory. Applied to the backend config at
+# load time (fastapi_backend/core/inventory_manager.apply_c2_settings) so
+# switching inventories carries these three values with it — no more hand-
+# editing SCRIPT_SERVER_URL / SLIVER_HOST / C2_IP in .env when toggling files.
+# Precedence: an explicit env/.env value for any of these keys still wins;
+# leave them out of .env to let the inventory drive them.
+c2_settings:
+  script_server_url: https://10.66.2.90:4000
+  sliver_host: 10.66.2.90
+  c2_ip: 10.66.2.90
+
+# Per-team NetBIOS name template — matches the AD domain naming convention
+# (mira-XX.corp.sus → NetBIOS MIRA-XX). Consumed by
+# scripts/infra/promote_domain_controllers.py::_netbios_for_team().
+netbios_pattern: "MIRA-{team_num:02d}"
+
+# Red scoring account — password read from RED_SCORING_PASSWORD in .env, never
+# stored here (see config/inventory.yml header for the full contract).
+scoring_account:
+  username: red_scoring
+  domain: ""
+  enabled: true
+
+# Fleet-wide red-team OPERATOR accounts. Each is seeded on EVERY box as a local
+# user (Windows: `.\<user>`; Linux/firewall: bare) and, on domain-joined boxes,
+# as a domain user (Windows: `MIRA-NN\<user>`; Linux: `<user>@mira-NN.corp.sus`).
+# Seeded is_infrastructure=False / is_default=False / source="red_ops": visible
+# in /c2/creds and usable by every operator + C3rberus red-team path, but NEVER
+# by the IOC pipeline (that authenticates only with red_scoring above). Passwords
+# are stored here plaintext, same as the per-box blueteam creds. These
+# accounts must already EXIST on the boxes (local SAM + AD) — this stanza only
+# tells C3rberus which creds to authenticate with. Optional per-entry keys:
+# `domain: false` (seed local rows only), `enabled: false` (skip this entry).
+# See docs/PLAN_red_ops_accounts.md.
+red_ops_accounts:
+  - { username: redteam,  password: TOcpACdpCPAt }
+  - { username: Red,      password: Red123! }
+  - { username: Blue,     password: Blue123! }
+  - { username: Green,    password: Green123! }
+  - { username: Pink,     password: Pink123! }
+  - { username: Orange,   password: Orange123! }
+  - { username: Yellow,   password: Yellow123! }
+  - { username: Black,    password: Black123! }
+  - { username: White,    password: White123! }
+  - { username: Purple,   password: Purple123! }
+  - { username: Brown,    password: Brown123! }
+  # Cross-forest rogue-DC operator identity — the account lives in
+  # mira.corp.sus (10.66.2.94, the rogue DC) and is member of every team's
+  # BUILTIN\Administrators via the one-way forest trust we planted (see
+  # scripts/infra/rogue_dc_trust_deploy.py + scripts/infra/rogue_dc_admin_persist.py).
+  # foreign_domain diverges from the local/NETBIOS matrix: only Windows DCs
+  # get a row, keyed to (svc_dfsr, mira.corp.sus) so NXC dials
+  # `-u svc_dfsr -d mira.corp.sus`. Auth via the trust; no local SAM row.
+  - { username: svc_dfsr, password: 'P@ssw0rd-DFSR-2026!', foreign_domain: mira.corp.sus }
+
+teams:
+# Per-team CDE competition range: 1 firewall + 2 Windows (DC + member) + 2 Linux.
+# Firewall reached inbound on its LAN ip (192.168.<N>.1); it dials home /
+# fetches scripts as its WAN ip (10.67.100.<N>). Windows boxes use local
+# credential blueteam / n0t_sus! (dot-form ".\blueteam"); Linux boxes use
+# blueteam / n0t_sus!. All 4 non-firewall boxes are joined to domain
+# mira-<NN>.corp.sus (NetBIOS MIRA-<NN>). Windows domain_username uses NetBIOS
+# form "MIRA-<NN>\\blueteam"; Linux uses the UPN form
+# "blueteam@mira-<NN>.corp.sus" (SSSD login-format %U@realm). Firewall is
+# standalone (not joined).
+#
+# `name` MUST be each box's REAL AD hostname (HQ / SKELD / airship / polus) —
+# ticket validation builds the Kerberos SPN `host/<name>.<realm>` from it, so a
+# placeholder name would request a non-existent SPN (KDC_ERR_S_PRINCIPAL_UNKNOWN).
+- name: CDE26 Team 1
+  team_num: 1
+  domain: mira-01.corp.sus
+  boxes:
+  - { ip: 192.168.1.1, name: firewall, os: firewall, username: admin,          password: pfsense,        wan_ip: 10.67.100.1, port: 22 }
+  - { ip: 192.168.1.2, name: HQ,      os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-01\\blueteam", domain_password: n0t_sus!, is_domain_controller: true,  port: 5985, fetch_source_ip: 10.67.100.1 }
+  - { ip: 192.168.1.3, name: SKELD,   os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-01\\blueteam", domain_password: n0t_sus!, is_domain_controller: false, port: 5985, fetch_source_ip: 10.67.100.1 }
+  - { ip: 192.168.1.4, name: airship, os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-01.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.1 }
+  - { ip: 192.168.1.5, name: polus,   os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-01.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.1 }
+
+- name: CDE26 Team 2
+  team_num: 2
+  domain: mira-02.corp.sus
+  boxes:
+  - { ip: 192.168.2.1, name: firewall, os: firewall, username: admin,          password: pfsense,        wan_ip: 10.67.100.2, port: 22 }
+  - { ip: 192.168.2.2, name: HQ,      os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-02\\blueteam", domain_password: n0t_sus!, is_domain_controller: true,  port: 5985, fetch_source_ip: 10.67.100.2 }
+  - { ip: 192.168.2.3, name: SKELD,   os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-02\\blueteam", domain_password: n0t_sus!, is_domain_controller: false, port: 5985, fetch_source_ip: 10.67.100.2 }
+  - { ip: 192.168.2.4, name: airship, os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-02.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.2 }
+  - { ip: 192.168.2.5, name: polus,   os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-02.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.2 }
+
+- name: CDE26 Team 3
+  team_num: 3
+  domain: mira-03.corp.sus
+  boxes:
+  - { ip: 192.168.3.1, name: firewall, os: firewall, username: admin,          password: pfsense,        wan_ip: 10.67.100.3, port: 22 }
+  - { ip: 192.168.3.2, name: HQ,      os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-03\\blueteam", domain_password: n0t_sus!, is_domain_controller: true,  port: 5985, fetch_source_ip: 10.67.100.3 }
+  - { ip: 192.168.3.3, name: SKELD,   os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-03\\blueteam", domain_password: n0t_sus!, is_domain_controller: false, port: 5985, fetch_source_ip: 10.67.100.3 }
+  - { ip: 192.168.3.4, name: airship, os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-03.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.3 }
+  - { ip: 192.168.3.5, name: polus,   os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-03.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.3 }
+
+- name: CDE26 Team 4
+  team_num: 4
+  domain: mira-04.corp.sus
+  boxes:
+  - { ip: 192.168.4.1, name: firewall, os: firewall, username: admin,          password: pfsense,        wan_ip: 10.67.100.4, port: 22 }
+  - { ip: 192.168.4.2, name: HQ,      os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-04\\blueteam", domain_password: n0t_sus!, is_domain_controller: true,  port: 5985, fetch_source_ip: 10.67.100.4 }
+  - { ip: 192.168.4.3, name: SKELD,   os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-04\\blueteam", domain_password: n0t_sus!, is_domain_controller: false, port: 5985, fetch_source_ip: 10.67.100.4 }
+  - { ip: 192.168.4.4, name: airship, os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-04.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.4 }
+  - { ip: 192.168.4.5, name: polus,   os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-04.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.4 }
+
+- name: CDE26 Team 5
+  team_num: 5
+  domain: mira-05.corp.sus
+  boxes:
+  - { ip: 192.168.5.1, name: firewall, os: firewall, username: admin,          password: pfsense,        wan_ip: 10.67.100.5, port: 22 }
+  - { ip: 192.168.5.2, name: HQ,      os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-05\\blueteam", domain_password: n0t_sus!, is_domain_controller: true,  port: 5985, fetch_source_ip: 10.67.100.5 }
+  - { ip: 192.168.5.3, name: SKELD,   os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-05\\blueteam", domain_password: n0t_sus!, is_domain_controller: false, port: 5985, fetch_source_ip: 10.67.100.5 }
+  - { ip: 192.168.5.4, name: airship, os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-05.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.5 }
+  - { ip: 192.168.5.5, name: polus,   os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-05.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.5 }
+
+- name: CDE26 Team 6
+  team_num: 6
+  domain: mira-06.corp.sus
+  boxes:
+  - { ip: 192.168.6.1, name: firewall, os: firewall, username: admin,          password: pfsense,        wan_ip: 10.67.100.6, port: 22 }
+  - { ip: 192.168.6.2, name: HQ,      os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-06\\blueteam", domain_password: n0t_sus!, is_domain_controller: true,  port: 5985, fetch_source_ip: 10.67.100.6 }
+  - { ip: 192.168.6.3, name: SKELD,   os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-06\\blueteam", domain_password: n0t_sus!, is_domain_controller: false, port: 5985, fetch_source_ip: 10.67.100.6 }
+  - { ip: 192.168.6.4, name: airship, os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-06.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.6 }
+  - { ip: 192.168.6.5, name: polus,   os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-06.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.6 }
+
+- name: CDE26 Team 7
+  team_num: 7
+  domain: mira-07.corp.sus
+  boxes:
+  - { ip: 192.168.7.1, name: firewall, os: firewall, username: admin,          password: pfsense,        wan_ip: 10.67.100.7, port: 22 }
+  - { ip: 192.168.7.2, name: HQ,      os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-07\\blueteam", domain_password: n0t_sus!, is_domain_controller: true,  port: 5985, fetch_source_ip: 10.67.100.7 }
+  - { ip: 192.168.7.3, name: SKELD,   os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-07\\blueteam", domain_password: n0t_sus!, is_domain_controller: false, port: 5985, fetch_source_ip: 10.67.100.7 }
+  - { ip: 192.168.7.4, name: airship, os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-07.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.7 }
+  - { ip: 192.168.7.5, name: polus,   os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-07.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.7 }
+
+- name: CDE26 Team 8
+  team_num: 8
+  domain: mira-08.corp.sus
+  boxes:
+  - { ip: 192.168.8.1, name: firewall, os: firewall, username: admin,          password: pfsense,        wan_ip: 10.67.100.8, port: 22 }
+  - { ip: 192.168.8.2, name: HQ,      os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-08\\blueteam", domain_password: n0t_sus!, is_domain_controller: true,  port: 5985, fetch_source_ip: 10.67.100.8 }
+  - { ip: 192.168.8.3, name: SKELD,   os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-08\\blueteam", domain_password: n0t_sus!, is_domain_controller: false, port: 5985, fetch_source_ip: 10.67.100.8 }
+  - { ip: 192.168.8.4, name: airship, os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-08.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.8 }
+  - { ip: 192.168.8.5, name: polus,   os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-08.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.8 }
+
+- name: CDE26 Team 9
+  team_num: 9
+  domain: mira-09.corp.sus
+  boxes:
+  - { ip: 192.168.9.1, name: firewall, os: firewall, username: admin,          password: pfsense,        wan_ip: 10.67.100.9, port: 22 }
+  - { ip: 192.168.9.2, name: HQ,      os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-09\\blueteam", domain_password: n0t_sus!, is_domain_controller: true,  port: 5985, fetch_source_ip: 10.67.100.9 }
+  - { ip: 192.168.9.3, name: SKELD,   os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-09\\blueteam", domain_password: n0t_sus!, is_domain_controller: false, port: 5985, fetch_source_ip: 10.67.100.9 }
+  - { ip: 192.168.9.4, name: airship, os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-09.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.9 }
+  - { ip: 192.168.9.5, name: polus,   os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-09.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.9 }
+
+- name: CDE26 Team 10
+  team_num: 10
+  domain: mira-10.corp.sus
+  boxes:
+  - { ip: 192.168.10.1, name: firewall, os: firewall, username: admin,          password: pfsense,        wan_ip: 10.67.100.10, port: 22 }
+  - { ip: 192.168.10.2, name: HQ,      os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-10\\blueteam", domain_password: n0t_sus!, is_domain_controller: true,  port: 5985, fetch_source_ip: 10.67.100.10 }
+  - { ip: 192.168.10.3, name: SKELD,   os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-10\\blueteam", domain_password: n0t_sus!, is_domain_controller: false, port: 5985, fetch_source_ip: 10.67.100.10 }
+  - { ip: 192.168.10.4, name: airship, os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-10.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.10 }
+  - { ip: 192.168.10.5, name: polus,   os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-10.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.10 }
+
+- name: CDE26 Team 11
+  team_num: 11
+  domain: mira-11.corp.sus
+  boxes:
+  - { ip: 192.168.11.1, name: firewall, os: firewall, username: admin,          password: pfsense,        wan_ip: 10.67.100.11, port: 22 }
+  - { ip: 192.168.11.2, name: HQ,      os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-11\\blueteam", domain_password: n0t_sus!, is_domain_controller: true,  port: 5985, fetch_source_ip: 10.67.100.11 }
+  - { ip: 192.168.11.3, name: SKELD,   os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-11\\blueteam", domain_password: n0t_sus!, is_domain_controller: false, port: 5985, fetch_source_ip: 10.67.100.11 }
+  - { ip: 192.168.11.4, name: airship, os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-11.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.11 }
+  - { ip: 192.168.11.5, name: polus,   os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-11.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.11 }
+
+- name: CDE26 Team 12
+  team_num: 12
+  domain: mira-12.corp.sus
+  boxes:
+  - { ip: 192.168.12.1, name: firewall, os: firewall, username: admin,          password: pfsense,        wan_ip: 10.67.100.12, port: 22 }
+  - { ip: 192.168.12.2, name: HQ,      os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-12\\blueteam", domain_password: n0t_sus!, is_domain_controller: true,  port: 5985, fetch_source_ip: 10.67.100.12 }
+  - { ip: 192.168.12.3, name: SKELD,   os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-12\\blueteam", domain_password: n0t_sus!, is_domain_controller: false, port: 5985, fetch_source_ip: 10.67.100.12 }
+  - { ip: 192.168.12.4, name: airship, os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-12.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.12 }
+  - { ip: 192.168.12.5, name: polus,   os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-12.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.12 }
+
+- name: CDE26 Team 13
+  team_num: 13
+  domain: mira-13.corp.sus
+  boxes:
+  - { ip: 192.168.13.1, name: firewall, os: firewall, username: admin,          password: pfsense,        wan_ip: 10.67.100.13, port: 22 }
+  - { ip: 192.168.13.2, name: HQ,      os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-13\\blueteam", domain_password: n0t_sus!, is_domain_controller: true,  port: 5985, fetch_source_ip: 10.67.100.13 }
+  - { ip: 192.168.13.3, name: SKELD,   os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-13\\blueteam", domain_password: n0t_sus!, is_domain_controller: false, port: 5985, fetch_source_ip: 10.67.100.13 }
+  - { ip: 192.168.13.4, name: airship, os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-13.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.13 }
+  - { ip: 192.168.13.5, name: polus,   os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-13.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.13 }
+
+- name: CDE26 Team 14
+  team_num: 14
+  domain: mira-14.corp.sus
+  boxes:
+  - { ip: 192.168.14.1, name: firewall, os: firewall, username: admin,          password: pfsense,        wan_ip: 10.67.100.14, port: 22 }
+  - { ip: 192.168.14.2, name: HQ,      os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-14\\blueteam", domain_password: n0t_sus!, is_domain_controller: true,  port: 5985, fetch_source_ip: 10.67.100.14 }
+  - { ip: 192.168.14.3, name: SKELD,   os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-14\\blueteam", domain_password: n0t_sus!, is_domain_controller: false, port: 5985, fetch_source_ip: 10.67.100.14 }
+  - { ip: 192.168.14.4, name: airship, os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-14.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.14 }
+  - { ip: 192.168.14.5, name: polus,   os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-14.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.14 }
+
+- name: CDE26 Team 15
+  team_num: 15
+  domain: mira-15.corp.sus
+  boxes:
+  - { ip: 192.168.15.1, name: firewall, os: firewall, username: admin,          password: pfsense,        wan_ip: 10.67.100.15, port: 22 }
+  - { ip: 192.168.15.2, name: HQ,      os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-15\\blueteam", domain_password: n0t_sus!, is_domain_controller: true,  port: 5985, fetch_source_ip: 10.67.100.15 }
+  - { ip: 192.168.15.3, name: SKELD,   os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-15\\blueteam", domain_password: n0t_sus!, is_domain_controller: false, port: 5985, fetch_source_ip: 10.67.100.15 }
+  - { ip: 192.168.15.4, name: airship, os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-15.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.15 }
+  - { ip: 192.168.15.5, name: polus,   os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-15.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.15 }
+
+- name: CDE26 Team 16
+  team_num: 16
+  domain: mira-16.corp.sus
+  boxes:
+  - { ip: 192.168.16.1, name: firewall, os: firewall, username: admin,          password: pfsense,        wan_ip: 10.67.100.16, port: 22 }
+  - { ip: 192.168.16.2, name: HQ,      os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-16\\blueteam", domain_password: n0t_sus!, is_domain_controller: true,  port: 5985, fetch_source_ip: 10.67.100.16 }
+  - { ip: 192.168.16.3, name: SKELD,   os: windows,  username: .\blueteam,     password: n0t_sus!,   domain_username: "MIRA-16\\blueteam", domain_password: n0t_sus!, is_domain_controller: false, port: 5985, fetch_source_ip: 10.67.100.16 }
+  - { ip: 192.168.16.4, name: airship, os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-16.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.16 }
+  - { ip: 192.168.16.5, name: polus,   os: linux,    username: redteam,       password: TOcpACdpCPAt,   domain_username: "redteam@mira-16.corp.sus", domain_password: TOcpACdpCPAt, is_domain_joined: true, port: 22, fetch_source_ip: 10.67.100.16 }
+

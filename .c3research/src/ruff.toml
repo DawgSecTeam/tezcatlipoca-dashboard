@@ -1,0 +1,98 @@
+target-version = "py313"
+
+# Vulture whitelist is bare-name references (intentionally not valid standalone
+# Python) — exclude from ruff so it doesn't register as F821/B018 noise.
+extend-exclude = ["scripts/audit/vulture_whitelist.py"]
+
+[lint]
+extend-select = [
+	"A",
+	"ANN",
+	"ARG",
+	"B",
+	"BLE",
+	"C4",
+	"COM",
+	"D",
+	"FLY",
+	"I",
+	"LOG",
+	"N",
+	"PERF",
+	"PTH",
+	"Q",
+	"RET",
+	"RUF",
+	"SIM",
+	"T201",
+	"UP",
+]
+
+ignore = [
+	"COM812",  # auto-fix conflict with ruff format
+	"ANN401",  # `Any` is sometimes the right answer
+	"D107",    # __init__ docstring optional (use class docstring)
+	"D200",    # one-line docstring fits on one line — too rigid
+	"D203",    # conflicts with D211
+	"D213",    # conflicts with D212
+	"D406",    # opinionated section-name formatting
+	"D407",    # opinionated section-name formatting
+	"D413",    # opinionated section-name formatting
+	"RUF001",  # ambiguous unicode in strings (× and – are intentional in this codebase)
+	"RUF002",  # ambiguous unicode in docstrings
+	"RUF003",  # ambiguous unicode in comments
+	"BLE001",  # blind Exception catch — codebase intentionally uses `except Exception:`
+	           # in background loops (beacon/SA/cred-revalidation) so a single failure
+	           # doesn't crash the loop. Each case logs with traceback.
+]
+
+[lint.pydocstyle]
+convention = "google"
+
+[lint.flake8-bugbear]
+# FastAPI dependency-injection helpers are valid default values
+extend-immutable-calls = [
+	"fastapi.Depends",
+	"fastapi.Query",
+	"fastapi.Path",
+	"fastapi.Body",
+	"fastapi.Form",
+	"fastapi.File",
+	"fastapi.Header",
+	"fastapi.Cookie",
+	"fastapi.Security",
+]
+
+[lint.per-file-ignores]
+# Test-code rule relaxations. SIM117: nested `with patch()` is more
+# diff-friendly than the parenthesized form. PTH: perf benches and
+# conftests freely use os.path/open; pathlib adds noise without runtime
+# benefit in test code. A002/E741/N802/N806/B017/RUF012/E402/SIM102/PERF401:
+# tests use shorthand patterns (single-letter loop vars, `id` params on
+# protobuf serializer tests, `def test_execute_uses_X` capital-X
+# convention, `pytest.raises(Exception)` for catch-all, mutable class
+# defaults on mock objects, `sys.path.append` before relative imports,
+# nested `if` in bench scripts) that don't warrant matching production
+# style.
+"tests/**" = [
+    "S101", "D", "ANN", "ARG", "SIM117", "PTH",
+    "A002", "E741", "N802", "N806", "B017", "RUF012",
+    "E402", "SIM102", "PERF401",
+]
+"scripts/**" = ["T201", "D", "ANN"]
+"tests/perf/soak_report.py" = ["T201"]
+# Live perf benches surface diagnostic stats via print() — there's no log
+# sink the live bench operator can read between runs, so they print to
+# stdout to be tee'd into the per-run log file.
+"tests/perf/bench_bulk_exec_live.py" = ["T201"]
+"tests/perf/bench_auto_reg_live.py" = ["T201"]
+"tests/perf/bench_timestomp_live.py" = ["T201"]
+
+"iocs/definitions/**" = ["D100", "D103", "ANN"]
+# FastAPI route handlers take `current_user: Users = Depends(...)` for auth gating
+# even when the body doesn't read it — the parameter is required for FastAPI's
+# signature-based dependency injection.
+"fastapi_backend/routes/**" = ["ARG001"]
+# Sliver-shell command handlers all share `(interact, args: list[str]) -> str`
+# so the dispatcher can register them uniformly. Most don't use both params.
+"fastapi_backend/c2/sliver_shell_dispatch.py" = ["ARG001"]

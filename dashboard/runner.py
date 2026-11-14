@@ -119,6 +119,17 @@ def build_command(action, comp_id, ws, params, nodes_file=None):
             cmd += ["--teams", str(params["teams"])]
         if flat.get("hold_start"):
             cmd.append("--hold-start")
+        # The identity knobs must ride a resume too (run-ffc3e740: without them the
+        # plan derived default slots and the collision preflight refused OUR OWN
+        # live range back). The state doc records the roster, but template/golden
+        # slots are still computed from these flags before readback happens.
+        for flag, key in (("--scoring-vmid", "scoring_vmid"),
+                          ("--team-identifiers", "team_identifiers"),
+                          ("--engine-mgmt-ip", "engine_mgmt_ip"),
+                          ("--engine-node", "engine_node"),
+                          ("--team-node", "team_node")):
+            if params.get(key):
+                cmd += [flag, str(params[key])]
     elif action in ("deploy", "plan"):
         cmd = [py, "create-competition.py", "--comp-dir", ws, "--competition", comp_id,
                "--teams", str(params.get("teams") or 2), "--yes"]

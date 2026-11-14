@@ -1,0 +1,116 @@
+# C2 network identity for THIS inventory. Applied to the backend config at
+# load time (fastapi_backend/core/inventory_manager.apply_c2_settings) so
+# switching inventories carries these three values with it — no more hand-
+# editing SCRIPT_SERVER_URL / SLIVER_HOST / C2_IP in .env when toggling files.
+# Precedence: an explicit env/.env value for any of these keys still wins;
+# leave them out of .env to let the inventory drive them.
+c2_settings:
+  script_server_url: https://192.168.1.161:4000
+  sliver_host: 192.168.1.161
+  c2_ip: 192.168.1.161
+
+# Red scoring account (red_scoring) — the ONLY credential the IOC pipeline
+# (check/deploy/remediate) authenticates with. Operators never see it. Must be a
+# root/Administrator-equivalent account on EVERY box (Windows: Administrators;
+# Linux: sudoers; pfSense: admin). Seeded per-box on startup as an
+# is_infrastructure=True credential. The PASSWORD is read from
+# RED_SCORING_PASSWORD in .env (never stored here); username/domain below
+# override the .env defaults. enabled:false (or RED_SCORING_ENABLED=false in
+# .env) reverts the IOC pipeline to legacy operator-cred selection.
+scoring_account:
+  username: red_scoring
+  domain: ""
+  enabled: true
+
+teams:
+# 10 teams × 5 boxes (1 firewall + 2 Windows + 2 Linux) = 50 boxes
+# IPs: each team occupies a block of 5 starting at .200 (fw, win1, win2, lin1, lin2)
+- name: Blue Team 1
+  team_num: 1
+  boxes:
+  - { ip: 192.168.1.200, name: c3-fw-1,        os: firewall, username: admin,            password: pfsense,     port: 22 }
+  - { ip: 192.168.1.201, name: c3-win25-1-1,   os: windows,  username: .\Administrator,  password: "Password1!", domain_username: "TEAM1\\Administrator", domain_password: "Password1!", port: 5985 }
+  - { ip: 192.168.1.202, name: c3-win25-1-2,   os: windows,  username: .\Administrator,  password: "Password1!", domain_username: "TEAM1\\Administrator", domain_password: "Password1!", port: 5985 }
+  - { ip: 192.168.1.203, name: c3-ubuntu-1-1,  os: linux,    username: root,             password: password,    port: 22 }
+  - { ip: 192.168.1.204, name: c3-ubuntu-1-2,  os: linux,    username: root,             password: password,    port: 22 }
+
+- name: Blue Team 2
+  team_num: 2
+  boxes:
+  - { ip: 192.168.1.205, name: c3-fw-2,        os: firewall, username: admin,            password: pfsense,     port: 22 }
+  - { ip: 192.168.1.206, name: c3-win25-2-1,   os: windows,  username: .\Administrator,  password: "Password1!", domain_username: "TEAM2\\Administrator", domain_password: "Password1!", port: 5985 }
+  - { ip: 192.168.1.207, name: c3-win25-2-2,   os: windows,  username: .\Administrator,  password: "Password1!", domain_username: "TEAM2\\Administrator", domain_password: "Password1!", port: 5985 }
+  - { ip: 192.168.1.208, name: c3-ubuntu-2-1,  os: linux,    username: root,             password: password,    port: 22 }
+  - { ip: 192.168.1.209, name: c3-ubuntu-2-2,  os: linux,    username: root,             password: password,    port: 22 }
+
+- name: Blue Team 3
+  team_num: 3
+  boxes:
+  - { ip: 192.168.1.210, name: c3-fw-3,        os: firewall, username: admin,            password: pfsense,     port: 22 }
+  - { ip: 192.168.1.211, name: c3-win25-3-1,   os: windows,  username: .\Administrator,  password: "Password1!", domain_username: "TEAM3\\Administrator", domain_password: "Password1!", port: 5985 }
+  - { ip: 192.168.1.212, name: c3-win25-3-2,   os: windows,  username: .\Administrator,  password: "Password1!", domain_username: "TEAM3\\Administrator", domain_password: "Password1!", port: 5985 }
+  - { ip: 192.168.1.213, name: c3-ubuntu-3-1,  os: linux,    username: root,             password: password,    port: 22 }
+  - { ip: 192.168.1.214, name: c3-ubuntu-3-2,  os: linux,    username: root,             password: password,    port: 22 }
+
+- name: Blue Team 4
+  team_num: 4
+  boxes:
+  - { ip: 192.168.1.215, name: c3-fw-4,        os: firewall, username: admin,            password: pfsense,     port: 22 }
+  - { ip: 192.168.1.216, name: c3-win25-4-1,   os: windows,  username: .\Administrator,  password: "Password1!", domain_username: "TEAM4\\Administrator", domain_password: "Password1!", port: 5985 }
+  - { ip: 192.168.1.217, name: c3-win25-4-2,   os: windows,  username: .\Administrator,  password: "Password1!", domain_username: "TEAM4\\Administrator", domain_password: "Password1!", port: 5985 }
+  - { ip: 192.168.1.218, name: c3-ubuntu-4-1,  os: linux,    username: root,             password: password,    port: 22 }
+  - { ip: 192.168.1.219, name: c3-ubuntu-4-2,  os: linux,    username: root,             password: password,    port: 22 }
+
+- name: Blue Team 5
+  team_num: 5
+  boxes:
+  - { ip: 192.168.1.220, name: c3-fw-5,        os: firewall, username: admin,            password: pfsense,     port: 22 }
+  - { ip: 192.168.1.221, name: c3-win25-5-1,   os: windows,  username: .\Administrator,  password: "Password1!", domain_username: "TEAM5\\Administrator", domain_password: "Password1!", port: 5985 }
+  - { ip: 192.168.1.222, name: c3-win25-5-2,   os: windows,  username: .\Administrator,  password: "Password1!", domain_username: "TEAM5\\Administrator", domain_password: "Password1!", port: 5985 }
+  - { ip: 192.168.1.223, name: c3-ubuntu-5-1,  os: linux,    username: root,             password: password,    port: 22 }
+  - { ip: 192.168.1.224, name: c3-ubuntu-5-2,  os: linux,    username: root,             password: password,    port: 22 }
+
+- name: Blue Team 6
+  team_num: 6
+  boxes:
+  - { ip: 192.168.1.225, name: c3-fw-6,        os: firewall, username: admin,            password: pfsense,     port: 22 }
+  - { ip: 192.168.1.226, name: c3-win25-6-1,   os: windows,  username: .\Administrator,  password: "Password1!", domain_username: "TEAM6\\Administrator", domain_password: "Password1!", port: 5985 }
+  - { ip: 192.168.1.227, name: c3-win25-6-2,   os: windows,  username: .\Administrator,  password: "Password1!", domain_username: "TEAM6\\Administrator", domain_password: "Password1!", port: 5985 }
+  - { ip: 192.168.1.228, name: c3-ubuntu-6-1,  os: linux,    username: root,             password: password,    port: 22 }
+  - { ip: 192.168.1.229, name: c3-ubuntu-6-2,  os: linux,    username: root,             password: password,    port: 22 }
+
+- name: Blue Team 7
+  team_num: 7
+  boxes:
+  - { ip: 192.168.1.230, name: c3-fw-7,        os: firewall, username: admin,            password: pfsense,     port: 22 }
+  - { ip: 192.168.1.231, name: c3-win25-7-1,   os: windows,  username: .\Administrator,  password: "Password1!", domain_username: "TEAM7\\Administrator", domain_password: "Password1!", port: 5985 }
+  - { ip: 192.168.1.232, name: c3-win25-7-2,   os: windows,  username: .\Administrator,  password: "Password1!", domain_username: "TEAM7\\Administrator", domain_password: "Password1!", port: 5985 }
+  - { ip: 192.168.1.233, name: c3-ubuntu-7-1,  os: linux,    username: root,             password: password,    port: 22 }
+  - { ip: 192.168.1.234, name: c3-ubuntu-7-2,  os: linux,    username: root,             password: password,    port: 22 }
+
+- name: Blue Team 8
+  team_num: 8
+  boxes:
+  - { ip: 192.168.1.235, name: c3-fw-8,        os: firewall, username: admin,            password: pfsense,     port: 22 }
+  - { ip: 192.168.1.236, name: c3-win25-8-1,   os: windows,  username: .\Administrator,  password: "Password1!", domain_username: "TEAM8\\Administrator", domain_password: "Password1!", port: 5985 }
+  - { ip: 192.168.1.237, name: c3-win25-8-2,   os: windows,  username: .\Administrator,  password: "Password1!", domain_username: "TEAM8\\Administrator", domain_password: "Password1!", port: 5985 }
+  - { ip: 192.168.1.238, name: c3-ubuntu-8-1,  os: linux,    username: root,             password: password,    port: 22 }
+  - { ip: 192.168.1.239, name: c3-ubuntu-8-2,  os: linux,    username: root,             password: password,    port: 22 }
+
+- name: Blue Team 9
+  team_num: 9
+  boxes:
+  - { ip: 192.168.1.240, name: c3-fw-9,        os: firewall, username: admin,            password: pfsense,     port: 22 }
+  - { ip: 192.168.1.241, name: c3-win25-9-1,   os: windows,  username: .\Administrator,  password: "Password1!", domain_username: "TEAM9\\Administrator", domain_password: "Password1!", port: 5985 }
+  - { ip: 192.168.1.242, name: c3-win25-9-2,   os: windows,  username: .\Administrator,  password: "Password1!", domain_username: "TEAM9\\Administrator", domain_password: "Password1!", port: 5985 }
+  - { ip: 192.168.1.243, name: c3-ubuntu-9-1,  os: linux,    username: root,             password: password,    port: 22 }
+  - { ip: 192.168.1.244, name: c3-ubuntu-9-2,  os: linux,    username: root,             password: password,    port: 22 }
+
+- name: Blue Team 10
+  team_num: 10
+  boxes:
+  - { ip: 192.168.1.245, name: c3-fw-10,       os: firewall, username: admin,            password: pfsense,     port: 22 }
+  - { ip: 192.168.1.246, name: c3-win25-10-1,  os: windows,  username: .\Administrator,  password: "Password1!", domain_username: "TEAM10\\Administrator", domain_password: "Password1!", port: 5985 }
+  - { ip: 192.168.1.247, name: c3-win25-10-2,  os: windows,  username: .\Administrator,  password: "Password1!", domain_username: "TEAM10\\Administrator", domain_password: "Password1!", port: 5985 }
+  - { ip: 192.168.1.248, name: c3-ubuntu-10-1, os: linux,    username: root,             password: password,    port: 22 }
+  - { ip: 192.168.1.249, name: c3-ubuntu-10-2, os: linux,    username: root,             password: password,    port: 22 }

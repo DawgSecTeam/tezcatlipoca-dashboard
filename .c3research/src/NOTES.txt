@@ -1,0 +1,18 @@
+sliver armory
+
+  seatbelt - recon
+    logon sessions thru lsa, more info than we're currently getting
+    tons more info
+  rubeus - kerbros & ticket ops
+    should be useful for planned kerberos interaction
+  warzero - pfsense compatability?
+  trustedsec's SA bof
+    list visible windows in user session
+    idle time
+    tons more
+  sliverkeylogger
+    multiplatform?
+  chisel
+    passing through firewalls
+  hiddendesktop
+    view target desktop

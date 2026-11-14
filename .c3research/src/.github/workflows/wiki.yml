@@ -1,0 +1,67 @@
+name: wiki-mirror
+
+# Mirror top-level `wiki/` into the auto-generated `<repo>.wiki.git`
+# repository so GitHub renders our authored docs as the GitHub Wiki.
+#
+# Requires the `WIKI_PUSH_TOKEN` repo secret — a classic PAT with `repo`
+# scope (fine-grained PATs do not yet expose <repo>.wiki.git permissions).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'wiki/**'
+
+permissions:
+  contents: read
+
+jobs:
+  mirror:
+    name: rsync wiki/ → <repo>.wiki.git
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Clone wiki repo
+        env:
+          WIKI_PUSH_TOKEN: ${{ secrets.WIKI_PUSH_TOKEN }}
+        run: |
+          if [ -z "${WIKI_PUSH_TOKEN}" ]; then
+            echo "WIKI_PUSH_TOKEN not configured — skipping mirror." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git clone "https://x-access-token:${WIKI_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git" wiki_mirror
+
+      - name: Sync wiki/ → wiki_mirror/
+        if: success() && env.WIKI_PUSH_TOKEN != ''
+        env:
+          WIKI_PUSH_TOKEN: ${{ secrets.WIKI_PUSH_TOKEN }}
+        run: |
+          rsync -a --delete --exclude='.git' wiki/ wiki_mirror/
+
+      - name: Commit + push mirror
+        if: success() && env.WIKI_PUSH_TOKEN != ''
+        env:
+          WIKI_PUSH_TOKEN: ${{ secrets.WIKI_PUSH_TOKEN }}
+        working-directory: wiki_mirror
+        run: |
+          git config user.name  "c3rberus-wiki-bot"
+          git config user.email "c3rberus-wiki-bot@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No wiki changes to mirror." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git commit -m "mirror wiki/ from ${GITHUB_SHA::7}"
+          git push origin HEAD:master || git push origin HEAD:main
+
+      - name: Report success
+        if: success()
+        run: echo "wiki mirror sync complete." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report failure (non-fatal)
+        if: failure()
+        run: |
+          echo "wiki mirror failed — investigate but main CI still PASS." >> "$GITHUB_STEP_SUMMARY"
+          exit 0

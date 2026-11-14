@@ -1,0 +1,32 @@
+# services.yml — Service-interruption module command map.
+# Copy to services.yml (gitignored) and adjust per-environment service names.
+#
+# Keys: <module_id>.<os_type>  (os_type: windows | linux | firewall)
+# Value: shell command string run as privileged user (SYSTEM on Windows, root on Linux/firewall)
+#
+# A missing os_type key means the module has no command for that OS — the module
+# runner will return a clear error rather than a silent no-op.
+
+stop_dns:
+  windows: "Stop-Service DNS -Force -ErrorAction SilentlyContinue"
+  linux: "systemctl stop named 2>/dev/null || service bind9 stop 2>/dev/null || true"
+  firewall: "service named stop 2>/dev/null || true"
+
+disable_web_server:
+  windows: "Stop-Service W3SVC,WAS -Force -ErrorAction SilentlyContinue; Set-Service W3SVC -StartupType Disabled"
+  linux: "systemctl stop nginx 2>/dev/null; systemctl disable nginx 2>/dev/null; systemctl stop apache2 2>/dev/null; systemctl disable apache2 2>/dev/null || true"
+  # WARNING: disabling pfSense nginx kills the web UI — very high impact
+  firewall: "service nginx stop 2>/dev/null || true"
+
+disable_smb:
+  windows: "Stop-Service LanmanServer -Force -ErrorAction SilentlyContinue; Set-Service LanmanServer -StartupType Disabled"
+  # linux: intentionally absent — Samba rarely runs in CDE environments
+
+disable_ad:
+  windows: "Stop-Service ADWS,kdc,Netlogon -Force -ErrorAction SilentlyContinue"
+  # Only meaningful on DC boxes; will fail silently on member servers
+
+disable_ntp:
+  windows: "Stop-Service W32Time -ErrorAction SilentlyContinue; w32tm /unregister 2>&1 | Out-Null"
+  linux: "systemctl stop systemd-timesyncd 2>/dev/null; systemctl stop chronyd 2>/dev/null; systemctl stop ntp 2>/dev/null || true"
+  firewall: "service ntpd stop 2>/dev/null || true"

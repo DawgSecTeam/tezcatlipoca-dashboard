@@ -195,3 +195,20 @@ def test_scrim_carries_a_per_run_cycle_cap():
     scrim = build_command("scrim", "c", "/ws", {"teams": 2, "duration_min": 120,
                                                 "cycle_timeout": 1800})
     assert scrim[scrim.index("--cycle-timeout") + 1] == "1800"
+
+
+def test_resume_deploy_forwards_identity_knobs(tmp_path, monkeypatch):
+    # a resume without them plans DEFAULT slots and its own collision preflight
+    # refuses the run's LIVE range (run-ffc3e740, 2026-11-13 night)
+    ws = tmp_path / "comp"
+    ws.mkdir()
+    monkeypatch.setattr(runner.estate, "load_flat",
+                        lambda p: {"last_phase": 6, "hold_start": False})
+    cmd = runner.build_command("resume_deploy", "cde-2026", str(ws), {
+        "scoring_vmid": 1278, "team_identifiers": "127,128",
+        "engine_mgmt_ip": "10.0.0.251"})
+    joined = " ".join(cmd)
+    assert "--from-phase 7" in joined
+    assert "--scoring-vmid 1278" in joined
+    assert "--team-identifiers 127,128" in joined
+    assert "--engine-mgmt-ip 10.0.0.251" in joined

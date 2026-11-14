@@ -200,3 +200,87 @@ A1→A2 (same quotient/seeding surface, root-cause first) ⇒ A3 ⇒ A4 ⇒ A6 (
   anti-phantom compound UF-OK; scrim copytree idempotency; **restored `start_red_director`
   at T0 that the sliver-c2 squash (69c7fa1) silently dropped — red had never fired in any
   scrim since**.
+
+### B3 — 4-team live deploy (2026-11-10, lane idents 139–142, engine 1010 @10.0.0.246)
+
+Deploy was the event. Nine attempts; every failure diagnosed to root cause, platform fixes
+shipped along the way:
+
+1. **Payload-matrix timebomb (fixed, d080bbc)** — sliver `c2-prep` built 60+ targets ×
+   fixed 7200s cap → timeout; wipe-on-restart → infinite loop. Now
+   `red.c2_prep_transports` / `red.c2_prep_timeout` are Compfile knobs (defaults: all, 6h).
+2. **Sliver windows+tcp-pivot defect (filed to owner, comps 2093827)** — `Generate` fails
+   deterministically ("exit status 1") for windows × tcp-pivot; tlaloc aborts the whole
+   matrix on one failed target. splunk-scenario now pins `mtls,https,dns` → `https,dns`.
+3. **red01 disk-full cascade (found + cleared)** — sliver's go build cache
+   (`/root/.sliver/go/cache`) grew unbounded to **48G on a 58G root** → every rename/build
+   failed in creative ways ("target exists", "exit status 1", future-dated mtimes). Purged;
+   recommend sliver owner add cache pruning + deploy-time disk preflight.
+4. **slunk 10.6 refuses root start without --run-as-root (fixed upstream, vendor tree)** —
+   heads came up dead; first scrim refused: 11 pins down (correctly — scoreboard gate).
+5. **Fresh-clone default-route gap (engine .246 + red .199)** — cloud-init static config
+   omitted the default route on rebuilds; compose/github steps died. Fixed via netplan +
+   resolved drop-ins on both; **productizing this (provisioning must write default route)
+   is a standing TODO for the co-tenant.**
+6. **Adopt-loop (open finding)** — a deploy that fails after creating VMs collides with its
+   own partials on every retry ("engine vmid 1010 collides"); `--orphan-run` reclaim is the
+   escape hatch but discards completed work. Two reclaim cycles used tonight (B3, B4).
+7. **qga probe timeout on the shared red host** under build load aborted the final phase;
+   retry passed through.
+
+### B4 — standard-comp regression (sliver-practice-4box, lane 149–150, engine 1040 @10.0.0.247)
+
+- **Environment finding**: every non-splunk comp on this farm requires
+  `base-ubuntu24.04-fix` / `base-debian13-lite-fix` — **neither exists on node proxmox**
+  (only the un-fixed bases). B4 ran against a workspace copy pointed at the existing bases
+  (pipeline regression is the subject; base content documented as a provisioning gap).
+- **Collision probes all fired correctly**: preflight refused the co-tenant's `1170`
+  (tlaloc-red01 squatting the golden block for engine 1020/1030) → lane moved to engine
+  1040; refused stale-state resumes twice → `--orphan-run` reclaim used.
+- **Deploy progressed to day-0 seed**: engine+bridges+4 goldens+8 team boxes+red01 2680
+  (cloned fresh from base 955, own sliver stack; go-cache streamed from 241 → matrix
+  16 builds in ~20 min). Seed gate refused: windows dc01 implant ran but never checked in
+  to 2680:8443 — open item (windows first-boot firewall vs listener SNI config; B3-side
+  callbacks on the same code path work, so the lane-specific config is suspect).
+- **Teardown regression: PASS** — `destroy-competition --end-of-competition` rc=0,
+  17 entities destroyed, estate verified clean, no strays (verified against protected
+  inventory: 1170/1580/1410/1420 untouched).
+
+### B3 — the 4-team event (2026-11-11 20:19→22:19 EDT, run-5d1abd6c) — ALL CRITERIA MET
+
+| criterion | result |
+|---|---|
+| full 120-min event, 4 teams | **rc=0**, teardown skipped (--keep-range), artifacts: 85 ok / 0 failed / 0 unreachable |
+| blue cycles rc=0 per team | **4/4/4/4** (16 green cycles) |
+| cycle timeouts | 5 (team1 T+0 pre-heal + 4 endgame under the single LLM lock; every team still completed 4 rc=0) |
+| red fired | **yes — 28 decision-cycles, 122 executed actions**: nginx/splunk/winrm takedowns on all 4 teams, tcp/9997 blocked on 3 heads, windows persistence (taskwatch scheduled tasks), sliver implant callbacks observed (https payloads live on win01/web01) |
+| watchdog self-heal | **4 RESTORED events** (every web01 hit, recovered ≤15min) |
+| telemetry at T0 | **12/12 feeds fresh across 4 teams** (after UF LAN-mirror; 04:11 abort was transient) |
+| injects | engine 5/5 published (verify PASS pre-T0) |
+| submissions ≥1/team | **team1=4, team2=3, team3=3, team4=2** (12 submission files) |
+| SIEM grounding (index=/search) | 3/4 teams used splunk searches in-cycle (spec: ≥2/4) |
+| tunnel hygiene | :8180 orphan from the 20:11 abort strangled the first 25 event-minutes of red LLM (killed sshd-pid 154464, healed in one tick) — engine TODO: tear child tunnels on abort |
+
+Notes: red never attacked *during* the degraded-tunnel window's first cycle (20:34 timeout =
+team1 cycle-0 under cold caches); after 20:43 both sides ran at full pressure. blue model =
+qwen3.8-flash-next for all four teams (the 27b group is 502-dead gateway-side — the planned
+2×27b+2-alt mix is environment-blocked, documented in B2).
+
+## FINAL VERDICT-62 — **READY** (with three named caveats)
+
+1. **Ready.** Plan A + B0–B3 prove the fixed pipeline end-to-end on the live farm: golden
+   probes, red-only dry runs, the negative test (gate refuses dirty ranges, both directions),
+   and now a full 4-team/120-min event with red at 122 executed actions, 4/4 teams healthy
+   cycles, watchdog self-heal, and durable evidence (89 files, sha-sealed reports).
+2. **Caveat — C2 spread:** the 4-team matrix runs at `https,dns` transports (windows×tcp-pivot
+   is a confirmed sliver defect; mtls builds degraded under red01 disk pressure). Full-spread
+   verification is parked for the sliver owner (defect filed, LOG.md).
+3. **Caveat — one blue model:** qwen3.8-27b is 502 at the gateway; mixed-model resilience is
+   untested on live events.
+4. **Caveat — B4 partial:** sliver-practice regression reached day-0 seed (all infra stages
+   passed) then its windows callback gate refused (2680-lane-specific, open); teardown
+   regression fully green; farm lacks the `-fix` base images (provisioning gap documented).
+
+Platform backlog (from this run, in priority order): abort-safe tunnel cleanup; run-id
+adopt-after-partial-crash (kills 30 min per collision loop); sliver go-cache pruning + disk
+preflight; provisioning writes default route (clone egress); windows×tcp-pivot Generate fix.

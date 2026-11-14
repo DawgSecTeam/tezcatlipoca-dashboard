@@ -1,0 +1,62 @@
+# config/playbook.example.yml
+#
+# Competition playbook — loaded ONCE at server start (restart to reload).
+# Copy to config/playbook.yml (gitignored) and customize before competition day.
+#
+# Two supported shapes:
+#
+# 1. Legacy list form — just action entries, no competition schedule:
+#      - at: "T+00:00:00"
+#        action: exec
+#        ...
+#
+# 2. Mapping form — adds optional competition schedule fields. All schedule
+#    fields are optional; presence triggers arming behavior at boot.
+#
+#      start_time: "YYYY-MM-DDTHH:MM:SS"   # absolute (anchors everything; arm target)
+#      end_time:   "HH:MM:SS"              # T+offset → RUNNING → STOPPED
+#      pause_at:   "HH:MM:SS"              # T+offset → RUNNING → PAUSED
+#      resume_at:  "HH:MM:SS"              # T+offset → PAUSED  → RUNNING
+#      entries:
+#        - at: "T+00:00:00"
+#          ...
+#
+# Timing: T+HH:MM:SS offsets are relative to start_time (or
+# competition_start_at when armed manually). All times computed as
+#   run_at = anchor + timedelta(seconds=offset)
+#
+# Fanout: each entry fans out to ALL inventory boxes matching 'os'.
+# Red team is responsible for balance across teams (deploy to all teams or none).
+
+start_time: "2026-06-01T09:00:00"
+end_time:   "08:00:00"
+pause_at:   "03:00:00"
+resume_at:  "04:00:00"
+
+entries:
+  # T+0: immediate recon exec on all Windows boxes
+  - at: "T+00:00:00"
+    action: exec
+    os: windows
+    command: "whoami /all"
+
+  # T+5min: deploy a script-based Linux backdoor IOC
+  - at: "T+00:05:00"
+    action: deploy
+    os: linux
+    ioc_name: cron_backdoor
+
+  # T+10min: deploy Sliver beacon implant to Windows boxes
+  - at: "T+00:10:00"
+    action: implant
+    os: windows
+    ioc_name: windows_implant_beacon
+    implant_type: beacon
+    arch: amd64
+    persistence: scheduled_task   # optional persistence mechanism name
+
+  # T+15min: run a module on Linux boxes
+  - at: "T+00:15:00"
+    action: module
+    os: linux
+    module_name: recon_sweep

@@ -1,0 +1,435 @@
+# Randomised name pools for artifacts dropped on target boxes (temp files,
+# services, scheduled tasks, cron entries, accounts, WMI subscriptions, process
+# comm names, implant binaries). This is the sole naming-pool file — copy or
+# edit it directly for a competition; no separate example file to merge in.
+#
+# Windows target boxes do NOT run Defender — avoid any Defender-branded name
+# (MsMpEng, MpCmdRun, "Defender" in a service/account name, …) above tier 1;
+# it's a fake artifact with nothing else on the box to justify its presence
+# and stands out immediately to a blue team that checks for Defender first.
+
+# Deploy-directory pools (docs/PLAN_difficulty_pools_extensionless.md), read by
+# fastapi_backend/core/config.py at startup into DEPLOY_PATH_POOL_<OS> /
+# DEPLOY_PATH_TIER_<OS> (a DEPLOY_PATH_POOL_<OS>/DEPLOY_PATH_TIER_<OS> env var
+# still overrides this per-OS). Same {dir: tier} shape as name_pools below;
+# difficulty 1-2 draws from the whole pool, 3 -> tier>=2, 4 -> tier>=3. NOT YET
+# LIVE-VALIDATED — every dir here still needs a live-VM write-test pass (can
+# NXC actually put_file/exec into it) before treating tier>=2 as competition-safe.
+dir_pools:
+  windows:
+    C:\Windows\Temp: 1
+    C:\Users\Public: 1
+    C:\Users\Public\Downloads: 1
+    C:\PerfLogs: 1
+    C:\ProgramData\Microsoft: 2
+    C:\ProgramData\Package Cache: 2
+    C:\Windows\Debug: 2
+    C:\Windows\Registration\CRMLog: 2
+    C:\Windows\SysWOW64: 3
+    C:\Windows\System32\spool\drivers\color: 3
+    C:\Windows\System32\Tasks\Microsoft\Windows\WDI: 3
+    C:\Windows\ServiceProfiles\LocalService\AppData\Local\Temp: 3
+  linux:
+    /tmp: 1
+    /dev/shm: 1
+    /var/tmp: 1
+    /var/backups: 1
+    /usr/local/bin: 2
+    /var/lib: 2
+    /var/cache: 2
+    /opt: 2
+    /usr/lib: 3
+    /usr/libexec: 3
+    /var/spool: 3
+    /usr/local/share: 3
+  freebsd:
+    /tmp: 1
+    /var/tmp: 1
+    /root: 1
+    /usr/local/bin: 2
+    /var/db: 2
+    /var/cache/pkg: 2
+    /usr/local/lib: 3
+    /usr/local/share: 3
+    /var/spool: 3
+
+# Names used for temp PS1 scripts dropped on Windows targets via put_file.
+# Should look like legitimate Windows maintenance components.
+windows_ps1_wrappers:
+  - WindowsUpdate
+  - SoftwareDistribution
+  - WUClient
+  - MicrosoftEdgeUpdate
+  - DiagnosticsHub
+  - TiWorker
+  - WerFault
+  - AppReadiness
+  - SgrmBroker
+
+# Names used for temp binaries (exe/dll/msi) dropped on Windows targets,
+# including the generated implant filename (naming_pools.pick_implant_name).
+windows_binaries:
+  - svchost
+  - RuntimeBroker
+  - spoolsv
+  - taskhostw
+  - sihost
+  - fontdrvhost
+  - SearchIndexer
+  - WmiPrvSE
+  - dllhost
+
+# Names used for temp files dropped on Linux targets (no extension),
+# including the generated implant filename.
+linux_binaries:
+  - networkd
+  - systemd-resolve
+  - dbus-broker
+  - polkitd
+  - sshd-keygen
+  # Was `snapd` — but Ubuntu's snapd package owns /var/lib/snapd,
+  # /var/cache/snapd, /usr/lib/snapd as DIRECTORIES, so any pool pick of
+  # (dir, snapd) that lands in those parents made `cp` drop the .so
+  # INSIDE the dir (silent), timestomp `touch <dir>` returned success
+  # (false clean), and persistence's dlopen(/var/lib/snapd) failed —
+  # live-fail 2026-09-11 on polus / linux_implant_so_systemd.
+  # systemd-timesyncd is a real systemd helper on both CentOS Stream 8
+  # and Ubuntu 20.04+; neither distro creates /var/lib/systemd-timesyncd
+  # (its per-daemon dir lives at /var/lib/systemd/timesync). Verified via
+  # per-pool-dir stat on both boxes 2026-09-11.
+  - systemd-timesyncd
+  - accounts-daemon
+  - packagekit
+  - udisksd
+
+# Names used for temp files dropped on FreeBSD/pfSense targets, including the
+# generated implant filename.
+freebsd_binaries:
+  - syslogd
+  - cron
+  - newsyslog
+  - periodic
+  - adjkerntz
+  - rtsold
+  - ntpd
+
+# Tiered artifact-NAME pools (docs/PLAN_build_check_deploy_name_pools.md §5B).
+# name_pools:<kind>:<os>: {name: tier}. Higher IOC difficulty draws only from
+# higher tiers (obscurer names): difficulty 1-2 -> tier>=1 (whole pool), 3 ->
+# tier>=2, 4 -> tier>=3. kind in service | cron | schtask | so | comm | user | wmi.
+# An IOC opts in via its pooled_names=[(env_key, kind)]; the converted
+# deploy/check/remediate read ${<env_key>:-<old default>}.
+name_pools:
+  # Shared-object basenames for LD_PRELOAD .so drops (linux_ld_preload_hide,
+  # firewall_ld_preload_hide).
+  so:
+    linux:
+      libnscompat.so: 1
+      libnss_cache.so: 1
+      libpam_ldap2.so: 1
+      libresolv_wrap.so: 1
+      libnss_files2.so: 2
+      libselinux-nss.so: 2
+      libaudit_compat.so: 2
+      libkrb5_helper.so: 2
+      libc_hardening.so: 3
+      libsystemd_shim.so: 3
+      libnss_sss2.so: 3
+      libglibc_compat.so: 3
+    freebsd:
+      libssl_compat.so: 1
+      libcrypt_shim.so: 1
+      libutil_priv.so: 1
+      libc_compat.so: 1
+      libc_nss.so: 2
+      libpam_krb5.so: 2
+      libgeom_helper.so: 2
+      libbsdxml2.so: 2
+      libkvm_shim.so: 3
+      libsecurity_pam.so: 3
+      libcam_compat.so: 3
+      libufs_helper.so: 3
+  # Linux systemd service names (linux_implant_obvious_systemd,
+  # linux_priv_user_service). Must be lowercase-with-hyphens (systemd convention).
+  service:
+    linux:
+      systemd-network-proxy: 1
+      network-watchdog: 1
+      polkit-helper: 1
+      udev-hwdb-sync: 1
+      systemd-hostnamed-helper: 2
+      systemd-timesyncd-helper: 2
+      dbus-proxy-svc: 2
+      accounts-helper: 2
+      systemd-pstore-helper: 3
+      systemd-rfkill-helper: 3
+      systemd-backlight-svc: 3
+      pcp-pmcd-proxy: 3
+  # pfSense/FreeBSD rc.d service names (firewall_implant_daemon_rc, firewall_fake_shell).
+  # Must be valid FreeBSD rc.d PROVIDE names (alphanum + underscore, no hyphens).
+    freebsd:
+      syslog_relay: 1
+      net_watchdog: 1
+      audit_helper: 1
+      sysstats: 1
+      svc_ntpd: 2
+      svc_sshd: 2
+      svc_pflog: 2
+      svc_cron: 2
+      svc_devd: 3
+      svc_kld: 3
+      svc_newsyslog: 3
+  # Windows service names (windows_http_server, windows_priv_user_service,
+  # windows_ifeo watchdog, …). No Defender-branded names above tier 1.
+    windows:
+      # 8 per tier, same reasoning as the `wmi` pool above: an Ultra IOC draws
+      # only from the top tier and pick_unused_name excludes names already active
+      # for that (box, ioc), so a 4-name tier is exhausted by a few redeploys on
+      # one box -> None -> the script's fixed off-pool default -> one name
+      # fleet-wide that pool-aware remediation cannot find.
+      #
+      # Modelled on real service-name families enumerated from the boxes
+      # (2026-08-10): App<Thing>Svc (AppIDSvc, AppXSvc), Device<Thing>
+      # (DeviceInstall), <Thing>Broker (DevQueryBroker, SystemEventsBroker),
+      # Net<Thing> (Netman, NetSetupSvc), Win<Thing>Svc (WinHttpAutoProxySvc),
+      # Sys<Thing> (SysMain). Every name here — existing and new — was checked
+      # against the live boxes' Get-Service list: a pooled name matching a REAL
+      # service would have deploy collide with it and remediate delete it.
+      WinDiagMgr: 1
+      WinHelperSvc: 1
+      SysMaintSvc: 1
+      WinCacheSvc: 1
+      SysTaskHost: 1
+      WinEventSvc: 1
+      AppSyncHelper: 1
+      DevPolicySvc: 1
+      WindowsSearchIdx: 2
+      OneSyncSvc: 2
+      DiagTrackHelper: 2
+      RemoteRegistrySvc: 2
+      NetProfileSvc: 2
+      WinTimeBroker: 2
+      AppReadinessSvc: 2
+      SysDiagHost: 2
+      WpnUserSvcHelper: 3
+      TokenBrokerSvc: 3
+      ClipSvcHelper: 3
+      StorSvcExt: 3
+      DevQueryHelper: 3
+      WinNlaBroker: 3
+      SecHealthProxy: 3
+      AppXDeployHelper: 3
+  # Scheduled-task names (windows_attrib_schtask, windows_disable_logging,
+  # windows_user_scheduled_task). WinDefSvcHelper is the pre-existing hardcoded
+  # default (kept tier 1 only — no other Defender-branded names above it).
+  schtask:
+    windows:
+      WinDefSvcHelper: 1
+      SystemMaintenance: 1
+      WindowsUpdateCheck: 1
+      DiskCleanupTask: 1
+      OneDriveTelemetry: 2
+      EdgeUpdateTaskMachine: 2
+      CompatTelRunner: 2
+      WinSATRefresh: 2
+      ProgramDataUpdater: 3
+      WindowsErrorReportingTask: 3
+      DeviceDirectoryClientUpdate: 3
+      UsbCeip: 3
+  # Cron file/entry names in /etc/cron.d (linux_http_server, linux_disable_logging).
+  cron:
+    linux:
+      system-http-watchdog: 1
+      cron-daily-check: 1
+      logrotate-helper: 1
+      network-monitor: 1
+      apt-metrics-refresh: 2
+      systemd-health-probe: 2
+      disk-usage-report: 2
+      ntp-sync-check: 2
+      systemd-tmp-scrub: 3
+      kernel-module-refresh: 3
+      audit-log-rotate: 3
+      selinux-relabel-check: 3
+  # Local/AD account names for privilege-escalation IOCs (linux_priv_user_service,
+  # windows_priv_user_service, windows_user_scheduled_task). Must be a valid,
+  # innocuous-looking account name. No Defender-branded names above tier 1.
+  user:
+    linux:
+      svc-backup: 1
+      sys-maint: 1
+      netmon-agent: 1
+      backup-oper: 1
+      log-daemon: 1
+      syslog-agent: 1
+      scan-worker: 1
+      dhcp-helper: 1
+      systemd-net: 2
+      svc-monitor: 2
+      pkg-updater: 2
+      audit-svc: 2
+      nm-dispatcher: 2
+      acct-daemon: 2
+      polkit-agent: 2
+      dbus-broker: 2
+      sssd-helper: 3
+      polkitd-worker: 3
+      dbus-helper: 3
+      sys-diagd: 3
+      nss-daemon: 3
+      kerb-agent: 3
+    windows:
+      svc_healthmon: 1
+      SvcMaint: 1
+      BackupOperator: 1
+      NetworkSvc2: 1
+      SvcHelper: 1
+      LogCollector: 1
+      TelemetryAgent: 1
+      PrintSpool2: 1
+      WinTelemetrySvc: 2
+      WinDiagSvc: 2
+      SysMonitorAcct: 2
+      UpdateOrchestrator: 2
+      WinPerfAgent: 2
+      SvcAuditHelper: 2
+      DiagTrackSvc: 2
+      CryptKeySvc: 2
+      WdiServiceHost: 3
+      SgrmBrokerAcct: 3
+      TokenBrokerAcct: 3
+      DptfParticipantAc: 3
+      EtwSessionSvc: 3
+      KernelDiagSvc: 3
+    freebsd:
+      svc-monitor: 1
+      admin-backup: 1
+      net-daemon: 1
+      audit-agent: 1
+      svc-watchdog: 2
+      sys-helper: 2
+      diag-agent: 2
+      pf-monitor: 2
+      kern-helper: 3
+      sec-daemon: 3
+      net-audit: 3
+      sys-probe: 3
+  # WMI event subscription base names (windows_kill_respawn). Scripts append
+  # 'Filter'/'Consumer' to derive the __EventFilter and CommandLineEventConsumer
+  # object names in root\subscription.
+  # WMI __EventFilter / __EventConsumer object names.
+  #
+  # Modelled on the naming families actually present on a stock Windows box
+  # (enumerated 2026-08-10 from root\cimv2 __Win32Provider + root\subscription):
+  #   <Thing>Provider / <Thing>Prov  — ReliabilityMetricsProvider, RegProv, InvProv
+  #   Wmi<Thing>                      — WmiPerfInst, WmiPerfClass
+  #   <Thing>Events / <Thing>Manager  — VolumeChangeEvents, ProviderSubSystem
+  # The only genuinely stock SUBSCRIPTION on a clean box is
+  # "SCM Event Log Filter"/"SCM Event Log Consumer", so anything here is
+  # unambiguously ours — but every name below was still checked against the live
+  # boxes' providers, services and existing subscriptions for collisions before
+  # being added (a pooled name that matches a REAL object would make remediation
+  # destructive, the same trap the *_binaries pools carry).
+  #
+  # 8 per tier, not 4: an Ultra (difficulty 4) IOC only draws from tier >= 3, and
+  # pick_unused_name excludes names already active for that (box, ioc). With only
+  # 4 eligible names a few redeploys on one box exhausted the tier, returned None,
+  # and the script fell back to its fixed off-pool default — which is how a name
+  # ends up colliding fleet-wide and evading pool-aware remediation.
+  wmi:
+    windows:
+      WinSvcEvent: 1
+      SysHealthMonitor: 1
+      DiskSpaceWatch: 1
+      ProcRespawnHelper: 1
+      SysEventLogger: 1
+      ServiceStateMonitor: 1
+      ProcWatchAgent: 1
+      DiskHealthWatch: 1
+      SystemEventWatch: 2
+      WmiPerfMonitor: 2
+      EventLogForwarder: 2
+      SvcRecoveryAgent: 2
+      PerfCounterRelay: 2
+      VolumeChangeWatcher: 2
+      SessionStateProvider: 2
+      EventForwardBroker: 2
+      NtEventCorrelator: 3
+      KernelEventBridge: 3
+      WinRMEventRelay: 3
+      EtwSessionManager: 3
+      ReliabilityEventProv: 3
+      InvSyncProvider: 3
+      SppEventRelay: 3
+      WmiPerfAggregator: 3
+  # Windows AppCertDLLs DLL filenames (windows_hide_library).
+  # Plausible system-helper DLL names that don't trigger immediate Defender
+  # suspicion on sight.  Tier 4 (Ultra) only draws from tier >= 3.
+  dll:
+    windows:
+      SecurityHelper.dll: 1
+      WinTrustHelper.dll: 1
+      credpolicy.dll: 1
+      secbaseline.dll: 1
+      CertValidate.dll: 2
+      WinAuthBase.dll: 2
+      winsec_base.dll: 2
+      trustsvc_impl.dll: 2
+      nthost_impl.dll: 3
+      cryptext_base.dll: 3
+      certhost_impl.dll: 3
+      policyvalidate.dll: 3
+      sysperfhost.dll: 4
+      perfcounters_impl.dll: 4
+      authsvc_impl.dll: 4
+      certpolicy_base.dll: 4
+  # AppCertDLLs registry value names (under Session Manager\AppCertDLLs).
+  certdll_value:
+    windows:
+      WinCertStore: 1
+      SecurityBaseProvider: 1
+      CertPolicyStore: 1
+      SecValidateBase: 1
+      TrustValidator: 2
+      CryptAuthority: 2
+      CertTrustBroker: 2
+      AuthPolicyBase: 2
+      NtCertValidate: 3
+      WinPolicyBase: 3
+      NtTrustProvider: 3
+      CertGuardBase: 3
+      CertChainEngine: 4
+      TrustChainCtl: 4
+      CryptChainHost: 4
+      WinTrustAuthority: 4
+  # Process comm names baked into coupled shims via BEACON_COMM/HIDDEN_COMM
+  # (linux_kill_shim, linux_hide_library, firewall_hide_library share one
+  # comm per build — docs/PLAN_build_check_deploy_name_pools.md §13-C).
+  # Linux `comm` is truncated to 15 chars by the kernel — keep entries <=15.
+  comm:
+    linux:
+      networkd: 1
+      rsyslogd: 1
+      dbus-daemon: 1
+      avahi-daemon: 1
+      systemd-resolve: 2
+      polkitd: 2
+      accounts-daemon: 2
+      wpa_supplicant: 2
+      systemd-timesyn: 3
+      packagekitd: 3
+      whoopsie: 3
+      ModemManager: 3
+    freebsd:
+      syslogd: 1
+      devd: 1
+      cron: 1
+      sendmail: 1
+      ntpd: 2
+      powerd: 2
+      moused: 2
+      rtsold: 2
+      bsnmpd: 3
+      ppp: 3
+      watchdogd: 3
+      nfsd: 3

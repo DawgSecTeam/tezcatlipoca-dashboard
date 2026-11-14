@@ -1,0 +1,35 @@
+- [Home](Home)
+- [Operator Actions](operator-actions)
+- [Keyboard Shortcuts](keyboard-shortcuts)
+- [Troubleshooting](troubleshooting)
+- **Pre-Competition**
+  - [Setup Checklist](pre-competition)
+  - [Inventory YAML](inventory-yaml)
+  - [Configuration](configuration)
+  - [Sliver Setup](sliver-setup)
+- **Running a Competition**
+  - [Admin Control](running-competition)
+  - [Scoreboard](scoreboard-reading)
+- **C2 Operations**
+  - [Overview](c2-overview)
+  - [Generation](c2-generation)
+  - [Deployment](c2-deployment)
+  - [Exec](c2-exec)
+  - [Targets](c2-targets)
+  - [Modules](c2-modules)
+  - [Tasks](c2-tasks)
+  - [Console](c2-console)
+  - [Credentials](c2-creds)
+- **IOC Reference**
+  - [IOC Catalog](ioc-catalog)
+- **Developer**
+  - [Architecture](architecture)
+  - [Subsystems](subsystems)
+  - [Frontend](frontend)
+  - [Testing](testing)
+  - [IOC Authoring](ioc-authoring)
+  - [API Reference](api-reference)
+  - [DB Schema](db-schema)
+  - [Architecture Diagram](architecture-diagram)
+
+<!-- audited 2026-06-05 — first wave; updated 2026-06-05 — second-wave pages appended per plan B.1-B.13. Updated 2026-07-24 — All IOCs link fixed to ioc-catalog.md (Plan 12). Updated 2026-07-30 — added Configuration (Pre-Competition) + Architecture Diagram (Developer), moved out of CLAUDE.md. -->
