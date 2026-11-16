@@ -26,6 +26,12 @@ from dashboard.store import Store
 logger = logging.getLogger(__name__)
 
 
+def count_actions():
+    """Actions whose `teams` is a COUNT; everywhere else it is a range selector."""
+    from dashboard.runner import RESUME_ACTIONS
+    return ("deploy", "plan", "scrim") + RESUME_ACTIONS
+
+
 class RunBody(BaseModel):
     comp_id: str
     action: str
@@ -109,11 +115,17 @@ def create_app():
         # The body's convenience fields are DEFAULTS: `params` already carries the driver's
         # own flags (a redeploy's teams selector, boxes, mode), and body.teams' 2 would
         # otherwise clobber an explicit params["teams"].
-        for key, val in (("teams", body.teams), ("scoring_vmid", body.scoring_vmid),
-                         ("team_identifiers", body.team_identifiers),
-                         ("engine_mgmt_ip", body.engine_mgmt_ip),
-                         ("engine_node", body.engine_node), ("team_node", body.team_node),
-                         ("nodes", body.nodes)):
+        # `teams` is a COUNT only for the actions that deploy; on a redeploy/verify/start it
+        # is a SELECTOR (or meaningless), so the body's default of 2 became `--teams 2` and
+        # refused a one-team range (live: snap-trial, 2026-11-13).
+        defaults = [("scoring_vmid", body.scoring_vmid),
+                    ("team_identifiers", body.team_identifiers),
+                    ("engine_mgmt_ip", body.engine_mgmt_ip),
+                    ("engine_node", body.engine_node), ("team_node", body.team_node),
+                    ("nodes", body.nodes)]
+        if body.action in count_actions():
+            defaults.insert(0, ("teams", body.teams))
+        for key, val in defaults:
             params.setdefault(key, val)
         # Only `params` reaches the runner, so a top-level comp_dir used to be dropped
         # silently and the action fell through to range auto-resolution — which then targeted

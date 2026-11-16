@@ -222,3 +222,20 @@ def test_resume_forwards_force_from_phase(tmp_path, monkeypatch):
     cmd = runner.build_command("resume_deploy", "cde-2026", str(ws),
                                {"from_phase": 7, "force_from_phase": True})
     assert cmd[cmd.index("--from-phase") + 1] == "7" and "--force-from-phase" in cmd
+
+
+def test_redeploy_teams_is_a_selector_not_a_count():
+    # A redeploy's `teams` picks boxes; the API's convenience default of 2 became
+    # `--teams 2` and refused a one-team range (live: snap-trial, 2026-11-13).
+    cmd = build_command("redeploy", "c", "/ws", {"mode": "prepared", "teams": "1"})
+    assert cmd[cmd.index("--teams") + 1] == "1"
+    plain = build_command("redeploy", "c", "/ws", {"mode": "prepared"})
+    assert "--teams" not in plain
+
+
+def test_only_deploying_actions_take_a_team_count():
+    from dashboard import app
+    assert "redeploy" not in app.count_actions()
+    assert "start" not in app.count_actions()
+    assert "verify" not in app.count_actions()
+    assert {"deploy", "plan", "scrim"} <= set(app.count_actions())
