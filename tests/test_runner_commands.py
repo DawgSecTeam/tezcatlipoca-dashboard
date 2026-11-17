@@ -53,6 +53,18 @@ def test_scrim_can_place_its_own_deploy_stage():
         assert flag not in plain
 
 
+def test_scrim_forwards_a_second_blue_endpoint():
+    # blue lanes spread across gateway models contend on separate LLM locks, not one —
+    # but only if the API can actually reach team2's own model (the flags the engine's
+    # blue_ep needs were missing from the scrim whitelist).
+    scrim = build_command("scrim", "c", "/ws", {"teams": 2, "blue_model": "qwen3.8-flash-next",
+                                                 "blue2_base_url": "https://litellm.dawgsec.com/v1",
+                                                 "blue2_model": "qwen3.8-27b"})
+    assert scrim[scrim.index("--blue-model") + 1] == "qwen3.8-flash-next"
+    assert scrim[scrim.index("--blue2-base-url") + 1] == "https://litellm.dawgsec.com/v1"
+    assert scrim[scrim.index("--blue2-model") + 1] == "qwen3.8-27b"
+
+
 def test_scrim_and_redeploy_shapes():
     scrim = build_command("scrim", "c", "/ws", {"teams": 2, "duration_min": 45,
                                                 "from_template": "agent-scrim", "new": "c"})
