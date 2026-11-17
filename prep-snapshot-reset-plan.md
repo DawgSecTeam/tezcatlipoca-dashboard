@@ -65,9 +65,16 @@ single deploy:
   (`enabled-but-stopped` is only a hold until something reboots). A staged range now installs
   `tlaloc.service` **disabled**, and the release — `start_unit`, or the scrim's director start —
   enables it as it starts, so a mid-event reboot does not silently disarm red.
+- **A prepared reset trusted the snapshot to hold it.** The fix above only helps a range prepared
+  *after* it: this range's `tz-ready` still carries an enabled unit, so its third reset booted
+  straight back into a running red loop — `Started tlaloc.service` 7 s after that boot, still
+  cycling ten minutes later with no event open (it planted nothing: its rolled-back intel said the
+  boxes were already owned). Unarmed is
+  the contract of `--mode prepared`, so `mode_prepared` now stops **and disables** the unit once
+  red01 answers SSH (`tlaloc_ops.hold_unit`), whatever the restore point carried.
 
 Both are in `9389710` on `prep-snapshot`, with offline tests for each (engine 1363 pass, tlaloc
-suite pass).
+suite pass); the reset's own hold is `cabeba0`.
 
 **Trial — two consecutive clean round-2s on the kept range, driven through the dashboard.** Reset
 `run-3e49368f` (12.5 min) → round `run-deddca27` (19 min, rc=0); reset `run-aeb065b6` → round
