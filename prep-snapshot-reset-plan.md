@@ -395,3 +395,46 @@ is most of it, per-round cost falls to roughly rollback + seed + seed-engine + e
 
 The three-round trial is the deliverable to judge this on: we have 16 timed deploys and
 **zero measured rollbacks** in the estate's history.
+
+## 9. The equivalence instrument (added after the first two round-2s failed)
+
+A rollback guarantees the disks. Everything else about a range is rebuilt by whatever the boot
+happens to do, and "everything else" is where both round-2 failures lived. So the claim "a reset
+returns the range to the point a fresh deploy leaves" is now **measured**, not asserted:
+
+- `prepared/fingerprint.py::record` reads that state once, at the moment deploy takes `tz-ready`,
+  and files it in the comp dir as `.prepared-fingerprint.json` (atomic, per-run state like the
+  other dot-files). What it reads is exactly the non-disk half: every VM's hypervisor definition
+  and snapshot list, each box's listening ports, the engine's `RANGE-RED-FWD/DNAT/SNAT` chains and
+  their hooks in the parent chains, and on red01 the unit enablement table, whether the loop is
+  active, and **which Sliver daemon holds each transport port** (`main` / `build:<lport>` /
+  `absent`) — a pid, which is what `ss` reports, changes every boot and means nothing across two
+  reads.
+- `redeploy --mode prepared` re-reads after the rollback, prints every field that differs, and
+  refuses the reset if the list is not empty. A range whose points predate the file records its
+  reference on the first reset and says so instead of failing.
+- The probes are chosen so the reset needs no credentials it might have rolled back: the boxes and
+  the engine are read through the Proxmox guest agent, red01 through the deploy key. A machine
+  that cannot answer is recorded as `unreachable:<Error>` — a finding in the diff, not a crash.
+
+Two boundary decisions came out of measuring rather than reasoning:
+
+**The reset reconciles red01's listeners, and holds its unit, but does not reinstall the
+engine's red rules.** Checked on a rolled-back engine: no `range-red-firewall.sh`, no
+`range-red-firewall.timer`, no chains — because in a held deploy the rules are installed by the
+arm at event start, not by the deploy. A reset that installed them would be *arming* part of the
+range while claiming only to restore it, and the comparison would then pass for the wrong reason.
+The listeners are different: red01's Sliver servers restore their saved jobs at boot, and which
+one wins a given port is a race — that is the C2 defect that cost round 2 — so the reset puts
+them back on the main server and the fingerprint proves it took.
+
+**The diff is only meaningful under `red.c2_implant_spread full`.** Under the default `draw`,
+tlaloc gives each box one transport from a per-plant draw, so "the channels came up" proves one
+checked-in path per box and nothing else; `full` puts every transport on every box, which is what
+turns the C2 claim into a real test (`implant.py:144` is where the two differ). scrim-one-light
+now runs `full`, and it already had `red.assume_breach full` / `red.depth 3`.
+
+The proof sequence on a fresh snapshot: deploy `--hold-start` → FRESH reference recorded by the
+deploy itself → one round (arm + event) → `redeploy --mode prepared` → RESET reading → the diff
+must print nothing. Then two consecutive clean round-2s, which is the thing this branch exists to
+deliver.
