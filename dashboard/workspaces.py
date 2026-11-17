@@ -23,6 +23,9 @@ _STATE_NAMES = {
     "known_hosts", "nakon-config.json", ".badauto-config.yaml", ".realm-c2-config.yaml",
     ".phase6-swept", ".postclone-swept", "passwords.json", "box_baseline.json",
     "domain_accounts.json", "box_vulns.json.pre-cyberfield-prune1", ".tlaloc-config.yaml",
+    # The reading of one range's restore point. A fresh deploy takes its own; inheriting a copy
+    # would make the next prepared reset compare its rollback against a different range.
+    ".prepared-fingerprint.json",
 }
 _STATE_DIRS = {".automated-tests", "remote-access", "evidence", ".tlaloc-state", "red"}
 # NOT state (they are DEFINITIONS the deploy reads): `pfsense/` holds the factory
