@@ -28,8 +28,35 @@ each NIC by MAC (which the staging code already reads), and a second reset→arm
 with `ens18 UP 10.0.0.249/24`. This bug is invisible without a reboot, which is exactly what
 the reset introduces.
 
-Still unproven: a comp whose red plant includes a **C2 payload matrix** (the `payloads_ready`
-reuse path is what should make round 2 cheap there), and a range with more than one team.
+Still unproven at that point: a comp whose red plant includes a **C2 payload matrix** (the
+`payloads_ready` reuse path is what should make round 2 cheap there), and a range with more
+than one team. The C2 range is now up — see the next section.
+
+### Kept range with a C2 — what the first reboot-then-arm round broke (2026-11-17)
+
+`scrim-one-light` (2 teams, Sliver, 44 payloads across every transport) is the first range where
+round 2 is a rollback **of a box running a C2**. Round 1 was clean: T0 red setup 1.8 GB → 1 min,
+matrix reused. Round 2 failed the seed's C2-channel gate — four boxes' payloads ran and never
+checked in — and it took the reboot to expose two defects, neither visible in a single deploy:
+
+- **The transport listeners came back on the wrong process.** Sliver persists its listeners in
+  the server database and restores them at daemon start, and red01 runs a *build-only* server
+  beside the main one sharing that database. Whichever wins the boot race owns `:8888`; after
+  this rollback the mTLS listener lived on `sliver-build-1`, so an mTLS implant checked in on a
+  process the seed never queries. Three fixes: build units are started on demand and **disabled
+  at boot**; `SliverClient.ensure_listeners` first **takes the transport jobs back** from its
+  build servers (`release_listeners`); and the arm / reused-matrix path calls
+  `c2-prep --listeners-only` (`tlaloc_ops.bring_up_listeners`) instead of trusting the disk.
+- **red01 armed itself at boot.** The held state was `systemctl enable` + stopped, so the reset's
+  reboot started the red loop and tlaloc ran its own day-0 seed before the event armed anything
+  (`enabled-but-stopped` is only a hold until something reboots). A staged range now installs
+  `tlaloc.service` **disabled**, and the release — `start_unit`, or the scrim's director start —
+  enables it as it starts, so a mid-event reboot does not silently disarm red.
+
+Both are in `9389710` on `prep-snapshot`. What they deliberately do not change: the wg listener's
+`NPort=8888` (it is compiled into the frozen payloads, so moving it invalidates the matrix), and
+the arm's refusal to compile — an arm against a range whose snapshots predate this code fails at
+the listener bring-up with a message naming the version skew, not 400 payloads later.
 
 Owner directive (2026-11-12): the range
 is built **once**, snapshotted, and every round — test or real — starts by rolling back and
