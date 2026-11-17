@@ -2,7 +2,9 @@
 
 Status: **implemented and live-verified on one range** (2026-11-13). Branch `prep-snapshot`
 (`c225f0c`, plus `850ae5b` for the netplan defect the trial found), pushed — 1354 offline
-tests pass.
+tests pass. Updated 2026-11-17: verified with a **C2 payload matrix** through two
+reset→round cycles on a kept 2-team range, after two more defects the first such reboot exposed
+(section below); a snapshot taken by the fixed code is still owed one round.
 
 ### Live trial result — `snap-trial`, 1 Debian box, hdd-150
 
@@ -34,10 +36,12 @@ than one team. The C2 range is now up — see the next section.
 
 ### Kept range with a C2 — what the first reboot-then-arm round broke (2026-11-17)
 
-`scrim-one-light` (2 teams, Sliver, 44 payloads across every transport) is the first range where
-round 2 is a rollback **of a box running a C2**. Round 1 was clean: T0 red setup 1.8 GB → 1 min,
-matrix reused. Round 2 failed the seed's C2-channel gate — four boxes' payloads ran and never
-checked in — and it took the reboot to expose two defects, neither visible in a single deploy:
+`scrim-one-light` (2 teams, Sliver, 44 payloads / 1.8 GB across every transport) is the first
+range where round 2 is a rollback **of a box running a C2**. Round 1 was clean, and it is what the
+matrix reuse buys: the payload freeze that costs ~45 min of deploy time never re-ran — red's T0
+setup took about a minute. Round 2 then failed the seed's C2-channel gate — four boxes' payloads
+ran and never checked in — and it took that reboot to expose two defects, neither visible inside a
+single deploy:
 
 - **The transport listeners came back on the wrong process.** Sliver persists its listeners in
   the server database and restores them at daemon start, and red01 runs a *build-only* server
@@ -53,10 +57,34 @@ checked in — and it took the reboot to expose two defects, neither visible in 
   `tlaloc.service` **disabled**, and the release — `start_unit`, or the scrim's director start —
   enables it as it starts, so a mid-event reboot does not silently disarm red.
 
-Both are in `9389710` on `prep-snapshot`. What they deliberately do not change: the wg listener's
-`NPort=8888` (it is compiled into the frozen payloads, so moving it invalidates the matrix), and
-the arm's refusal to compile — an arm against a range whose snapshots predate this code fails at
-the listener bring-up with a message naming the version skew, not 400 payloads later.
+Both are in `9389710` on `prep-snapshot`, with offline tests for each (engine 1363 pass, tlaloc
+suite pass).
+
+**Trial — two consecutive clean round-2s on the kept range, driven through the dashboard.** Reset
+`run-3e49368f` (12.5 min) → round `run-deddca27` (19 min, rc=0); reset `run-aeb065b6` → round
+`run-75b417ef` (rc=0). Both rounds reused the matrix ("reusing 44 frozen payload(s) already on
+red01"), both cleared the C2-channel gate ("seed manifest proves 6 box(es) planted" — the gate
+that failed before), and both ended on the authoritative pre-T0 verify `RESULT: PASS` with plant
+coverage 6/6 and no degradations. On red01 in between: after one rollback's boot only
+8888/8080/8443 were bound at all — dns and wg had come back on neither daemon — and `:8888` sat on
+the build server after one boot and on the main server after the other, which is the coin flip the
+fix removes. After the arm, all five transports belonged to `sliver.service`,
+`sliver-build-1.service` was disabled, and `tlaloc.service` was installed disabled and enabled
+only when the director started. The rounds' *interaction* verdicts are a separate axis and still
+NOT READY (score 4: red restore reactions 2/3, blue restorations 1/2, injects 0, notebook 8/10 on
+a 10-minute round) — model and campaign quality, not the reset loop.
+
+What those rounds do **not** yet prove is a snapshot taken by this code. This range's `tz-ready`
+predates the fixes, so its red01 carries the older agent package and the older unit enablement,
+and each round repairs them as it goes: `stage_red01` re-pushes the package, `prepare_sliver`
+disables the build units, the plant disables `tlaloc.service` and the director start re-enables it.
+An arm that stages nothing — `competition-ops.py start` — therefore fails at the listener bring-up
+against such a range, with a message naming the version skew. That is the rule the trial makes
+explicit: **a prepared range runs the code its snapshot carries, so upgrading one means preparing
+it again with a deploy.**
+
+What this deliberately does not change: the wg listener's `NPort=8888` (it is compiled into the
+frozen payloads, so moving it invalidates the matrix).
 
 Owner directive (2026-11-12): the range
 is built **once**, snapshotted, and every round — test or real — starts by rolling back and
