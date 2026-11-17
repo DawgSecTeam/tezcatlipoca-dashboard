@@ -51,6 +51,15 @@ single deploy:
   at boot**; `SliverClient.ensure_listeners` first **takes the transport jobs back** from its
   build servers (`release_listeners`); and the arm / reused-matrix path calls
   `c2-prep --listeners-only` (`tlaloc_ops.bring_up_listeners`) instead of trusting the disk.
+
+   The daemon's own boot log is the whole mechanism — the two servers race per transport, and the
+   loser's restore dies on the shared rows: *"persistent mtls listener (saved job id=1)
+   [0.0.0.0:8888]: failed to start: listen tcp 0.0.0.0:8888: bind: address already in use"*, then
+   *"…started with new job id=N but failed to update listener record: constraint failed: UNIQUE
+   constraint failed: listener_jobs.job_id"*. One boot handed `:8888` to the build server and the
+   channels went unread; the next gave all five ports to the main one. Same range, same code, coin
+   flip — which is why the arm asks instead of assuming.
+
 - **red01 armed itself at boot.** The held state was `systemctl enable` + stopped, so the reset's
   reboot started the red loop and tlaloc ran its own day-0 seed before the event armed anything
   (`enabled-but-stopped` is only a hold until something reboots). A staged range now installs
