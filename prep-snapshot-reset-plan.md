@@ -441,3 +441,23 @@ The proof sequence on a fresh snapshot: deploy `--hold-start` → FRESH referenc
 deploy itself → one round (arm + event) → `redeploy --mode prepared` → RESET reading → the diff
 must print nothing. Then two consecutive clean round-2s, which is the thing this branch exists to
 deliver.
+
+### Measured — three resets, three empty diffs (2026-11-18, `run-4e8b3eca` range)
+
+| step | run | engine head | result |
+|---|---|---|---|
+| deploy `--hold-start` (kept templates) | `run-4e8b3eca` | `dcd5c9a` | 8 VMs + `tz-ready`, FRESH reference written by phase 8: 8 VM definitions, 6 box port sets, 69 engine-rule lines, red01 units `{sliver: enabled, tlaloc: disabled, build-1: disabled}`, `armed: false`, all five transports owned by `main` |
+| arm (`competition-ops.py start`) | `run-345a1fe7` | `dcd5c9a` | 6/6 boxes proved a checked-in channel, post-wipe integrity 16/16, clock 200, engine unpause 200, loop released — 4.5 min |
+| full-spread C2 | (effect on the armed range) | `dcd5c9a` | `implant_channel` on all six boxes: **30/30** channels checked in (6 boxes × mtls/http/https/dns/wg), db01's mtls and wg included |
+| round 1 | `run-ab818e94` | `dcd5c9a` | refused at the pre-T0 gate — the range had been armed 5 min earlier by the row above, and red's first cycle had already stopped three scored services; the gate did its job |
+| **reset 1** | `run-89dd7a8b` | `ca48490` | **empty diff**, after red's damage (3 pins down) — 5 min |
+| round 2 | `run-4da59d5b` | `ca48490` | authoritative pre-T0 verify **PASS**; 10-min event: 6 takedowns on all six boxes, blue never restored (its cycles timed out at the window — the campaign axis, not the loop) |
+| **reset 2** | `run-26e6217e` | `ca48490` | **empty diff** — 5.5 min |
+| round 3 | `run-0c785371` | `ca48490` | authoritative pre-T0 verify **PASS** (every gate); interaction NOT READY, score 2, blue restored twice |
+| **reset 3** (merged ref) | `run-3cd6a4f4` | `7c56103` | **empty diff** — 5.5 min |
+
+All three resets compared against the ONE reference the deploy wrote; none of them re-recorded it.
+The two round-2s after them (rounds 2 and 3) each opened on a fully green pre-T0 verify. Defects
+this sequence found and killed at the root: the unplaced/`tz-base`less golden reuse (three failed
+deploys), the unit-table column, the engine-rules probe's table, the box-tuple arity, `vmgenid`
+as range state, and a `self.log(...)` call on an `EventLog` that only the reset path reached.
