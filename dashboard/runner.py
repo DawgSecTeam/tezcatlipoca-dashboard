@@ -969,8 +969,10 @@ class RunManager:
             log.info("auto-reclaim for %s: workspace records no VMs, nothing to reclaim", run_id)
             return
         try:
+            # templates are what a practice range exists to validate and what makes the retry
+            # affordable: a failed deploy reclaims its VMs, never the goldens phase 4 built
             created = self.submit(run["comp_id"], "destroy", run.get("engine_ref"),
-                                  {"comp_dir": str(ws),
+                                  {"comp_dir": str(ws), "teams_only": True,
                                    "reason": f"auto-reclaim after {run_id} failed (rc={rc})"})
         except Exception as exc:  # the deploy already failed: a refused reclaim is a note,
             log.warning("auto-reclaim for %s refused: %s", run_id, exc)

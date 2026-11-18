@@ -184,6 +184,7 @@ def test_a_failed_deploy_submits_its_reclaim_automatically(tmp_path):
     comp_id, action, engine_ref, params = mgr.submitted[0]
     assert (comp_id, action, engine_ref) == ("c", "destroy", "main")
     assert params["comp_dir"] == str(Path(run["run_dir"]) / "comp")
+    assert params["teams_only"] is True, "the goldens a failed deploy built are kept for its retry"
     assert run["id"] in params["reason"]
     # The failed run's own log and events say what happened: an operator returning to the
     # run must see the reclaim was submitted, not that the range vanished silently.
