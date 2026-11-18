@@ -29,3 +29,6 @@ data/
 /runlog.json
 /sb.py
 .c3run/
+.service.out
+.watch-run.sh
+.last-submit.json
