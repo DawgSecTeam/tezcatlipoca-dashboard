@@ -420,13 +420,16 @@ returns the range to the point a fresh deploy leaves" is now **measured**, not a
 Two boundary decisions came out of measuring rather than reasoning:
 
 **The reset reconciles red01's listeners, and holds its unit, but does not reinstall the
-engine's red rules.** Checked on a rolled-back engine: no `range-red-firewall.sh`, no
-`range-red-firewall.timer`, no chains — because in a held deploy the rules are installed by the
-arm at event start, not by the deploy. A reset that installed them would be *arming* part of the
-range while claiming only to restore it, and the comparison would then pass for the wrong reason.
-The listeners are different: red01's Sliver servers restore their saved jobs at boot, and which
-one wins a given port is a race — that is the C2 defect that cost round 2 — so the reset puts
-them back on the main server and the fingerprint proves it took.
+engine's red rules.** The restore point does carry them: phase 7 installs
+`/usr/local/sbin/range-red-firewall.sh` and enables `range-red-firewall.timer`, and the timer
+asserts `RANGE-RED-FWD/DNAT/SNAT` within 35 s of a boot (measured on `run-c12ac6f0`). So the
+rollback restores the units from disk and the timer rebuilds the kernel chains — a reset that
+installed them too would hide a broken timer behind its own work, and the comparison would then
+pass for the wrong reason. The fingerprint therefore re-reads the chains after the timer has
+fired (a read taken earlier is early, not a delta) and compares them like any other class. The
+listeners are different: red01's Sliver servers restore their saved jobs at boot, and which one
+wins a given port is a race — that is the C2 defect that cost round 2 — so the reset puts them
+back on the main server and the fingerprint proves it took.
 
 **The diff is only meaningful under `red.c2_implant_spread full`.** Under the default `draw`,
 tlaloc gives each box one transport from a per-plant draw, so "the channels came up" proves one
